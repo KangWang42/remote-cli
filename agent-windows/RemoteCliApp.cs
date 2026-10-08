@@ -360,9 +360,8 @@ public sealed class App : Form {
         updateButton.Enabled = false; updateButton.Text = "下载中…"; Say("正在从 GitHub 下载 v" + found.Version + "…");
         try {
             string file = await AutoUpdater.DownloadAsync(found, Path.Combine(dataDir, "updates"));
-            string app = Application.ExecutablePath, folder = appDir;
-            string command = "/c ping -n 3 127.0.0.1 >nul & start \"\" /wait \"" + file + "\" --quiet --dir \"" + folder + "\" & start \"\" \"" + app + "\"";
-            Process.Start(new ProcessStartInfo("cmd.exe", command) { CreateNoWindow = true, UseShellExecute = false, WorkingDirectory = folder });
+            string folder = appDir;
+            Process.Start(new ProcessStartInfo(file, "--quiet --dir \"" + folder + "\" --wait-pid " + Process.GetCurrentProcess().Id + " --launch") { CreateNoWindow = true, UseShellExecute = false, WorkingDirectory = folder });
             quitting = true; Shutdown(); Application.Exit();
         } catch (Exception error) { updateButton.Enabled = true; updateButton.Text = "更新失败"; Say("更新失败：" + error.Message, true); }
     }

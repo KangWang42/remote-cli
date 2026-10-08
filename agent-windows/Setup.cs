@@ -102,7 +102,7 @@ public static class Setup {
             }
         }
     }
-    static int Install(bool quiet, string wanted) {
+    static int Install(bool quiet, string wanted, bool launch) {
         string target = wanted.Length > 0 ? Resolve(wanted) : DefaultTarget();
         if (!quiet) { target = Ask(target); if (target == null) return 1; }
         if (Running()) { if (!quiet) MessageBox.Show("Remote CLI 正在运行。请先在托盘图标上点右键选“退出”，再重新运行安装程序。", "安装 " + Name); return 1; }
@@ -141,8 +141,11 @@ public static class Setup {
         // "Start with Windows" points at the program's path; keep it right after a move.
         using (var run = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
             if (!Sandbox && run != null && run.GetValue("RemoteCli") != null) run.SetValue("RemoteCli", "\"" + program + "\" --hidden");
-        if (!quiet) Process.Start(new ProcessStartInfo(program) { WorkingDirectory = target, UseShellExecute = true });
+        if (!quiet || launch) Process.Start(new ProcessStartInfo(program) { WorkingDirectory = target, UseShellExecute = true });
         return 0;
+    }
+    static void WaitFor(int pid) {
+        try { using (var owner = Process.GetProcessById(pid)) owner.WaitForExit(); } catch (ArgumentException) { }
     }
     static int Uninstall(bool quiet) {
         // The copy that runs as Uninstall.exe sits in the installation folder.
@@ -167,10 +170,13 @@ public static class Setup {
         SetProcessDPIAware();
         Application.EnableVisualStyles();
         bool quiet = Array.IndexOf(args, "--quiet") >= 0;
-        int at = Array.IndexOf(args, "--dir"), shot = Array.IndexOf(args, "--screenshot");
+        int at = Array.IndexOf(args, "--dir"), shot = Array.IndexOf(args, "--screenshot"), wait = Array.IndexOf(args, "--wait-pid");
+        bool launch = Array.IndexOf(args, "--launch") >= 0;
         try {
             if (shot >= 0 && shot + 1 < args.Length) { Ask(@"C:\Users\you\AppData\Local\Programs\RemoteCli", args[shot + 1]); return 0; }      // a neutral path for a published picture
-            return Array.IndexOf(args, "--uninstall") >= 0 ? Uninstall(quiet) : Install(quiet, at >= 0 && at + 1 < args.Length ? args[at + 1] : "");
+            int pid;
+            if (wait >= 0 && wait + 1 < args.Length && Int32.TryParse(args[wait + 1], out pid)) WaitFor(pid);
+            return Array.IndexOf(args, "--uninstall") >= 0 ? Uninstall(quiet) : Install(quiet, at >= 0 && at + 1 < args.Length ? args[at + 1] : "", launch);
         } catch (Exception error) { if (!quiet) MessageBox.Show("没有完成：" + error.Message, Name); return 2; }
     }
 }
