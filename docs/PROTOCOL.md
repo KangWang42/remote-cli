@@ -20,7 +20,7 @@ use. `POST` requests must have `Content-Type: application/json`; when an `Origin
 the relay itself. The computer signs in the same way as the viewer.
 
 The app passes the password to its page once as `/#p=<password>`; the page signs in and removes it.
-The code shown on the computer is `remotecli://connect?u=<address>&p=<password>`.
+The code shown on the computer is `remotecli://connect?u=<address>&p=<password>&n=<computer name>`; the name is optional and lets a phone that knows several computers tell them apart (the same name with a new address replaces the old address).
 
 ## Viewer
 
@@ -46,6 +46,18 @@ An agent verifies Codex's actual writer lock and process ownership before advert
 again before terminating the selected independent CLI. Shared app servers and phone descendants are protected.
 Process identifiers and command lines are never sent to the viewer. A closed terminal may include `exit_code`;
 a nonzero value produces a visible error while preserving the output.
+
+Each terminal also says what it is doing:
+
+| `phase` | Meaning |
+| --- | --- |
+| `starting` | not running yet |
+| `busy` | the program is working: it says so itself (Claude Code), or it has written output in the last 4 seconds |
+| `confirm` | it has been quiet for 1.5 seconds with a yes/no question at the end of its screen. This is read from the text on the screen and can be wrong |
+| `idle` | it waits for the next message; `done: true` when it worked before that |
+| `ended`, `failed` | it has ended; `failed` with an exit code other than 0 |
+
+`phase_at` is when the phase last changed (milliseconds since 1970). A viewer can keep the `phase_at` it last showed for a terminal to tell "finished, not looked at yet" from "waiting".
 
 ### Output
 

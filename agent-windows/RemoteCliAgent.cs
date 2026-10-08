@@ -464,6 +464,13 @@ public sealed class TerminalAgent {
     }
     // The address or the password changed: sign in again at once instead of after the usual pause.
     public void Reset() { nextLogin = DateTime.MinValue; client = null; }
+    /// The terminals that are running now, for the window on the computer: tool, project, status ("busy", "idle" or ""), start time.
+    public List<string[]> Running() {
+        try {
+            lock (gate) return terminals.Values.Where(t => t.Pty != null && !t.Pty.Closed)
+                .Select(t => new[] { t.Tool, t.Dir, t.Status ?? "", t.Started.ToString("o") }).ToList();
+        } catch (InvalidOperationException) { return null; }      // the list changed while it was read: the caller keeps what it showed
+    }
     async Task<bool> Login(Dictionary<string, object> prefs) {
         if (DateTime.UtcNow < nextLogin) return false;
         nextLogin = DateTime.UtcNow.AddSeconds(60);

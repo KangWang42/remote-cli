@@ -308,6 +308,33 @@ class TerminalRelayTests(unittest.TestCase):
         self.assertLess(time.monotonic() - began, 0.5)
         with self.assertRaises(RemoteError):
             next(tr.stream(self.path, "0" * 32))
+    def test_phase_tells_working_asking_finished_and_ended_apart(self):
+        self.start()
+        live = lambda status="", **more: dict({"info": self.info, "terminals": [dict({"id": self.terminal, "state": "running", "status": status}, **more)]})
+        phase = lambda now: tr.overview(self.path, now=now)["terminals"][0]
+        self.assertEqual(phase(1004)["phase"], "idle")
+        self.assertFalse(phase(1004).get("done"))                      # it has not worked yet
+        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 1, "data": "building\r\n"}]), now=1010)
+        self.assertEqual(phase(1010)["phase"], "busy")                 # without a status of its own, fresh output means work
+        tr.agent(self.path, live(), now=1016)
+        done = phase(1016)
+        self.assertEqual((done["phase"], done["done"]), ("idle", True))
+        self.assertNotIn("out_at", done)
+        # a question on the screen that stays there
+        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 2, "data": "\x1b[1mDo you want to proceed?\x1b[0m\r\n\x1b[36m> 1. Yes\x1b[0m\r\n  2. No"}]), now=1020)
+        self.assertEqual(phase(1020)["phase"], "busy")                 # just written: still drawing
+        tr.agent(self.path, live(), now=1023)
+        self.assertEqual(phase(1023)["phase"], "confirm")
+        # Claude Code reports its own status; a question only counts while it says it is working
+        tr.agent(self.path, live("idle"), now=1030)
+        self.assertEqual(phase(1030)["phase"], "idle")
+        tr.agent(self.path, live("busy"), now=1031)
+        self.assertEqual(phase(1031)["phase"], "confirm")
+        tr.agent(self.path, dict(live("busy"), output=[{"terminal": self.terminal, "seq": 3, "data": "x" * 2000}]), now=1040)
+        tr.agent(self.path, live("busy"), now=1045)
+        self.assertEqual(phase(1045)["phase"], "busy")                 # answered: the question has scrolled out of the last screen
+        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 3}]}, now=1050)
+        self.assertEqual(phase(1050)["phase"], "failed")
 
 if __name__ == "__main__":
     unittest.main()

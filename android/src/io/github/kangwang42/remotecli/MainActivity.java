@@ -9,8 +9,11 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.speech.RecognizerIntent;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -28,22 +31,33 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * One screen to choose the computer (scan its code with the phone's camera, or type the address and password),
- * then the terminal pages served by the program on that computer, shown full screen.
+ * The computers this phone knows (each with what is running on it right now), a screen to add one by scanning
+ * its code or typing its address, and the pages served by the program on the chosen computer, shown full screen.
  */
 public final class MainActivity extends Activity {
-    private static final int SPEECH = 4103;
-    /** Colours of the screen for choosing a computer; they follow the skin last chosen in the pages. */
-    private int BG, PANEL, LINE, INK, MUTED, ACCENT, ON_ACCENT, BAD;
+    private static final int SPEECH = 4103, CAMERA = 4104;
+    /** Colours of the app's own screens; they follow the skin last chosen in the pages. */
+    private int BG, PANEL, RAISED, LINE, INK, MUTED, ACCENT, ON_ACCENT, GOOD, BUSY, BAD;
     private void palette(boolean light) {
         BG = light ? Color.rgb(251, 251, 252) : Color.rgb(26, 27, 38); PANEL = light ? Color.rgb(240, 241, 244) : Color.rgb(34, 36, 54);
-        LINE = light ? Color.rgb(213, 216, 223) : Color.rgb(47, 51, 77); INK = light ? Color.rgb(43, 47, 58) : Color.rgb(192, 202, 245);
-        MUTED = light ? Color.rgb(102, 107, 120) : Color.rgb(129, 137, 173); ACCENT = light ? Color.rgb(47, 111, 228) : Color.rgb(122, 162, 247);
-        ON_ACCENT = light ? Color.WHITE : Color.rgb(16, 18, 28); BAD = light ? Color.rgb(201, 60, 55) : Color.rgb(247, 118, 142);
+        RAISED = light ? Color.rgb(228, 230, 235) : Color.rgb(44, 47, 71); LINE = light ? Color.rgb(213, 216, 223) : Color.rgb(47, 51, 77);
+        INK = light ? Color.rgb(43, 47, 58) : Color.rgb(192, 202, 245); MUTED = light ? Color.rgb(102, 107, 120) : Color.rgb(129, 137, 173);
+        ACCENT = light ? Color.rgb(47, 111, 228) : Color.rgb(122, 162, 247); ON_ACCENT = light ? Color.WHITE : Color.rgb(16, 18, 28);
+        GOOD = light ? Color.rgb(61, 138, 58) : Color.rgb(158, 206, 106); BUSY = light ? Color.rgb(163, 106, 0) : Color.rgb(224, 175, 104);
+        BAD = light ? Color.rgb(201, 60, 55) : Color.rgb(247, 118, 142);
     }
     /** Colours the system bars and picks dark or light icons on them, so they stay readable on any skin. */
     private void bars(int shade) {
@@ -55,17 +69,47 @@ public final class MainActivity extends Activity {
         root.setBackgroundColor(shade);
         if (light != prefs.getBoolean("light", false)) prefs.edit().putBoolean("light", light).apply();
     }
+
     private SharedPreferences prefs;
     private FrameLayout root;
     private WebView web;
-    private EditText addressBox, passwordBox;
+    private EditText nameBox, addressBox, passwordBox;
     private TextView message;
-    private String server = "";
     private GithubUpdater updater;
+    private Scanner scanner;
+    private String screen = "";                 // "home", "add", "scan" or "web"
+    private final Handler ticker = new Handler(Looper.getMainLooper());
+    private final ExecutorService net = Executors.newFixedThreadPool(3);
+    private final Map<String, String[]> glance = new HashMap<>();       // address -> {state, text} from the last look
+    private final Map<String, TextView[]> glanceViews = new HashMap<>();
+    private final Runnable look = this::lookAtAll;
+
+    // ---- the computers this phone knows: [{"name": ..., "url": ...}]
+    private JSONArray computers() {
+        try { return new JSONArray(prefs.getString("computers", "[]")); } catch (Exception broken) { return new JSONArray(); }
+    }
+    private void store(JSONArray list) { prefs.edit().putString("computers", list.toString()).apply(); }
+    /** Adds a computer or updates it: the same address, or the same name with a new address (a tunnel that restarted). */
+    private void remember(String name, String url) {
+        try {
+            JSONArray list = computers();
+            int at = -1;
+            for (int i = 0; i < list.length(); i++) if (url.equals(list.getJSONObject(i).optString("url"))) at = i;
+            if (at < 0 && !name.isEmpty()) for (int i = 0; i < list.length(); i++) if (name.equals(list.getJSONObject(i).optString("name"))) at = i;
+            String shown = !name.isEmpty() ? name : at >= 0 ? list.getJSONObject(at).optString("name") : host(url);
+            JSONObject item = new JSONObject().put("name", shown).put("url", url);
+            if (at >= 0) list.put(at, item); else list.put(item);
+            store(list);
+        } catch (Exception ignored) { }
+    }
+    private static String host(String url) { String h = Uri.parse(url).getHost(); return h == null ? url : h; }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("remote-cli", MODE_PRIVATE);
+        // An earlier version knew one computer only.
+        String single = prefs.getString("server", "");
+        if (!single.isEmpty() && computers().length() == 0) remember("", single);
         updater = new GithubUpdater(this, new GithubUpdater.Listener() {
             @Override public void found(GithubUpdater.Release release) { new AlertDialog.Builder(MainActivity.this).setTitle("发现 Remote CLI 新版本").setMessage("GitHub 上有 v" + release.version + "，现在下载并安装吗？").setPositiveButton("更新", (d, w) -> updater.install(release)).setNegativeButton("稍后", null).show(); }
             @Override public void message(String text) { if (text != null && !text.isEmpty() && message != null) message.setText(text); }
@@ -75,22 +119,21 @@ public final class MainActivity extends Activity {
         setContentView(root);
         bars(BG);
         if (!linked(getIntent())) {
-            server = prefs.getString("server", "");
-            if (server.isEmpty()) choose(""); else open(server, "");
+            JSONArray list = computers();
+            if (list.length() == 1) open(list.optJSONObject(0).optString("url"), ""); else home("");
         }
         updater.checkIfDue();
     }
 
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); linked(intent); }
 
-    /** remotecli://connect?u=address&p=password, from the code on the computer's screen. */
-    private boolean linked(Intent intent) {
-        return link(intent == null ? null : intent.getData());
-    }
+    /** remotecli://connect?u=address&p=password&n=name, from the code on the computer's screen. */
+    private boolean linked(Intent intent) { return link(intent == null ? null : intent.getData()); }
     private boolean link(Uri link) {
         if (link == null || !"remotecli".equals(link.getScheme()) || !link.isHierarchical()) return false;
-        String address = clean(link.getQueryParameter("u")), password = link.getQueryParameter("p");
-        if (address.isEmpty()) { choose("二维码里的地址无效，请在电脑上重新显示后再扫。"); return true; }
+        String address = clean(link.getQueryParameter("u")), password = link.getQueryParameter("p"), name = link.getQueryParameter("n");
+        if (address.isEmpty()) { home("二维码里的地址无效，请在电脑上重新显示后再扫。"); return true; }
+        remember(name == null ? "" : name.trim(), address);
         open(address, password == null ? "" : password);
         return true;
     }
@@ -106,123 +149,297 @@ public final class MainActivity extends Activity {
         return scheme + "://" + host + (uri.getPort() > 0 ? ":" + uri.getPort() : "");
     }
 
+    // ---- small pieces the screens are built from
     private int dp(float value) { return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics())); }
     private TextView text(String value, float size, int color) {
         TextView view = new TextView(this);
-        view.setText(value); view.setTextSize(size); view.setTextColor(color); view.setLineSpacing(dp(5), 1f);
+        view.setText(value); view.setTextSize(size); view.setTextColor(color); view.setLineSpacing(dp(4), 1f);
         return view;
     }
-    private GradientDrawable shape(int fill, int stroke) {
+    private TextView bold(String value, float size, int color) { TextView view = text(value, size, color); view.setTypeface(Typeface.DEFAULT_BOLD); return view; }
+    private GradientDrawable shape(int fill, int stroke, float radius) {
         GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(fill); drawable.setCornerRadius(dp(12)); drawable.setStroke(dp(1), stroke);
+        drawable.setColor(fill); drawable.setCornerRadius(dp(radius)); if (stroke != 0) drawable.setStroke(dp(1), stroke);
         return drawable;
     }
+    private GradientDrawable shape(int fill, int stroke) { return shape(fill, stroke, 14); }
+    private static int tint(int color, int alpha) { return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color)); }
     private EditText field(String hint, int type) {
         EditText box = new EditText(this);
         box.setHint(hint); box.setHintTextColor(MUTED); box.setTextColor(INK); box.setTextSize(16); box.setSingleLine(true);
-        box.setInputType(type); box.setBackground(shape(PANEL, LINE)); box.setPadding(dp(14), 0, dp(14), 0); box.setMinHeight(dp(50));
+        box.setInputType(type); box.setBackground(shape(PANEL, LINE)); box.setPadding(dp(16), 0, dp(16), 0); box.setMinHeight(dp(52));
         return box;
+    }
+    /** A button: 0 the main action, 1 an ordinary one, 2 only text. A press dims it for a moment. */
+    private TextView button(String label, int kind, Runnable action) {
+        TextView view = bold(label, 16, kind == 0 ? ON_ACCENT : kind == 1 ? INK : MUTED);
+        view.setGravity(Gravity.CENTER); view.setMinHeight(dp(52)); view.setPadding(dp(18), 0, dp(18), 0);
+        if (kind < 2) view.setBackground(shape(kind == 0 ? ACCENT : PANEL, kind == 0 ? 0 : LINE, 16));
+        press(view, action);
+        return view;
+    }
+    private void press(View view, Runnable action) {
+        view.setClickable(true); view.setFocusable(true);
+        view.setOnTouchListener((v, event) -> {
+            int what = event.getActionMasked();
+            if (what == android.view.MotionEvent.ACTION_DOWN) v.setAlpha(.6f);
+            else if (what == android.view.MotionEvent.ACTION_UP || what == android.view.MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
+            return false;
+        });
+        view.setOnClickListener(v -> action.run());
     }
     private LinearLayout.LayoutParams below(int top) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.topMargin = dp(top);
         return params;
     }
-
-    /** The screen for choosing a computer. */
-    private void choose(String problem) {
+    private LinearLayout column(int top) {
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setPadding(dp(20), dp(top), dp(20), dp(28));
+        return column;
+    }
+    private void show(View content, String name) {
+        ticker.removeCallbacks(look);
         if (web != null) { root.removeView(web); web.destroy(); web = null; }
         root.removeAllViews();
         palette(prefs.getBoolean("light", false));
         bars(BG);
-        LinearLayout column = new LinearLayout(this);
-        column.setOrientation(LinearLayout.VERTICAL);
-        column.setPadding(dp(24), dp(56), dp(24), dp(32));
-        TextView title = text("Remote CLI", 26, INK);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        column.addView(title);
-        column.addView(text("在手机上使用电脑里的终端、Claude Code 和 Codex。", 14.5f, MUTED), below(6));
-        column.addView(text("在电脑上打开 Remote CLI，用下面的按钮扫它窗口里的二维码。", 14.5f, INK), below(22));
-        TextView scan = text("扫码连接", 16, ON_ACCENT);
-        scan.setTypeface(Typeface.DEFAULT_BOLD); scan.setGravity(Gravity.CENTER); scan.setBackground(shape(ACCENT, ACCENT)); scan.setMinHeight(dp(52));
-        scan.setClickable(true); scan.setFocusable(true); scan.setOnClickListener(view -> scan());
-        column.addView(scan, below(14));
-        column.addView(text("或者手动输入电脑上显示的地址和密码：", 13.5f, MUTED), below(26));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(content, new ViewGroup.LayoutParams(-1, -2));
+        root.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        screen = name;
+    }
+    /** The app's mark: a prompt on a rounded tile. */
+    private View mark(int size) {
+        TextView tile = bold(">_", size * 0.36f, ACCENT);
+        tile.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)); tile.setGravity(Gravity.CENTER);
+        GradientDrawable back = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{RAISED, PANEL});
+        back.setCornerRadius(dp(size * 0.28f)); back.setStroke(dp(1), LINE);
+        tile.setBackground(back);
+        tile.setLayoutParams(new LinearLayout.LayoutParams(dp(size), dp(size)));
+        return tile;
+    }
+
+    // ---- home: the computers, and what is going on on each
+    private void home(String problem) {
+        palette(prefs.getBoolean("light", false));
+        LinearLayout column = column(40);
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.addView(mark(46));
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL); titles.setPadding(dp(14), 0, 0, 0);
+        JSONArray list = computers();
+        titles.addView(bold("Remote CLI", 23, INK));
+        titles.addView(text(list.length() == 0 ? "在手机上使用电脑里的终端" : list.length() + " 台电脑", 13.5f, MUTED));
+        head.addView(titles);
+        column.addView(head);
+        message = text(problem, 14, BAD);
+        if (!problem.isEmpty()) column.addView(message, below(16));
+        glanceViews.clear();
+        if (list.length() == 0) {
+            LinearLayout card = column(18);
+            card.setPadding(dp(18), dp(18), dp(18), dp(18)); card.setBackground(shape(PANEL, LINE, 20));
+            card.addView(bold("连接第一台电脑", 17, INK));
+            String[] steps = { "在电脑上安装并打开 Remote CLI", "点下面的“扫码添加电脑”，对准电脑窗口里的二维码", "连上后选一个项目，新建 Claude Code、Codex 或 PowerShell 终端" };
+            for (int i = 0; i < steps.length; i++) {
+                LinearLayout row = new LinearLayout(this);
+                TextView number = bold(String.valueOf(i + 1), 12.5f, ACCENT);
+                number.setGravity(Gravity.CENTER); number.setBackground(shape(tint(ACCENT, 40), 0, 12));
+                row.addView(number, new LinearLayout.LayoutParams(dp(24), dp(24)));
+                TextView step = text(steps[i], 14.5f, INK); step.setPadding(dp(12), dp(1), 0, 0);
+                row.addView(step, new LinearLayout.LayoutParams(0, -2, 1));
+                card.addView(row, below(14));
+            }
+            column.addView(card, below(24));
+        } else {
+            column.addView(bold("我的电脑", 13.5f, MUTED), below(26));
+            for (int i = 0; i < list.length(); i++) column.addView(computerCard(list.optJSONObject(i), i), below(i == 0 ? 10 : 10));
+        }
+        column.addView(button("扫码添加电脑", 0, this::scan), below(24));
+        column.addView(button("手动输入地址", 1, () -> add("")), below(10));
+        if (problem.isEmpty()) column.addView(message, below(12));
+        column.addView(text("地址和密码相当于电脑的钥匙，不要发给别人。长按一台电脑可以改名或移除。", 12.5f, MUTED), below(18));
+        show(column, "home");
+        lookAtAll();
+    }
+    private View computerCard(JSONObject computer, int index) {
+        final String url = computer.optString("url"), name = computer.optString("name");
+        LinearLayout card = new LinearLayout(this);
+        card.setGravity(Gravity.CENTER_VERTICAL); card.setPadding(dp(16), dp(14), dp(12), dp(14)); card.setBackground(shape(PANEL, LINE, 20));
+        View dot = new View(this);
+        dot.setBackground(shape(MUTED, 0, 6));
+        card.addView(dot, new LinearLayout.LayoutParams(dp(10), dp(10)));
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL); texts.setPadding(dp(14), 0, dp(8), 0);
+        TextView title = bold(name, 17, INK); title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.END);
+        texts.addView(title);
+        TextView where = text(host(url), 12.5f, MUTED); where.setSingleLine(true); where.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        texts.addView(where);
+        TextView state = bold("正在查看…", 13, MUTED); state.setPadding(0, dp(6), 0, 0);
+        texts.addView(state);
+        card.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+        card.addView(text("›", 26, MUTED));
+        glanceViews.put(url, new TextView[]{state, title});
+        dot.setTag(url); state.setTag(dot);
+        String[] known = glance.get(url);
+        if (known != null) paint(url, known[0], known[1]);
+        press(card, () -> open(url, ""));
+        card.setOnLongClickListener(v -> { manage(index, name); return true; });
+        return card;
+    }
+    private void manage(int index, String name) {
+        new AlertDialog.Builder(this).setTitle(name).setItems(new String[]{"改名", "从列表移除"}, (dialog, which) -> {
+            if (which == 0) {
+                final EditText box = new EditText(this);
+                box.setText(name); box.setSingleLine(true); box.setSelection(name.length());
+                new AlertDialog.Builder(this).setTitle("电脑名称").setView(box).setNegativeButton("取消", null).setPositiveButton("保存", (d, w) -> {
+                    String wanted = box.getText().toString().trim();
+                    if (wanted.isEmpty() || wanted.length() > 40) return;
+                    try { JSONArray list = computers(); list.getJSONObject(index).put("name", wanted); store(list); } catch (Exception ignored) { }
+                    home("");
+                }).show();
+            } else {
+                new AlertDialog.Builder(this).setTitle("移除“" + name + "”？").setMessage("只是从这部手机的列表里移除，电脑上的终端和对话不受影响。")
+                        .setNegativeButton("取消", null).setPositiveButton("移除", (d, w) -> { JSONArray list = computers(); list.remove(index); store(list); home(""); }).show();
+            }
+        }).show();
+    }
+    /** state: "ok", "busy", "need", "off" or "key". */
+    private void paint(String url, String state, String line) {
+        glance.put(url, new String[]{state, line});
+        TextView[] views = glanceViews.get(url);
+        if (views == null) return;
+        int color = "need".equals(state) ? BAD : "busy".equals(state) ? BUSY : "ok".equals(state) ? GOOD : MUTED;
+        views[0].setText(line); views[0].setTextColor("ok".equals(state) ? MUTED : color);
+        Object dot = views[0].getTag();
+        if (dot instanceof View) ((View) dot).setBackground(shape("off".equals(state) || "key".equals(state) ? MUTED : color, 0, 6));
+    }
+    /** Asks every computer what is running; each answers on its own time. Repeats while the home screen is shown. */
+    private void lookAtAll() {
+        ticker.removeCallbacks(look);
+        if (!"home".equals(screen)) return;
+        JSONArray list = computers();
+        for (int i = 0; i < list.length(); i++) {
+            final String url = list.optJSONObject(i).optString("url");
+            final String cookie = CookieManager.getInstance().getCookie(url);
+            net.execute(() -> {
+                String state = "off", line = "连不上，可能没开机或地址变了";
+                HttpURLConnection connection = null;
+                try {
+                    connection = (HttpURLConnection) new URL(url + "/api/terminal").openConnection();
+                    connection.setConnectTimeout(4000); connection.setReadTimeout(6000);
+                    if (cookie != null) connection.setRequestProperty("Cookie", cookie);
+                    int code = connection.getResponseCode();
+                    if (code == 401) { state = "key"; line = "需要重新扫码登录"; }
+                    else if (code == 200) {
+                        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                        try (InputStream input = connection.getInputStream()) { byte[] part = new byte[16384]; int n; while ((n = input.read(part)) > 0 && bytes.size() < 4000000) bytes.write(part, 0, n); }
+                        JSONObject data = new JSONObject(bytes.toString("UTF-8")), device = data.optJSONObject("device");
+                        JSONArray terminals = data.optJSONArray("terminals");
+                        int confirm = 0, busy = 0, open = 0;
+                        for (int k = 0; terminals != null && k < terminals.length(); k++) {
+                            JSONObject t = terminals.getJSONObject(k);
+                            if (!"running".equals(t.optString("state")) && !"starting".equals(t.optString("state"))) continue;
+                            open++;
+                            String phase = t.optString("phase", "busy".equals(t.optString("status")) ? "busy" : "idle");
+                            if ("confirm".equals(phase)) confirm++; else if ("busy".equals(phase) || "starting".equals(phase)) busy++;
+                        }
+                        if (device == null || !device.optBoolean("online")) { state = "off"; line = "电脑端程序没有在运行"; }
+                        else if (!device.optBoolean("enabled")) { state = "off"; line = "电脑端暂停了手机访问"; }
+                        else if (confirm > 0) { state = "need"; line = confirm + " 个任务等你确认" + (busy > 0 ? " · " + busy + " 个在执行" : ""); }
+                        else if (busy > 0) { state = "busy"; line = busy + " 个任务在执行" + (open > busy ? " · " + (open - busy) + " 个等待输入" : ""); }
+                        else { state = "ok"; line = open > 0 ? "在线 · " + open + " 个终端等待输入" : "在线 · 没有任务在跑"; }
+                    }
+                } catch (Exception unreachable) { /* keeps "off" */ }
+                finally { if (connection != null) connection.disconnect(); }
+                final String s = state, l = line;
+                runOnUiThread(() -> paint(url, s, l));
+            });
+        }
+        ticker.postDelayed(look, 6000);
+    }
+
+    // ---- adding a computer by typing
+    private void add(String problem) {
+        LinearLayout column = column(40);
+        column.addView(bold("手动添加电脑", 23, INK));
+        column.addView(text("填电脑上 Remote CLI 窗口里显示的地址和密码。", 14.5f, MUTED), below(6));
+        nameBox = field("名称（可不填），例如 办公室电脑", InputType.TYPE_CLASS_TEXT);
+        column.addView(nameBox, below(22));
         addressBox = field("地址，例如 192.168.1.5:8722", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        addressBox.setText(prefs.getString("server", ""));
-        column.addView(addressBox, below(8));
-        passwordBox = field("访问密码", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        column.addView(addressBox, below(10));
+        passwordBox = field("访问密码", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         passwordBox.setImeOptions(EditorInfo.IME_ACTION_GO);
         passwordBox.setOnEditorActionListener((view, action, event) -> { connect(); return true; });
         column.addView(passwordBox, below(10));
-        TextView go = text("连接", 16, INK);
-        go.setTypeface(Typeface.DEFAULT_BOLD); go.setGravity(Gravity.CENTER); go.setBackground(shape(PANEL, LINE)); go.setMinHeight(dp(50));
-        go.setClickable(true); go.setFocusable(true); go.setOnClickListener(view -> connect());
-        column.addView(go, below(14));
         message = text(problem, 14, BAD);
         column.addView(message, below(12));
-        column.addView(text("地址和密码相当于这台电脑的钥匙，不要发给别人。在公共网络下请用电脑端的“公网隧道”或自己的 https 中转。", 12.5f, MUTED), below(18));
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.addView(column, new ViewGroup.LayoutParams(-1, -2));
-        root.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        column.addView(button("连接", 0, this::connect), below(8));
+        column.addView(button("返回", 2, () -> home("")), below(6));
+        column.addView(text("在公共网络下请用电脑端的“公网隧道”或自己的 https 中转；以 http:// 开头的地址只适合家里或办公室的 Wi-Fi。", 12.5f, MUTED), below(14));
+        show(column, "add");
     }
+    private void connect() {
+        String address = clean(addressBox.getText().toString());
+        if (address.isEmpty()) { message.setText("地址无效。例如 192.168.1.5:8722，或 https:// 开头的地址。"); return; }
+        remember(nameBox.getText().toString().trim(), address);
+        open(address, passwordBox.getText().toString().trim());
+    }
+
     // ---- scanning the code inside the app
-    private static final int CAMERA = 4104;
-    private Scanner scanner;
     private void scan() {
         if (checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{android.Manifest.permission.CAMERA}, CAMERA);
             return;
         }
-        root.removeAllViews();
-        LinearLayout column = new LinearLayout(this);
-        column.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout column = column(40);
         column.setGravity(Gravity.CENTER_HORIZONTAL);
-        column.setPadding(dp(24), dp(56), dp(24), dp(32));
-        TextView title = text("扫码连接", 22, INK);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        column.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        column.addView(bold("扫码添加电脑", 23, INK), new LinearLayout.LayoutParams(-1, -2));
         column.addView(text("对准电脑上 Remote CLI 窗口里的二维码。", 14.5f, MUTED), below(6));
-        final int side = Math.min(getResources().getDisplayMetrics().widthPixels - dp(48), dp(360));
+        final int side = Math.min(getResources().getDisplayMetrics().widthPixels - dp(40), dp(380));
         FrameLayout frame = new FrameLayout(this);
-        frame.setBackground(shape(Color.BLACK, LINE));
+        frame.setBackground(shape(Color.BLACK, LINE, 24));
         frame.setClipToOutline(true);
         LinearLayout.LayoutParams square = new LinearLayout.LayoutParams(side, side);
-        square.topMargin = dp(22);
+        square.topMargin = dp(24);
         column.addView(frame, square);
-        TextView back = text("取消", 16, INK);
-        back.setGravity(Gravity.CENTER); back.setBackground(shape(PANEL, LINE)); back.setMinHeight(dp(50));
-        back.setClickable(true); back.setFocusable(true); back.setOnClickListener(view -> { endScan(); choose(""); });
-        column.addView(back, below(22));
+        // four corners that mark where the code should be
+        FrameLayout aim = new FrameLayout(this);
+        int[] gravities = { Gravity.TOP | Gravity.START, Gravity.TOP | Gravity.END, Gravity.BOTTOM | Gravity.START, Gravity.BOTTOM | Gravity.END };
+        for (int gravity : gravities) for (int part = 0; part < 2; part++) {
+            View bar = new View(this);
+            bar.setBackground(shape(ACCENT, 0, 2));
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(part == 0 ? dp(34) : dp(4), part == 0 ? dp(4) : dp(34), gravity);
+            params.setMargins(dp(40), dp(40), dp(40), dp(40));
+            aim.addView(bar, params);
+        }
+        column.addView(button("取消", 1, () -> { endScan(); home(""); }), below(24));
         column.addView(text("画面只在手机上用来找二维码，不保存也不上传。", 12.5f, MUTED), below(14));
-        root.addView(column, new FrameLayout.LayoutParams(-1, -1));
+        show(column, "scan");
         scanner = new Scanner(this, frame, value -> {
             scanner = null;
-            if (!link(Uri.parse(value))) choose("这不是 Remote CLI 的二维码。请扫电脑上 Remote CLI 窗口里的那一个。");
-        }, problem -> { scanner = null; choose(problem + "。可以手动输入地址和密码。"); });
-        frame.post(() -> { if (scanner != null) scanner.start(); });
+            if (!link(Uri.parse(value))) home("这不是 Remote CLI 的二维码。请扫电脑上 Remote CLI 窗口里的那一个。");
+        }, problem -> { scanner = null; add(problem + "。可以手动输入地址和密码。"); });
+        frame.post(() -> { if (scanner != null) { scanner.start(); frame.addView(aim, new FrameLayout.LayoutParams(-1, -1)); } });
     }
     private void endScan() { if (scanner != null) { scanner.stop(); scanner = null; } }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
         if (request != CAMERA) return;
         if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) scan();
-        else if (message != null) message.setText("没有相机权限，不能扫码。可以在系统设置里允许，或手动输入地址和密码。");
-    }
-
-    private void connect() {
-        String address = clean(addressBox.getText().toString());
-        if (address.isEmpty()) { message.setText("地址无效。例如 192.168.1.5:8722，或 https:// 开头的地址。"); return; }
-        open(address, passwordBox.getText().toString().trim());
+        else add("没有相机权限，不能扫码。可以在系统设置里允许，或在这里手动输入");
     }
 
     /** Shows the pages of the computer at this address; a password signs in first. */
     private void open(String address, String password) {
-        server = address;
+        ticker.removeCallbacks(look);
         prefs.edit().putString("server", address).apply();
         if (web != null) { root.removeView(web); web.destroy(); }
         root.removeAllViews();
+        screen = "web";
         web = new WebView(this);
         web.setBackgroundColor(BG);
         bars(BG);
@@ -239,7 +456,7 @@ public final class MainActivity extends Activity {
                 return !request.getUrl().toString().startsWith(origin + "/");       // the pages of this computer only
             }
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                if (request.isForMainFrame() && view == web) root.post(() -> choose("连不上 " + origin + "。请确认电脑上的 Remote CLI 在运行；局域网直连时手机要连同一个 Wi-Fi。公网隧道的地址每次启动都会变，需要重新扫码。"));
+                if (request.isForMainFrame() && view == web) root.post(() -> home("连不上 " + host(origin) + "。请确认电脑上的 Remote CLI 在运行；局域网直连时手机要连同一个 Wi-Fi。公网隧道的地址每次启动都会变，需要重新扫码。"));
             }
         });
         root.addView(web, new FrameLayout.LayoutParams(-1, -1));
@@ -253,10 +470,10 @@ public final class MainActivity extends Activity {
         @JavascriptInterface public void chrome(String color) {
             if (color == null || !color.matches("#[0-9a-fA-F]{6}")) return;
             final int shade = Color.parseColor(color);
-            runOnUiThread(() -> { bars(shade); if (web != null) web.setBackgroundColor(shade); });
+            runOnUiThread(() -> { if (web == null) return; bars(shade); web.setBackgroundColor(shade); });
         }
-        /** Back to the screen for choosing a computer. */
-        @JavascriptInterface public void disconnect() { runOnUiThread(() -> choose("")); }
+        /** Back to the list of computers. */
+        @JavascriptInterface public void disconnect() { runOnUiThread(() -> home("")); }
     }
 
     private void dictate() {
@@ -276,10 +493,14 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        if (scanner != null) { endScan(); choose(""); return; }
-        if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed();
+        if (scanner != null) { endScan(); home(""); return; }
+        if ("add".equals(screen)) { home(""); return; }
+        if (web != null && web.canGoBack()) { web.goBack(); return; }
+        // From a computer's first page, back leads to the list when there is more than one to choose from.
+        if (web != null && computers().length() > 1) { home(""); return; }
+        super.onBackPressed();
     }
-    @Override protected void onPause() { super.onPause(); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); choose(""); } }
-    @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); if (updater != null) updater.checkIfDue(); }
-    @Override protected void onDestroy() { if (updater != null) updater.stop(); if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
+    @Override protected void onPause() { super.onPause(); ticker.removeCallbacks(look); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); home(""); } }
+    @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); if ("home".equals(screen)) lookAtAll(); if (updater != null) updater.checkIfDue(); }
+    @Override protected void onDestroy() { ticker.removeCallbacks(look); net.shutdownNow(); if (updater != null) updater.stop(); if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
 }

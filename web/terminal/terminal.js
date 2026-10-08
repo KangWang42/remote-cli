@@ -96,11 +96,22 @@
 
   function follow() {
     const buffer = term.buffer.active;
-    const atBottom = buffer.viewportY >= buffer.baseY;
+    const atBottom = buffer.viewportY >= buffer.baseY && remoteUp <= 0;
     if (latest.hidden !== atBottom) latest.hidden = atBottom;
   }
   term.onScroll(follow);
-  latest.addEventListener('click', () => { scroller.stop(); term.scrollToBottom(); follow(); });
+  // Claude Code and Codex scroll their own screen. How far up the wheel has taken them is counted here, so that
+  // "back to the newest" can take them down again; a few steps too many do no harm.
+  let remoteUp = 0;
+  latest.addEventListener('click', () => {
+    scroller.stop();
+    if (remoteUp > 0 && term.modes.mouseTrackingMode !== 'none') {
+      const column = Math.max(1, Math.floor(term.cols / 2)), row = Math.max(1, Math.floor(term.rows / 2));
+      send(`\x1b[<65;${column};${row}M`.repeat(Math.min(600, remoteUp + 12)));
+    }
+    remoteUp = 0;
+    term.scrollToBottom(); follow();
+  });
   term.onData(data => { if (!restoring) send(data); });
 
   // Dragging a finger over the screen scrolls it. Claude Code and Codex draw a full screen of their own and keep the
@@ -116,7 +127,9 @@
     scroll(lines, mode) {
       if (mode === 'mouse') {
         const column = Math.max(1, Math.floor(term.cols / 2)), row = Math.max(1, Math.floor(term.rows / 2));
-        return send(`\x1b[<${lines > 0 ? 64 : 65};${column};${row}M`.repeat(Math.abs(lines)));
+        const sent = send(`\x1b[<${lines > 0 ? 64 : 65};${column};${row}M`.repeat(Math.abs(lines)));
+        if (sent) { remoteUp = Math.max(0, remoteUp + lines); follow(); }
+        return sent;
       }
       if (mode === 'page') {
         pageLines += lines;
@@ -200,7 +213,7 @@
     const text = input.value;
     if (!text) { send('\r'); return; }
     if (!text.trim()) return;
-    if (send(paste(text) + '\r')) { input.value = ''; paletteOpen = false; grow(); drawPalette(); term.scrollToBottom(); }
+    if (send(paste(text) + '\r')) { input.value = ''; paletteOpen = false; grow(); drawPalette(); remoteUp = 0; term.scrollToBottom(); follow(); }
   });
   $('font').addEventListener('click', () => {
     fontSize = sizes[(sizes.indexOf(fontSize) + 1) % sizes.length];

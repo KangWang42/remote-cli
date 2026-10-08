@@ -99,8 +99,53 @@ def _view(now):
     return {**_device, "online": now - _device["seen"] < 15}
 
 
+# What a terminal is doing, for the lists on the phone:
+#   starting  not running yet            busy     the program is working
+#   confirm   it asks a yes/no question   idle     it waits for the next message ("done": it worked before)
+#   ended     it has ended                failed   it ended with an error code
+_ESCAPES = re.compile(r"\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f]")
+# Questions the tools draw when they need a decision, compared without spaces and in lower case.
+_ASKS = ("doyouwantto", "wouldyouliketo", "1.yes", "allowcommand", "yes,proceed", "approve?", "[y/n]", "(y/n)", "[y]yes", "[y]是", "presstoconfirm", "enter确认")
+QUIET_SECONDS, ACTIVE_SECONDS = 1.5, 4
+
+
+def _asks(term):
+    text, size = [], 0
+    for chunk in reversed(term.get("output", [])):
+        text.append(chunk["data"])
+        size += len(chunk["data"])
+        if size >= 6000:
+            break
+    tail = "".join(_ESCAPES.sub("", "".join(reversed(text))).split()).lower()[-900:]
+    return any(ask in tail for ask in _ASKS)
+
+
+def _phase(term, now):
+    if term["state"] == "starting":
+        return "starting"
+    if term["state"] != "running":
+        return "failed" if term.get("exit_code") not in (None, 0) else "ended"
+    quiet = now - term.get("out_at", 0)
+    # Claude Code says itself whether it is working; for the others, fresh output means work.
+    working = term.get("status") == "busy" if term.get("status") else quiet < ACTIVE_SECONDS
+    if quiet >= QUIET_SECONDS and (working or not term.get("status")) and _asks(term):
+        return "confirm"
+    return "busy" if working else "idle"
+
+
+def _track(term, now):
+    """Keeps the phase of a terminal up to date; returns whether it changed."""
+    phase = _phase(term, now)
+    if phase == term.get("phase"):
+        return False
+    if phase == "idle":
+        term["done"] = term.get("phase") in ("busy", "confirm")      # it finished something, as opposed to never having started
+    term["phase"], term["phase_at"] = phase, int(now * 1000)
+    return True
+
+
 def _public(term):
-    shown = {k: v for k, v in term.items() if k not in ("output", "instance", "size")}
+    shown = {k: v for k, v in term.items() if k not in ("output", "instance", "size", "out_at")}
     # Until the owner names a terminal, it carries the name of the conversation it has open.
     if not term.get("renamed"):
         shown["title"] = next((s["title"] for s in _sessions if s["id"] == term.get("session")), term["title"])
@@ -405,10 +450,14 @@ def agent(path, payload, now=None):
                 continue
             term["output"].append({"seq": seq, "data": data})
             term["seq"] = seq
+            term["out_at"] = now
             term["size"] = term.get("size", 0) + len(data)
             _trim(term)
             wrote = True
             _unsaved.setdefault(path, now)
+        for term in state["threads"].values():
+            if term.get("instance") == instance and _track(term, now):
+                dirty = True
         # States are written at once. Output alone is written every few seconds: a busy screen reports many times a second.
         if dirty or (path in _unsaved and now - _unsaved[path] >= SAVE_SECONDS):
             _save(path, state)

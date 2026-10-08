@@ -1,14 +1,46 @@
-/* The list: projects on the computer, terminals opened from the phone, and the conversations saved there. */
+/* The list pages: every project at a glance (what is running and what needs you), and one project in detail. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
   const TOOLS = { claude: 'Claude Code', codex: 'Codex', shell: 'PowerShell' };
+  const ABOUT = { claude: 'Anthropic', codex: 'OpenAI', shell: '命令行' };
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
-  let data = null, project = '', timer = 0, busy = false;
   const saved = (key, fallback) => { try { return localStorage.getItem('rcli-' + key) || fallback; } catch (error) { return fallback; } };
   const keep = (key, value) => { try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ } };
-  project = saved('project', '');
-  // The look chosen here is the one the terminal page opens with.
+  const native = window.RemoteCliNative || null;
+  let data = null, project = '', timer = 0, busy = false, shown = 12, toastTimer = 0;
+
+  // ---- drawing helpers
+  const svg = (path, size) => `<svg viewBox="0 0 24 24" width="${size || 22}" height="${size || 22}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+  const ICON = {
+    back: svg('<path d="M15 5l-7 7 7 7"/>'), more: svg('<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>'),
+    look: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17M12 7.5a4.5 4.5 0 0 1 0 9" /><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none" opacity=".35"/>'),
+    chev: svg('<path d="M9 6l6 6-6 6"/>', 18), stop: svg('<rect x="7" y="7" width="10" height="10" rx="2"/>', 20), plus: svg('<path d="M12 5v14M5 12h14"/>', 20),
+    folder: svg('<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'),
+    claude: svg('<path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6L6 18"/>'), codex: svg('<path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"/><path d="M9 10l-2 2 2 2M15 10l2 2-2 2"/>'),
+    shell: svg('<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7.5 10l3 2.2-3 2.2M12.5 15h4"/>'), mark: svg('<path d="M7 8l5 4-5 4M13.5 16.5h4.5"/>', 30)
+  };
+  function el(tag, props, ...children) {
+    const node = document.createElement(tag);
+    Object.keys(props || {}).forEach(key => {
+      if (key === 'html') node.innerHTML = props[key];
+      else if (key in node) node[key] = props[key]; else node.setAttribute(key, props[key]);
+    });
+    node.append(...children.filter(Boolean));
+    return node;
+  }
+  function ago(ms) {
+    const s = Math.max(0, (Date.now() - ms) / 1000);
+    return s < 90 ? '刚刚' : s < 3600 ? Math.round(s / 60) + ' 分钟前' : s < 86400 ? Math.round(s / 3600) + ' 小时前' : Math.round(s / 86400) + ' 天前';
+  }
+  function toast(text) {
+    const box = $('toast');
+    if (!text) { box.hidden = true; return; }
+    box.textContent = text; box.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { box.hidden = true; }, 3200);
+  }
+
+  // ---- look: the skin chosen here is the one the terminal page opens with
   const TEXT = { small: ['紧凑', '14px'], normal: ['标准', '15.5px'], large: ['大', '17px'], larger: ['特大', '19px'] };
   // ?skin=<name> chooses a skin from a link, for example when showing the app to someone.
   const asked = new URLSearchParams(location.search).get('skin');
@@ -18,9 +50,11 @@
     document.documentElement.style.fontSize = (TEXT[saved('text', 'normal')] || TEXT.normal)[1];
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.content = skin.t.background;
-    if (window.RemoteCliNative) window.RemoteCliNative.chrome(skin.t.background);
+    if (native) native.chrome(skin.t.background);
   }
   paint();
+  $('back').innerHTML = ICON.back; $('look').innerHTML = ICON.look; $('more').innerHTML = ICON.more;
+  document.querySelector('.mark').innerHTML = ICON.mark;
 
   async function api(path, payload) {
     const reply = await fetch(path, payload === undefined ? { credentials: 'same-origin' }
@@ -31,16 +65,64 @@
     if (!reply.ok) throw new Error(body.error || '请求失败（' + reply.status + '）');
     return body;
   }
-  function say(text) { $('message').textContent = text || ''; }
-  function el(tag, props, ...children) {
-    const node = Object.assign(document.createElement(tag), props || {});
-    node.append(...children.filter(Boolean));
-    return node;
+
+  // ---- sheets from the bottom
+  function openSheet(build) {
+    return new Promise(done => {
+      const form = $('sheet-form'), sheet = $('sheet');
+      form.textContent = '';
+      let answer = null;
+      build(form, value => { answer = value; sheet.close(); });
+      form.append(el('button', { type: 'button', className: 'cancel', textContent: '取消', onclick: () => sheet.close() }));
+      sheet.onclose = () => done(answer);
+      sheet.onclick = event => { if (event.target === sheet) sheet.close(); };       // a tap beside the sheet
+      sheet.showModal();
+    });
   }
-  function ago(ms) {
-    const s = Math.max(0, (Date.now() - ms) / 1000);
-    return s < 90 ? '刚刚' : s < 3600 ? Math.round(s / 60) + ' 分钟前' : s < 86400 ? Math.round(s / 3600) + ' 小时前' : Math.round(s / 86400) + ' 天前';
+  // A question with a few answers, optionally with fields to fill in; resolves with the answer, or null when dismissed.
+  function ask(title, text, choices, fields) {
+    return openSheet((form, finish) => {
+      form.append(el('h3', { textContent: title }), text ? el('p', { textContent: text }) : '');
+      const inputs = {};
+      (fields || []).forEach(f => {
+        inputs[f.key] = el('input', { id: 'field-' + f.key, value: f.value || '', placeholder: f.placeholder || '', maxLength: f.max || 240, autocapitalize: 'off', spellcheck: false });
+        form.append(el('label', { htmlFor: 'field-' + f.key, textContent: f.label }), inputs[f.key]);
+      });
+      choices.forEach(c => form.append(el('button', { type: 'button', className: 'choice ' + (c.kind || ''), onclick: () =>
+        finish(fields ? Object.assign({ choice: c.value }, ...Object.keys(inputs).map(k => ({ [k]: inputs[k].value.trim() }))) : c.value) },
+        el('span', null, c.label, c.sub ? el('small', { textContent: c.sub }) : ''))));
+    });
   }
+  $('look').addEventListener('click', () => openSheet(form => {
+    const skins = window.RemoteCliSkins;
+    form.append(el('h3', { textContent: '外观' }), el('p', { textContent: '配色同时用于列表和终端。' }));
+    const grid = el('div', { className: 'swatches' }), sizes = el('div', { className: 'sizes' });
+    const mark = () => {
+      grid.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.key === saved('skin', 'night'))));
+      sizes.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.key === saved('text', 'normal'))));
+    };
+    Object.keys(skins).forEach(key => {
+      const s = skins[key];
+      const preview = el('i', { style: 'background:' + s.t.background }); preview.style.background = s.t.background;
+      [[s.t.foreground, 22], [s.accent, 30], [s.t.green, 16], [s.t.yellow, 24], [s.t.red, 12]].forEach(([colour, height]) => { const bar = el('span'); bar.style.background = colour; bar.style.height = height + 'px'; preview.append(bar); });
+      const button = el('button', { type: 'button', onclick: () => { keep('skin', key); paint(); mark(); } }, preview, s.name + (s.light ? ' · 明亮' : ''));
+      button.dataset.key = key; grid.append(button);
+    });
+    Object.keys(TEXT).forEach(key => { const button = el('button', { type: 'button', textContent: TEXT[key][0], onclick: () => { keep('text', key); paint(); mark(); } }); button.dataset.key = key; sizes.append(button); });
+    form.append(grid, el('label', { textContent: '文字大小' }), sizes);
+    mark();
+  }));
+  $('more').addEventListener('click', async () => {
+    const ready = data && data.device.online && data.device.enabled;
+    const choices = [];
+    if (ready) choices.push({ label: '添加项目', sub: '把电脑上的一个文件夹加进来', value: 'add' });
+    if (native) choices.push({ label: '换一台电脑', sub: '回到电脑列表，这台电脑保留在列表里', value: 'switch' });
+    choices.push({ label: '退出登录', sub: '下次需要重新扫码或输入密码', value: 'out', kind: 'danger' });
+    const choice = await ask('更多', '', choices);
+    if (choice === 'add') addProject();
+    else if (choice === 'switch') native.disconnect();
+    else if (choice === 'out') { try { await api('/api/logout', {}); } catch (error) { /* signed out anyway */ } if (native) native.disconnect(); else showLogin(); }
+  });
 
   function showLogin() {
     clearTimeout(timer);
@@ -57,44 +139,23 @@
       refresh();
     } catch (error) { $('login-error').textContent = error.message; }
   });
-  $('look').addEventListener('click', async () => {
-    const skins = window.RemoteCliSkins, now = saved('skin', 'night'), size = saved('text', 'normal');
-    const choice = await ask('外观', '配色同时用于列表和终端。',
-      Object.keys(skins).map(key => ({ label: (key === now ? '● ' : '') + skins[key].name + (skins[key].light ? '（明亮）' : ''), value: 'skin:' + key }))
-        .concat(Object.keys(TEXT).map(key => ({ label: (key === size ? '● ' : '') + '文字 ' + TEXT[key][0], value: 'text:' + key }))));
-    if (!choice) return;
-    const [kind, value] = choice.split(':');
-    keep(kind, value);
-    paint();
-  });
-  $('logout').addEventListener('click', async () => { try { await api('/api/logout', {}); } catch (error) { /* signed out anyway */ } showLogin(); });
 
-  // A sheet with a few choices; resolves with the chosen value, or null when dismissed.
-  function ask(title, text, choices, fields) {
-    return new Promise(done => {
-      const form = $('sheet-form'), sheet = $('sheet');
-      form.textContent = '';
-      form.append(el('h3', { textContent: title }), text ? el('p', { textContent: text }) : '');
-      const inputs = {};
-      (fields || []).forEach(f => {
-        inputs[f.key] = el('input', { id: 'field-' + f.key, value: f.value || '', placeholder: f.placeholder || '', maxLength: f.max || 240 });
-        form.append(el('label', { htmlFor: 'field-' + f.key, textContent: f.label }), inputs[f.key]);
-      });
-      let answer = null;
-      choices.forEach(c => form.append(el('button', { type: 'button', className: c.kind || '', textContent: c.label, onclick: () => {
-        answer = fields ? Object.assign({ choice: c.value }, ...Object.keys(inputs).map(k => ({ [k]: inputs[k].value.trim() }))) : c.value;
-        sheet.close();
-      } })));
-      form.append(el('button', { type: 'button', className: 'quiet', textContent: '取消', onclick: () => sheet.close() }));
-      sheet.onclose = () => done(answer);
-      sheet.showModal();
-    });
+  // ---- what a task is doing
+  // A terminal you have looked at since it finished is "waiting"; one you have not is "done".
+  function seen() { try { return JSON.parse(saved('seen', '{}')) || {}; } catch (error) { return {}; } }
+  function phaseOf(t) {
+    const phase = t.phase || (t.state === 'starting' ? 'starting' : t.state !== 'running' ? 'ended' : t.status === 'busy' ? 'busy' : 'idle');
+    if (phase === 'idle' && t.done && seen()[t.id] !== t.phase_at) return 'done';
+    return phase;
   }
+  const PHASE = { confirm: ['等你确认', 0], done: ['已完成', 1], busy: ['正在执行', 2], starting: ['正在启动', 3], idle: ['等待输入', 4], ended: ['已结束', 8], failed: ['异常退出', 7] };
+  const running = t => t.state === 'running' || t.state === 'starting';
+  const usable = () => data && data.device.online && data.device.enabled;
 
   // Sends one operation and waits until the computer has carried it out.
   async function run(payload, waiting) {
     if (busy) return null;
-    busy = true; say(waiting);
+    busy = true; toast(waiting);
     try {
       const op = Object.assign({ id: newId() }, payload);
       let result = await api('/api/terminal', op);
@@ -104,104 +165,168 @@
       }
       if (result.error) throw new Error(result.error);
       if (result.state === 'queued') throw new Error('电脑没有响应，请确认电脑端程序在运行');
-      say('');
+      toast('');
       return result;
-    } catch (error) { say(error.message); return null; } finally { busy = false; }
+    } catch (error) { toast(error.message); return null; } finally { busy = false; }
   }
   function open(terminal) { location.href = 'terminal/?id=' + encodeURIComponent(terminal); }
-  async function start(tool, session, takeover, fork) {
-    const payload = { action: 'start', tool, dir: project };
+  async function start(tool, dir, session, takeover, fork) {
+    const payload = { action: 'start', tool, dir };
     if (session) Object.assign(payload, { session, takeover: !!takeover });
     if (fork) payload.fork = true;
     const result = await run(payload, '正在电脑上启动 ' + TOOLS[tool] + '…');
     if (result) open(result.terminal);
   }
-
-  function draw() {
-    const device = data.device, ready = device.online && device.enabled;
-    $('dot').className = ready ? 'on' : '';
-    $('device-text').textContent = !device.online ? '电脑离线：请确认电脑端程序在运行' : !device.enabled ? '电脑端已关闭远程访问' : '电脑在线';
-    const names = device.workspaces || [];
-    if (!names.includes(project)) project = names[0] || '';
-    const bar = $('projects');
-    bar.textContent = '';
-    names.forEach(name => bar.append(el('button', { type: 'button', textContent: name, ariaPressed: String(name === project), onclick: () => {
-      project = name;
-      keep('project', name);
-      draw();
-    } })));
-    bar.append(el('button', { type: 'button', className: 'quiet', textContent: '＋ 项目', disabled: !ready, onclick: addProject }));
-
-    const launch = $('launch');
-    launch.textContent = '';
-    const folder = (device.projects || []).find(p => p.name === project);
-    if (project) {
-      Object.keys(TOOLS).filter(t => (device.tools || []).includes(t)).forEach((tool, i) => launch.append(
-        el('button', { type: 'button', className: i ? '' : 'solid', textContent: '新建 ' + TOOLS[tool], disabled: !ready, onclick: () => start(tool) })));
-      if (folder) launch.append(el('small', { textContent: folder.path }));
-      if (ready && !(device.tools || []).length) launch.append(el('small', { textContent: '电脑上没有找到 claude、codex 或 PowerShell。' }));
-    } else if (ready) launch.append(el('small', { textContent: '还没有项目。点“＋ 项目”添加电脑上的一个文件夹。' }));
-
-    const mine = (data.terminals || []).filter(t => t.dir === project && (t.state === 'running' || t.state === 'starting'));
-    const sessions = (data.sessions || []).filter(s => s.dir === project && !s.terminal);
-    const live = sessions.filter(s => s.live), saved = sessions.filter(s => !s.live).sort((a, b) => b.updated - a.updated).slice(0, 40);
-    fill('phone', mine, t => [t.title, TOOLS[t.tool] + ' · ' + (t.state === 'starting' ? '正在启动' : t.status === 'busy' ? '正在执行' : '等待输入'), t.status === 'busy'],
-      t => open(t.id), t => ({ label: '结束', act: async () => { if (await ask('结束这个终端？', '对话会保存在电脑上，可以从历史对话继续。', [{ label: '结束', value: true, kind: 'danger' }])) { await run({ action: 'close', terminal: t.id }, '正在结束…'); refresh(); } } }));
-    fill('live', live, s => [s.title, TOOLS[s.tool] + ' · ' + (s.status === 'busy' ? '正在执行' : '电脑上打开着') + ' · ' + ago(s.updated), s.status === 'busy'], takeOver);
-    fill('history', saved, s => [s.title, TOOLS[s.tool] + ' · ' + ago(s.updated), false], s => ready && start(s.tool, s.id, false));
-    $('empty').hidden = !project || mine.length + live.length + saved.length > 0;
-  }
-  function fill(id, items, describe, act, extra) {
-    const section = $(id), list = section.querySelector('ul');
-    section.hidden = !items.length;
-    list.textContent = '';
-    items.forEach(item => {
-      const [title, about, working] = describe(item);
-      const row = el('li', null, el('button', { type: 'button', className: 'open', onclick: () => act(item) },
-        el('b', { textContent: title }), el('small', { className: working ? 'busy' : '', textContent: about })));
-      if (extra) { const more = extra(item); row.append(el('button', { type: 'button', className: 'end', textContent: more.label, onclick: more.act })); }
-      list.append(row);
-    });
+  async function endTerminal(t) {
+    if (!await ask('结束“' + t.title + '”？', '正在运行的任务会被中断。对话保存在电脑上，可以从历史对话继续。', [{ label: '结束终端', value: true, kind: 'danger' }])) return;
+    await run({ action: 'close', terminal: t.id }, '正在结束…');
+    refresh();
   }
   async function takeOver(session) {
-    if (!(data.device.online && data.device.enabled)) return;
+    if (!usable()) return;
     if (session.tool === 'codex') {
-      if (!(data.device.features || []).includes('codex-fork')) { say('请更新电脑端程序，再使用 Codex 副本和接手功能'); return; }
+      if (!(data.device.features || []).includes('codex-fork')) { toast('请更新电脑端程序，再使用 Codex 副本和接手功能'); return; }
       const choices = session.can_takeover
-        ? [{ label: '接手，并结束电脑上的 CLI 会话', value: 'close', kind: 'solid' }, { label: '在手机新开副本，保留电脑会话', value: 'copy' }]
-        : [{ label: '在手机新开副本，保留电脑会话', value: 'copy', kind: 'solid' }];
+        ? [{ label: '接手，并结束电脑上的 CLI 会话', value: 'close', kind: 'solid' }, { label: '在手机新开副本', sub: '保留电脑上的会话，两边之后各自继续', value: 'copy' }]
+        : [{ label: '在手机新开副本', value: 'copy', kind: 'solid' }];
       const choice = await ask('打开 Codex 对话', (session.takeover_reason || '请先在电脑结束会话，或新开副本。') + ' 副本保留之前的对话，电脑和手机之后各自继续。', choices);
-      if (choice) start(session.tool, session.id, choice === 'close', choice === 'copy');
+      if (choice) start(session.tool, session.dir, session.id, choice === 'close', choice === 'copy');
       return;
     }
-    const choices = session.tool === 'claude'
-      ? [{ label: '接手，并关闭电脑上的窗口', value: 'close', kind: 'solid' }, { label: '只在手机上打开', value: 'keep' }]
-      : [{ label: '在手机上打开', value: 'keep', kind: 'solid' }];
-    const choice = await ask('接手这个对话', session.tool === 'claude'
-      ? '同一个对话同时在电脑和手机上输入会互相覆盖，建议关闭电脑上的窗口。'
-      : '电脑上的 Codex 窗口不会被关闭；请不要两边同时输入。', choices);
-    if (choice) start(session.tool, session.id, choice === 'close');
+    const choice = await ask('接手这个对话', '同一个对话同时在电脑和手机上输入会互相覆盖，建议关闭电脑上的窗口。',
+      [{ label: '接手，并关闭电脑上的窗口', value: 'close', kind: 'solid' }, { label: '只在手机上打开', sub: '电脑上的窗口保留，请不要两边同时输入', value: 'keep' }]);
+    if (choice) start(session.tool, session.dir, session.id, choice === 'close');
   }
   async function addProject() {
-    const candidates = (data.device.candidates || []).slice(0, 4).map(c => ({ label: '添加 ' + c.path, value: c.path }));
+    const candidates = (data.device.candidates || []).slice(0, 4).map(c => ({ label: '添加 ' + c.name, sub: c.path, value: c.path }));
     const answer = await ask('添加项目', '填写电脑上的完整文件夹路径；下面是电脑上有对话记录的文件夹。',
       [{ label: '添加填写的路径', value: '', kind: 'solid' }].concat(candidates),
       [{ key: 'path', label: '文件夹路径', placeholder: 'D:\\projects\\demo' }, { key: 'name', label: '名称（可不填）', max: 40 }]);
     if (!answer) return;
     const path = answer.choice || answer.path;
-    if (!path) { say('请填写文件夹路径'); return; }
+    if (!path) { toast('请填写文件夹路径'); return; }
     if (await run({ action: 'project_add', path, name: answer.choice ? '' : answer.name, create: false }, '正在添加…')) refresh();
   }
 
+  // ---- cards
+  function pill(kind, text) { return el('span', { className: 'pill ' + kind, textContent: text }); }
+  // A terminal opened from the phone.
+  function terminalCard(t, withProject) {
+    const phase = phaseOf(t), meta = el('span', { className: 'meta' }, pill(phase, PHASE[phase][0]));
+    if (withProject) meta.append(el('span', { className: 'chip', textContent: t.dir }));
+    meta.append(el('span', { textContent: TOOLS[t.tool] + (t.phase_at ? ' · ' + ago(t.phase_at) : '') }));
+    const card = el('li', { className: 'card ' + phase }, el('button', { type: 'button', className: 'open', onclick: () => open(t.id) },
+      el('span', { className: 'tool ' + t.tool, html: ICON[t.tool] }), el('span', { className: 'text' }, el('b', { textContent: t.title }), meta)));
+    if (running(t)) card.append(el('button', { type: 'button', className: 'side', ariaLabel: '结束这个终端', html: ICON.stop, onclick: () => endTerminal(t) }));
+    return card;
+  }
+  // A conversation saved on the computer; `live` ones are open in a program there.
+  function sessionCard(s, withProject) {
+    const meta = el('span', { className: 'meta' });
+    if (s.live) meta.append(pill(s.status === 'busy' ? 'busy' : 'pc', s.status === 'busy' ? '电脑上执行中' : '电脑上打开着'));
+    if (withProject) meta.append(el('span', { className: 'chip', textContent: s.dir }));
+    meta.append(el('span', { textContent: TOOLS[s.tool] + ' · ' + ago(s.updated) }));
+    return el('li', { className: 'card' }, el('button', { type: 'button', className: 'open', onclick: () => { if (!usable()) return toast('电脑离线，暂时打不开'); if (s.live) takeOver(s); else start(s.tool, s.dir, s.id, false); } },
+      el('span', { className: 'tool ' + s.tool, html: ICON[s.tool] }), el('span', { className: 'text' }, el('b', { textContent: s.title }), meta), el('span', { className: 'chev', html: ICON.chev })));
+  }
+  // Lists are rebuilt only when what they show has changed, so a press or a scroll is not interrupted every few seconds.
+  function fill(list, cards, signature) {
+    if (list.dataset.signature === signature) return;
+    list.dataset.signature = signature;
+    list.replaceChildren(...cards);
+  }
+  const stamp = minutes => Math.floor(Date.now() / (minutes * 60000));
+
+  function draw() {
+    const device = data.device, ready = usable(), names = device.workspaces || [];
+    $('loading').hidden = true;
+    $('dot').className = ready ? 'on' : 'off';
+    const offline = $('offline');
+    offline.hidden = ready;
+    if (!ready) offline.replaceChildren(el('b', { textContent: device.online ? '电脑端暂停了手机访问' : '电脑离线' }),
+      el('span', { textContent: device.online ? '在电脑上的 Remote CLI“设置”里打开“允许手机访问”。' : '请确认电脑开着、Remote CLI 在运行。用公网隧道时地址每次启动都会变，需要重新扫码。' }));
+    if (project && !names.includes(project)) { project = ''; }
+    const terminals = data.terminals || [], sessions = (data.sessions || []).filter(s => !s.terminal);
+    const mine = terminals.filter(running).map(t => Object.assign({ rank: PHASE[phaseOf(t)][1], at: t.phase_at || t.created }, t));
+    const live = sessions.filter(s => s.live);
+    $('overview').hidden = !!project; $('project').hidden = !project; $('back').hidden = !project;
+    $('heading').textContent = project || 'Remote CLI';
+    const waiting = mine.filter(t => phaseOf(t) === 'confirm').length, done = mine.filter(t => phaseOf(t) === 'done').length, working = mine.filter(t => phaseOf(t) === 'busy').length;
+    $('device-text').textContent = !ready ? (device.online ? '已暂停访问' : '电脑离线')
+      : project ? '电脑在线' : waiting ? waiting + ' 个任务等你确认' : done ? done + ' 个任务已完成' : working ? working + ' 个任务在执行' : '电脑在线';
+
+    if (!project) {
+      const order = mine.slice().sort((a, b) => a.rank - b.rank || b.at - a.at);
+      const cards = order.map(t => terminalCard(t, true)).concat(live.sort((a, b) => b.updated - a.updated).map(s => sessionCard(s, true)));
+      $('active').hidden = !cards.length;
+      fill($('active-list'), cards, JSON.stringify([order.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), live.map(s => [s.id, s.status, s.title]), stamp(1), ready]));
+      const parts = [];
+      if (waiting) parts.push(waiting + ' 个等你确认'); if (done) parts.push(done + ' 个已完成'); if (working) parts.push(working + ' 个在执行');
+      $('active-summary').textContent = parts.join(' · ') || (cards.length + ' 个打开着');
+      const list = names.map(name => {
+        const folder = (device.projects || []).find(p => p.name === name) || {};
+        const own = mine.filter(t => t.dir === name), count = sessions.filter(s => s.dir === name).length;
+        const need = own.filter(t => ['confirm', 'done'].includes(phaseOf(t))).length, work = own.filter(t => phaseOf(t) === 'busy').length;
+        const meta = el('span', { className: 'meta' });
+        if (need) { const c = el('span', { className: 'count', textContent: need + ' 个等你处理' }); c.prepend(el('i')); c.style.setProperty('--c', 'var(--bad)'); c.style.color = 'var(--bad)'; meta.append(c); }
+        if (work) { const c = el('span', { className: 'count', textContent: work + ' 个在执行' }); c.prepend(el('i')); c.style.setProperty('--c', 'var(--busy)'); c.style.color = 'var(--busy)'; meta.append(c); }
+        if (own.length && !need && !work) meta.append(el('span', { textContent: own.length + ' 个终端开着' }));
+        meta.append(el('span', { textContent: count ? count + ' 段对话' : '还没有对话' }));
+        return { name, card: el('li', { className: 'card' }, el('button', { type: 'button', className: 'open', onclick: () => enter(name) },
+          el('span', { className: 'tool folder', html: ICON.folder }), el('span', { className: 'text' }, el('b', { textContent: name }), meta), el('span', { className: 'chev', html: ICON.chev }))), sign: [name, need, work, own.length, count, folder.path] };
+      });
+      const cardsP = list.map(x => x.card);
+      if (ready) cardsP.push(el('li', { className: 'card add' }, el('button', { type: 'button', className: 'open', onclick: addProject, html: ICON.plus + '<span>添加项目</span>' })));
+      fill($('project-list'), cardsP, JSON.stringify([list.map(x => x.sign), ready]));
+      $('project-summary').textContent = names.length ? names.length + ' 个' : '还没有项目';
+      return;
+    }
+
+    const folder = (device.projects || []).find(p => p.name === project);
+    $('project-path').textContent = folder ? folder.path : '';
+    const tools = Object.keys(TOOLS).filter(t => (device.tools || []).includes(t));
+    const launch = $('launch');
+    if (launch.dataset.signature !== tools.join() + ready) {
+      launch.dataset.signature = tools.join() + ready;
+      launch.replaceChildren(...tools.map(tool => el('button', { type: 'button', disabled: !ready, onclick: () => start(tool, project) },
+        el('span', { className: 'tool ' + tool, html: ICON[tool] }), el('span', null, '新建 ' + TOOLS[tool], el('small', { textContent: ABOUT[tool] })))));
+      if (ready && !tools.length) launch.append(el('p', { textContent: '电脑上没有找到 claude、codex 或 PowerShell。' }));
+    }
+    const own = mine.filter(t => t.dir === project).sort((a, b) => a.rank - b.rank || b.at - a.at);
+    $('p-active').hidden = !own.length;
+    fill($('p-active').querySelector('ul'), own.map(t => terminalCard(t, false)), JSON.stringify([own.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), stamp(1)]));
+    const here = sessions.filter(s => s.dir === project), open2 = here.filter(s => s.live);
+    $('p-live').hidden = !open2.length;
+    fill($('p-live').querySelector('ul'), open2.map(s => sessionCard(s, false)), JSON.stringify([open2.map(s => [s.id, s.status, s.title]), stamp(1)]));
+    const all = here.filter(s => !s.live).sort((a, b) => b.updated - a.updated), wanted = $('search').value.trim().toLowerCase();
+    const found = wanted ? all.filter(s => s.title.toLowerCase().includes(wanted)) : all;
+    $('p-history').hidden = !all.length;
+    $('search').hidden = all.length <= 8;
+    $('history-count').textContent = wanted ? found.length + ' / ' + all.length + ' 段' : all.length + ' 段';
+    fill($('p-history').querySelector('ul'), found.slice(0, shown).map(s => sessionCard(s, false)), JSON.stringify([found.slice(0, shown).map(s => [s.id, s.title]), stamp(5), ready]));
+    $('more-history').hidden = found.length <= shown;
+    const ended = terminals.filter(t => t.dir === project && !running(t)).sort((a, b) => b.created - a.created).slice(0, 5);
+    $('p-ended').hidden = !ended.length;
+    fill($('p-ended').querySelector('ul'), ended.map(t => terminalCard(t, false)), JSON.stringify(ended.map(t => [t.id, t.phase, t.title])));
+    $('empty').hidden = own.length + here.length + ended.length > 0;
+  }
+
+  // ---- moving between the overview and one project; the phone's back key goes back to the overview
+  function enter(name) { project = name; shown = 12; $('search').value = ''; history.pushState({ project: name }, ''); scrollTo(0, 0); draw(); }
+  window.addEventListener('popstate', event => { project = event.state && event.state.project || ''; if (data) draw(); });
+  $('back').addEventListener('click', () => history.back());
+  $('search').addEventListener('input', () => { shown = 12; draw(); });
+  $('more-history').addEventListener('click', () => { shown += 30; draw(); });
+
   async function refresh() {
     clearTimeout(timer);
-    try { data = await api('/api/terminal'); draw(); } catch (error) { if (!$('home').hidden) $('device-text').textContent = error.message; }
-    if (!$('home').hidden) timer = setTimeout(refresh, document.hidden ? 15000 : 3000);
+    try { data = await api('/api/terminal'); draw(); }
+    catch (error) { if (!$('home').hidden) { $('device-text').textContent = error.message; $('dot').className = 'off'; } }
+    if (!$('home').hidden) timer = setTimeout(refresh, document.hidden ? 15000 : 2500);
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('home').hidden) refresh(); });
+  window.addEventListener('pageshow', event => { if (event.persisted && !$('home').hidden) refresh(); });      // back from a terminal
 
-  // Inside the app: leaving goes back to the screen for choosing a computer.
-  if (window.RemoteCliNative) { $('logout').textContent = '换电脑'; $('logout').addEventListener('click', () => setTimeout(() => window.RemoteCliNative.disconnect(), 300)); }
   (async () => {
     try {
       // The app hands the password over once, after the "#"; it never travels in a request line.
@@ -212,6 +337,8 @@
       }
       const session = await (await fetch('/api/session', { credentials: 'same-origin' })).json();
       if (!session.signed_in) return showLogin();
+      // ?project=<name> opens one project directly, for a link or a picture of that page.
+      project = history.state && history.state.project || new URLSearchParams(location.search).get('project') || '';
       $('home').hidden = false;
       refresh();
     } catch (error) { showLogin(); $('login-error').textContent = '连不上服务，请检查地址'; }
