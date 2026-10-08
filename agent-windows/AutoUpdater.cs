@@ -22,6 +22,7 @@ public static class AutoUpdater {
     }
     public static Task<ReleaseUpdate> CheckAsync(string current) { return Task.Run(() => Check(current)); }
     static ReleaseUpdate Check(string current) {
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
         var request = (HttpWebRequest)WebRequest.Create(Api); request.Method = "GET"; request.Timeout = 15000;
         request.UserAgent = "RemoteCli/" + current + " (GitHub updater)"; request.Accept = "application/vnd.github+json";
         using (var response = (HttpWebResponse)request.GetResponse()) using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8)) {
@@ -41,6 +42,7 @@ public static class AutoUpdater {
     }
     public static Task<string> DownloadAsync(ReleaseUpdate update, string directory) { return Task.Run(() => Download(update, directory)); }
     static string Download(ReleaseUpdate update, string directory) {
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
         Directory.CreateDirectory(directory); string final = Path.Combine(directory, AssetPrefix + update.Version + ".exe"); string temporary = final + ".part";
         try {
             var request = (HttpWebRequest)WebRequest.Create(update.Url); request.Timeout = 120000; request.UserAgent = "RemoteCli/" + update.Version + " (GitHub updater)";
