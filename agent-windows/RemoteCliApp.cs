@@ -347,6 +347,11 @@ public sealed class App : Form {
     }
     async void CheckForUpdate(bool manual) {
         if (updateButton == null || !updateButton.Enabled) return;
+        if (!manual) {
+            DateTime previous;
+            if (config.ContainsKey("UpdateCheckUtc") && DateTime.TryParse(Convert.ToString(config["UpdateCheckUtc"]), null, System.Globalization.DateTimeStyles.RoundtripKind, out previous) && DateTime.UtcNow - previous < TimeSpan.FromHours(6)) return;
+            config["UpdateCheckUtc"] = DateTime.UtcNow.ToString("o"); Save();
+        }
         updateButton.Enabled = false; if (manual) Say("正在检查 GitHub 最新版本…");
         try {
             ReleaseUpdate found = await AutoUpdater.CheckAsync(Version); availableUpdate = found;
