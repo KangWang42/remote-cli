@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#1a1b26">
+  <meta name="robots" content="noindex">
+  <meta name="description" content="电脑终端的远程显示与输入。">
+  <title>Remote CLI</title>
+  <link rel="icon" href="data:,">
+  <style>
+    @font-face { font-family: "Terminal Mono"; font-weight: 400; font-display: block; src: url("vendor/jetbrains-mono-400.woff2") format("woff2"); }
+    @font-face { font-family: "Terminal Mono"; font-weight: 700; font-display: block; src: url("vendor/jetbrains-mono-700.woff2") format("woff2"); }
+  </style>
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="terminal.css">
+  <script defer src="vendor/xterm.js"></script>
+  <script defer src="vendor/addon-fit.js"></script>
+  <script defer src="vendor/addon-webgl.js"></script>
+  <script defer src="bridge.js"></script>
+  <script defer src="terminal.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <button type="button" class="quiet" id="back" aria-label="返回终端列表">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="who">
+        <h1 id="title">项目终端</h1>
+        <p id="status" role="status" aria-live="polite"><span id="dot" aria-hidden="true"></span><span id="status-text">正在连接…</span></p>
+      </div>
+      <button type="button" class="quiet" id="font" aria-label="调整字号">Aa</button>
+      <button type="button" class="quiet" id="menu" aria-label="终端选项">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>
+      </button>
+    </header>
+    <div id="screen">
+      <div id="terminal" aria-label="电脑上的终端画面"></div>
+      <button type="button" id="latest" hidden>回到最新</button>
+    </div>
+    <div id="notice" role="status" aria-live="polite"></div>
+    <div id="ended" hidden>
+      <span id="ended-text">终端已结束</span>
+      <button type="button" id="again">继续这个对话</button>
+    </div>
+    <div id="palette" role="listbox" aria-label="常用命令" hidden></div>
+    <nav class="keys" aria-label="终端按键">
+      <button type="button" data-key="escape">Esc</button>
+      <button type="button" data-key="up" aria-label="向上选择">↑</button>
+      <button type="button" data-key="down" aria-label="向下选择">↓</button>
+      <button type="button" data-key="left" aria-label="向左移动">←</button>
+      <button type="button" data-key="right" aria-label="向右移动">→</button>
+      <button type="button" data-key="enter" aria-label="回车确认">⏎</button>
+      <button type="button" data-key="tab">Tab</button>
+      <button type="button" data-key="backtab" aria-label="Shift 加 Tab，切换模式">⇧Tab</button>
+      <button type="button" data-key="pageup" aria-label="向上翻一页">PgUp</button>
+      <button type="button" data-key="pagedown" aria-label="向下翻一页">PgDn</button>
+      <button type="button" data-key="interrupt" aria-label="Ctrl 加 C，中断">Ctrl+C</button>
+    </nav>
+    <form id="composer">
+      <button type="button" id="slash" aria-label="常用命令" aria-expanded="false">/</button>
+      <div class="field">
+        <label class="sr-only" for="input">终端输入</label>
+        <textarea id="input" rows="1" maxlength="8000" placeholder="消息，或 / 选命令" spellcheck="false" autocapitalize="off"></textarea>
+        <button type="button" id="voice" aria-label="语音输入">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <button type="submit" id="send">回车</button>
+    </form>
+  </main>
+</body>
+</html>

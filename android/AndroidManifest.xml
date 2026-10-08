@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.github.kangwang42.remotecli" android:versionCode="1" android:versionName="0.1.0">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <queries><intent><action android:name="android.speech.action.RECOGNIZE_SPEECH" /></intent></queries>
+    <!-- Clear text is allowed because a computer on the same Wi-Fi is reached as http://192.168.x.x. -->
+    <application android:label="Remote CLI" android:icon="@mipmap/ic_launcher" android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="true" android:supportsRtl="true">
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- The code shown by the program on the computer: remotecli://connect?u=<address>&p=<password> -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="remotecli" android:host="connect" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

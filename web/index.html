@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#1a1b26">
+  <meta name="description" content="在手机上使用电脑里的终端、Claude Code 和 Codex。">
+  <title>Remote CLI</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <main id="login" hidden>
+    <form id="login-form" autocomplete="on">
+      <h1>Remote CLI</h1>
+      <p>输入电脑端显示的访问密码。</p>
+      <label for="password">访问密码</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button type="submit" class="solid">进入</button>
+      <p id="login-error" role="alert"></p>
+    </form>
+  </main>
+  <main id="home" hidden>
+    <header>
+      <div>
+        <h1>Remote CLI</h1>
+        <p id="device" role="status" aria-live="polite"><span id="dot" aria-hidden="true"></span><span id="device-text">正在连接…</span></p>
+      </div>
+      <button type="button" id="logout" class="quiet">退出</button>
+    </header>
+    <nav id="projects" aria-label="项目"></nav>
+    <section id="launch" aria-label="新建终端"></section>
+    <p id="message" role="status" aria-live="polite"></p>
+    <section id="phone" hidden><h2>手机终端</h2><ul></ul></section>
+    <section id="live" hidden><h2>电脑上正在运行</h2><ul></ul></section>
+    <section id="history" hidden><h2>历史对话</h2><ul></ul></section>
+    <p id="empty" hidden>这个项目还没有对话。用上面的按钮新建一个终端。</p>
+  </main>
+  <dialog id="sheet"><form method="dialog" id="sheet-form"></form></dialog>
+</body>
+</html>

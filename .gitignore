@@ -1,0 +1,8 @@
+.build/
+.cache/
+dist/
+__pycache__/
+agent-windows/bin/
+relay/data/
+*.p12
+signing-password.txt
