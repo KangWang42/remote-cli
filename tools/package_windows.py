@@ -39,7 +39,7 @@ def main():
     dist.mkdir(exist_ok=True)
     subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "agent-windows" / "build.ps1"), "-OutDir", str(stage)], check=True)
     (stage / "relay").mkdir()
-    for name in ("server.py", "relay.py"):
+    for name in ("server.py", "relay.py", "websocket.py"):
         shutil.copy2(ROOT / "relay" / name, stage / "relay" / name)
     shutil.copytree(ROOT / "web", stage / "web")
     with zipfile.ZipFile(python_zip()) as archive:

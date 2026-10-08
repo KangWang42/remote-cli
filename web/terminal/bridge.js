@@ -9,21 +9,67 @@
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
   const ui = () => window.TerminalUI;
   const home = () => { location.replace('../'); };      // the list is one step back, not one more page
-  let after = 0, terminal = null, loaded = false, streamed = true, failures = 0, reader = null, run = 0, fetching = false, gone = false;
+  // Quick tunnels buffer SSE; a held JSON response is delivered without that delay.
+  let after = 0, terminal = null, loaded = false, streamed = !location.hostname.endsWith('.trycloudflare.com'), failures = 0, reader = null, run = 0, fetching = false, gone = false;
+  let socketMode = typeof WebSocket === 'function', socket = null, socketTimer = null;
 
   async function post(payload) {
-    const reply = await fetch('/api/terminal', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    let body = {};
-    try { body = await reply.json(); } catch (error) { /* not JSON */ }
-    if (reply.status === 401) { home(); throw new Error('请重新输入访问密码'); }
-    return { status: reply.status, body };
+    const control = new AbortController(), timer = setTimeout(() => control.abort(), 20000);
+    try {
+      const reply = await fetch('/api/terminal', { method: 'POST', credentials: 'same-origin', signal: control.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      let body = {};
+      try { body = await reply.json(); } catch (error) { /* not JSON */ }
+      if (reply.status === 401) { home(); throw new Error('请重新输入访问密码'); }
+      return { status: reply.status, body };
+    } finally { clearTimeout(timer); }
   }
 
-  // ---- output: one response that stays open; a network that cuts it falls back to held requests
-  function receive(item) {
+  // ---- output: a WebSocket, then a kept-open response or held requests when needed
+  function receive(item, pushed = false) {
     terminal = item.terminal;
-    if (streamed) after = item.after;
+    if (streamed || pushed) after = item.after;
     ui().receive(item);
+  }
+  function resetPending() {
+    for (const op of queue) { clearTimeout(op.timer); op.inFlight = false; }
+  }
+  function connectSocket() {
+    if (gone || !loaded || document.hidden || socket) return;
+    const mine = ++run;
+    let channel;
+    try { channel = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/terminal/ws?terminal=' + id + '&after=' + after); }
+    catch (error) { socketMode = false; return read(); }
+    socket = channel;
+    let got = false;
+    function failed(event) {
+      if (mine !== run) return;
+      clearTimeout(socketTimer);
+      run++; socket = null; resetPending();
+      if (event && event.code === 1008) return home();
+      // An older relay or a proxy without WebSocket support uses the HTTP interfaces.
+      if (!got) socketMode = false;
+      if (!document.hidden) setTimeout(read, got ? 300 : 0);
+      flush();
+    }
+    channel.onclose = failed;
+    socketTimer = setTimeout(() => { if (!got && mine === run) { failed(); channel.close(); } }, 4000);
+    channel.onopen = () => { if (mine === run) flush(); };
+    channel.onmessage = event => {
+      if (mine !== run) return;
+      let item;
+      try { item = JSON.parse(event.data); } catch (error) { channel.close(); return; }
+      if (item.t === 'out') { got = true; clearTimeout(socketTimer); receive(item, true); }
+      else if (item.t === 'ack') {
+        const at = queue.findIndex(op => op.id === item.id);
+        if (at < 0) return;
+        const op = queue[at];
+        clearTimeout(op.timer);
+        if (item.status >= 500) { socketMode = false; channel.close(); return; }
+        queue.splice(at, 1);
+        if (item.status !== 200 || item.state === 'error') ui().inputError(item.error || '操作没有执行', op.data || '');
+        flush();
+      }
+    };
   }
   function problem() { ui().error('读取失败，正在重连；电脑上的终端会继续运行'); }
   async function stream() {
@@ -32,6 +78,8 @@
     let got = 0, status = 0;
     const control = new AbortController();
     reader = control;
+    let buffered = false;
+    const firstLineTimer = setTimeout(() => { if (!got) { buffered = true; control.abort(); } }, 4000);
     try {
       const reply = await fetch('/api/terminal/stream?terminal=' + id + '&after=' + after, { credentials: 'same-origin', signal: control.signal, headers: { Accept: 'text/event-stream' } });
       status = reply.status;
@@ -45,16 +93,17 @@
           let at;
           while ((at = rest.indexOf('\n')) >= 0) {
             const line = rest.slice(0, at); rest = rest.slice(at + 1);
-            if (line.startsWith('data:')) { got++; receive(JSON.parse(line.slice(5))); }
+            if (line.startsWith('data:')) { got++; clearTimeout(firstLineTimer); receive(JSON.parse(line.slice(5))); }
           }
         }
       } else if (status === 400) { let body = {}; try { body = await reply.json(); } catch (error) { /* not JSON */ } ui().error(body.error || '终端已不存在'); gone = true; }
     } catch (error) { /* reconnect below */ }
+    clearTimeout(firstLineTimer);
     if (mine !== run) return;
     reader = null;
     if (gone) return;
     if (status === 401) return home();
-    failures = got ? 0 : failures + 1;
+    failures = got ? 0 : buffered ? 2 : failures + 1;
     if (failures >= 2) { streamed = false; return held(); }
     if (!got) problem();
     if (!document.hidden) setTimeout(read, got ? 30 : 1500);
@@ -62,38 +111,58 @@
   async function held() {
     if (gone || !loaded || fetching || document.hidden) return;
     fetching = true;
+    const mine = ++run, control = new AbortController();
+    reader = control;
+    const timer = setTimeout(() => control.abort(), 30000);
     try {
-      const reply = await fetch('/api/terminal?terminal=' + id + '&after=' + after + '&wait=20', { credentials: 'same-origin' });
+      const reply = await fetch('/api/terminal?terminal=' + id + '&after=' + after + '&wait=20', { credentials: 'same-origin', signal: control.signal });
+      if (mine !== run) return;
       if (reply.status === 401) return home();
       const item = await reply.json();
+      if (mine !== run) return;
       if (!reply.ok) throw new Error(item.error || '');
-      fetching = false;
+      fetching = false; reader = null;
       receive(item);
-    } catch (error) { fetching = false; problem(); setTimeout(read, 1500); }
+    } catch (error) { if (mine === run) { fetching = false; reader = null; problem(); setTimeout(read, 1500); } }
+    finally { clearTimeout(timer); }
   }
-  function read() { if (streamed) stream(); else held(); }
-  function hangUp() { run++; if (reader) { reader.abort(); reader = null; } }
+  function read() { if (socketMode) connectSocket(); else if (streamed) stream(); else held(); }
+  function hangUp() { run++; fetching = false; clearTimeout(socketTimer); if (socket) { socket.close(); socket = null; resetPending(); } if (reader) { reader.abort(); reader = null; } }
   document.addEventListener('visibilitychange', () => { if (document.hidden) hangUp(); else read(); });
 
-  // ---- input: one request at a time, in order; keys typed meanwhile travel together
+  // ---- input: ordered WebSocket messages; HTTP fallback sends one request at a time
   const queue = [];
   let sending = false;
   function enqueue(op) {
     Object.assign(op, { id: newId(), terminal: id });
     op.at = Date.now();
     const last = queue[queue.length - 1];
-    if (last && !(sending && queue.length === 1) && op.action === 'input' && last.action === 'input' && last.data.length + op.data.length <= 8000) last.data += op.data;
+    if (last && !last.sent && op.action === 'input' && last.action === 'input' && last.data.length + op.data.length <= 8000) last.data += op.data;
     else queue.push(op);
     flush();
   }
   async function flush() {
     if (sending || !queue.length) return;
+    if (socketMode) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      for (const op of [...queue]) {
+        if (op.inFlight) continue;
+        if (Date.now() - op.at > 110000) { queue.splice(queue.indexOf(op), 1); ui().inputError('发送超时，请确认终端画面后重试', op.data || ''); continue; }
+        op.sent = true; op.inFlight = true;
+        const { at, sent, inFlight, timer, ...payload } = op;
+        const channel = socket;
+        try { channel.send(JSON.stringify(payload)); }
+        catch (error) { channel.close(); return; }
+        op.timer = setTimeout(() => { if (socket === channel) channel.close(); }, 20000);
+      }
+      return;
+    }
     const op = queue[0];
     if (Date.now() - op.at > 110000) { queue.shift(); ui().inputError('发送超时，请确认终端画面后重试', op.data || ''); return flush(); }
-    sending = true;
+    sending = true; op.sent = true;
     let message = '', again = false;
     try {
-      const { at, ...payload } = op;
+      const { at, sent, inFlight, timer, ...payload } = op;
       const { status, body } = await post(payload);
       if (status !== 200 || body.state === 'error') { message = body.error || '操作没有执行'; again = status >= 500; }
     } catch (error) { again = true; message = '发送失败，正在重连'; }
@@ -162,7 +231,7 @@
 
   window.ProjectTerminal = {
     ready() { loaded = true; if (!/^[a-f0-9]{16,32}$/.test(id)) return home(); read(); },
-    rendered(cursor) { if (streamed) return; after = Number(cursor) || after; setTimeout(read, 20); },
+    rendered(cursor) { if (socketMode || streamed) return; after = Number(cursor) || after; setTimeout(read, 0); },
     close: home,
     voice,
     skin: () => store.get('skin', 'night'),

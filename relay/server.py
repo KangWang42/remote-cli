@@ -13,6 +13,7 @@ import hmac
 import json
 import os
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -21,6 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded Python does not add the script's folder
 import relay  # noqa: E402
+import websocket  # noqa: E402
 
 VERSION = "0.3.0"
 SESSION_DAYS = 90
@@ -132,6 +134,17 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "remote-cli/" + VERSION
     sys_version = ""
 
+    def setup(self):
+        super().setup()
+        # Headers and small terminal updates must not wait for a delayed TCP acknowledgment.
+        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionError, TimeoutError):
+            pass  # readers can cancel a held request when the app goes into the background
+
     def log_message(self, *args):       # terminal input and output must never reach a log
         pass
 
@@ -203,6 +216,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"signed_in": self._authed(), "version": VERSION})
         if not self._authed():
             return self._json(401, {"error": "auth"})
+        if path == "/api/terminal/ws":
+            return self._websocket(first("terminal"), first("after", "0"))
         store = self.server.store
         try:
             if path == "/api/terminal":
@@ -232,6 +247,78 @@ class Handler(BaseHTTPRequestHandler):
                 item = next(lines)
         except (StopIteration, OSError, ValueError):
             pass        # finished, the reader went away, or the terminal was removed meanwhile
+
+    def _websocket(self, terminal, after):
+        origin = urlsplit(self.headers.get("Origin", ""))
+        if origin.scheme not in ("http", "https") or origin.netloc.lower() != self.headers.get("Host", "").lower():
+            return self._json(403, {"error": "origin"})
+        try:
+            if self.command != "GET":
+                raise ValueError
+            key = websocket.accept_key(self.headers)
+            after = int(after)
+            lines = relay.stream(self.server.store, terminal, after, seconds=3600)
+            first = next(lines)
+        except (ValueError, StopIteration):
+            return self._json(400, {"error": "WebSocket 参数无效"})
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", key)
+        self.end_headers()
+        self.close_connection = True
+        self.connection.settimeout(35)
+        channel = websocket.Connection(self.rfile, self.connection)
+        channel.send(dict(first, t="out"))
+
+        def output():
+            last_ping = time.monotonic()
+            try:
+                for item in lines:
+                    if channel.closed.is_set():
+                        return
+                    if not self._authed():
+                        channel.close(1008)
+                        return
+                    channel.send(dict(item, t="out"))
+                    if time.monotonic() - last_ping >= 15:
+                        channel.send(b"", opcode=9)  # browsers answer pong even when the user is idle
+                        last_ping = time.monotonic()
+                channel.close(1001)
+            except (OSError, ValueError):
+                channel.close(1011)
+            finally:
+                channel.closed.set()
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+        threading.Thread(target=output, daemon=True).start()
+        try:
+            while not channel.closed.is_set():
+                raw = channel.receive()
+                if not self._authed():
+                    channel.close(1008)
+                    break
+                payload = json.loads(raw)
+                if not isinstance(payload, dict) or payload.get("terminal") != terminal or payload.get("action") not in ("input", "resize", "close", "rename"):
+                    raise relay.RemoteError("终端操作无效")
+                try:
+                    result = relay.command(self.server.store, payload)
+                    channel.send(dict(result, t="ack", status=200))
+                except relay.RemoteError as error:
+                    channel.send({"t": "ack", "id": payload.get("id"), "status": 400, "state": "error", "error": str(error)})
+                except OSError:
+                    channel.send({"t": "ack", "id": payload.get("id"), "status": 500, "error": "终端记录保存失败"})
+        except websocket.ProtocolError as error:
+            channel.close(error.code)
+        except (ValueError, TypeError):
+            channel.close(1007)
+        except OSError:
+            pass
+        finally:
+            channel.closed.set()
 
     def do_POST(self):
         path = urlsplit(self.path).path

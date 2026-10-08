@@ -42,13 +42,18 @@ terminals already shows it. `state` is `starting`, `running` or `closed`; `statu
 
 ### Output
 
+- `GET /api/terminal/ws?terminal=<id>&after=<seq>`: preferred WebSocket transport. Upgrade with
+  version 13, a valid `Sec-WebSocket-Key`, the login cookie (or bearer token), and an `Origin` matching
+  the relay. Output messages have `t: "out"` plus the same fields below. A state message arrives
+  immediately, followed by output as it arrives and idle heartbeats. Ping frames keep an idle connection
+  alive. Reconnect from the last `after` if the connection closes; connections renew after about an hour.
 - `GET /api/terminal?terminal=<id>&after=<seq>&wait=<seconds>`: output after sequence number `after`. With
   `wait` (at most 25) the answer is held until there is something new.
 - `GET /api/terminal/stream?terminal=<id>&after=<seq>`: one response that stays open (`text/event-stream`).
   Each line `data: {...}` is one piece; a line without output is sent when the state changes and every 15
   seconds. The relay ends the response after about 55 seconds; ask again with the latest `after`.
 
-Both give
+All three give
 
 ```json
 {"device": {...}, "terminal": {...}, "chunks": [{"seq": 13, "data": "..."}], "reset": false, "after": 13}
@@ -63,6 +68,20 @@ One answer carries at most about 180,000 characters; `after < terminal.seq` mean
 `POST /api/terminal` `{"action": "...", "id": "<16 to 32 hex digits>", ...}` → `{"id", "terminal", "state", "error"}`.
 `id` is chosen by the caller; sending the same operation again returns its current state instead of doing it
 twice. `state` is `queued` until the computer has done it, then `done` or `error`.
+
+On an upgraded viewer connection, send the same operation object as a text message (`input`, `resize`,
+`rename` and `close` only, for the connection's terminal). The relay replies with
+`{"t": "ack", "status": 200, "id": "...", "terminal": "...", "state": "queued", "error": ""}`.
+Validation errors return an acknowledgment with status 400; storage failures return 500. A queued
+acknowledgment means accepted by the relay, not yet executed by the computer. Inputs can be sent in
+order without waiting for each acknowledgment. If an acknowledgment is lost, retry the identical
+operation ID and payload over either transport. Text messages are limited to 128,000 UTF-8 bytes.
+Cross-origin upgrades and operations for another terminal are refused. Logout invalidates input on an
+open connection immediately and stops its output on the next update or heartbeat.
+
+The viewer falls back to HTTP if WebSocket is unavailable. Quick tunnels skip SSE because their edge
+buffers it. On other hosts, an SSE connection without its first event within four seconds falls back
+to held requests. Switching to the background cancels the active reader; returning resumes from `after`.
 
 | `action` | Fields |
 | --- | --- |

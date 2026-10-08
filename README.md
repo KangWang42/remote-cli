@@ -104,7 +104,7 @@
 
 **列表里没有“新建 Claude Code”。** 按钮只显示电脑上能找到的工具。先在电脑的命令行里确认 `claude` 或 `codex` 能运行，再重新打开 Remote CLI。
 
-**输入后要等一下才显示。** 经公网时，每次按键要走“手机 → 中转 → 电脑 → 中转 → 手机”一个来回，延迟取决于网络。同一个 Wi-Fi 下用局域网直连最快。
+**输入后要等一下才显示。** 终端优先使用 WebSocket 持续连接，输入和输出实时传输，连续按键不用逐次等待上一条请求完成。公网仍有网络往返延迟；同一个 Wi-Fi 下用局域网直连最快。连接不支持 WebSocket 时会自动切换到 HTTP，Cloudflare 临时隧道会跳过不能及时传输的 SSE。
 
 **端口 8722 被占用。** 退出程序后，把 `%LOCALAPPDATA%\RemoteCli\config.json` 里的 `Port` 改成别的数字再打开。
 
@@ -148,6 +148,8 @@ RCLI_PASSWORD='一个足够长的密码' python3 relay/server.py --host 127.0.0.
 
 用 nginx、Caddy 等把一个 https 域名反向代理到 `127.0.0.1:8722`。终端输出走的是保持打开的响应，nginx 需要 `proxy_buffering off;` 和不短于 60 秒的 `proxy_read_timeout`。然后在电脑端选“自有中转”，填这个地址，再点“换一个密码”填入同一个密码。
 
+终端优先使用 WebSocket。nginx 的代理位置还需要 `proxy_http_version 1.1;`、`proxy_set_header Upgrade $http_upgrade;` 和 `proxy_set_header Connection "upgrade";`，让升级请求能够通过；保留上述持续响应设置以支持 HTTP 回退。
+
 不设 `RCLI_PASSWORD` 时，首次启动会生成一个密码，打印出来并保存在数据目录的 `password.txt`。
 
 没有窗口的电脑端 `RemoteCliAgent.exe` 也在安装目录里，适合只用自有中转、想自己用计划任务启动的情况；它读取 `%LOCALAPPDATA%\RemoteCli\config.json`，密码用 `RemoteCliAgent.exe --set-password` 从标准输入写入。
@@ -167,6 +169,9 @@ powershell -ExecutionPolicy Bypass -File android\build.ps1 -Jdk <JDK 目录> -Sd
 # 测试
 python -m unittest discover -s relay -p "test_*.py"
 python tests\e2e_windows.py
+node tests\bridge_check.js                                # 传输选择、连续输入和断线重试
+python tests\tunnel_check.py --local                       # 直连回显延迟
+python tests\tunnel_check.py <cloudflared.exe> --protocol http2  # 公网回显延迟
 python tests\setup_check.py dist\RemoteCli-Setup-x.y.z.exe      # 安装程序，沙盒方式，不碰已有安装
 java -cp .cache\zxing-core-3.5.3.jar tests\QrDecodeCheck.java <二维码.png> <内容>   # 手机端的二维码识别
 ```

@@ -466,6 +466,9 @@ public sealed class TerminalAgent {
         if (client != null) client.Dispose();
         client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, CookieContainer = new CookieContainer() }) { Timeout = TimeSpan.FromSeconds(20) };
         if (!Regex.IsMatch(Origin, @"\Ahttps?://[^/\s]+\z")) return false;
+        var endpoint = ServicePointManager.FindServicePoint(new Uri(Origin));
+        endpoint.UseNagleAlgorithm = false;
+        endpoint.Expect100Continue = false;  // small JSON reports can send their body with the headers
         // The password is kept encrypted for this Windows account (see --set-password).
         byte[] bytes = ProtectedData.Unprotect(File.ReadAllBytes(Path.Combine(dataDir, "password.dpapi")), null, DataProtectionScope.CurrentUser);
         try {
@@ -614,7 +617,7 @@ public sealed class TerminalAgent {
             bool woken = false, failed = false;
             try { woken = await wake.WaitAsync(pause); } catch { failed = true; }
             if (failed) await Task.Delay(pause);
-            if (woken) await Task.Delay(12);   // let a burst of output arrive as one piece
+            if (woken && DateTime.UtcNow - lastInput > TimeSpan.FromMilliseconds(150)) await Task.Delay(12);
         }
     }
     [STAThread] public static int Main(string[] args) {
