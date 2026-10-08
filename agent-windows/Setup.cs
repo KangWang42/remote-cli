@@ -11,7 +11,7 @@ namespace RemoteCli {
 /// The installer: unpacks the program into the current user's folder, adds shortcuts and an entry under
 /// "Apps" for removing it. No administrator rights are needed; `--uninstall` undoes all of it.
 public static class Setup {
-    const string Version = "0.1.0", Name = "Remote CLI";
+    const string Version = "0.1.1", Name = "Remote CLI";
     const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RemoteCli";
     static string Target { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "RemoteCli"); } }
     static string Data { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RemoteCli"); } }

@@ -1,6 +1,6 @@
 """Screenshots of the app's pages at a narrow width (headless Chrome does not go below 500 pixels), against a real relay and agent on this computer.
 
-    python tests/pages_check.py <chrome.exe> <output folder>
+    python tests/pages_check.py <chrome.exe> <output folder> [project folder]
 
 Signs in the way the app does (password after "#"), opens a PowerShell terminal, and saves list.png and
 terminal.png. Uses a temporary data folder and port 8736.
@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PORT = 8736
+PORT = int(os.environ.get("RCLI_TEST_PORT", "8736"))
 password = "test-" + secrets.token_hex(8)
 
 
@@ -25,7 +25,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     temp = tempfile.TemporaryDirectory()
     data, work, profile = Path(temp.name) / "agent", Path(temp.name) / "work", Path(temp.name) / "profile"
-    data.mkdir(); work.mkdir()
+    data.mkdir()
+    if len(sys.argv) > 3:
+        work = Path(sys.argv[3])       # a folder whose path may appear in a published screenshot
+    work.mkdir(exist_ok=True)
     (data / "config.json").write_text(json.dumps({"Server": "http://127.0.0.1:%d" % PORT, "RemoteEnabled": True, "RemoteMaxMode": "full", "RemoteDirs": ["demo=" + str(work)]}), encoding="utf-8")
     relay = subprocess.Popen([sys.executable, str(ROOT / "relay" / "server.py"), "--port", str(PORT), "--data", str(Path(temp.name) / "relay")],
                              env=dict(os.environ, RCLI_PASSWORD=password, PYTHONUTF8="1"))
@@ -46,15 +49,19 @@ def main():
             assert reply.status == 200, (path, reply.status, text[:200])
             return json.loads(text)
 
-        time.sleep(1.5)
-        call("/api/login", {"password": password})
+        for _ in range(40):
+            try:
+                call("/api/login", {"password": password})
+                break
+            except OSError:
+                time.sleep(0.5)
         for _ in range(60):
             if call("/api/terminal")["device"]["workspaces"]:
                 break
             time.sleep(0.5)
         terminal = call("/api/terminal", {"action": "start", "id": secrets.token_hex(16), "tool": "shell", "dir": "demo"})["terminal"]
         time.sleep(4)
-        call("/api/terminal", {"action": "input", "id": secrets.token_hex(16), "terminal": terminal, "data": "Get-ChildItem Env: | Select-Object -First 6 Name\r"})
+        call("/api/terminal", {"action": "input", "id": secrets.token_hex(16), "terminal": terminal, "data": "function prompt { 'PS demo> ' }; Clear-Host; Get-Date -Format 'yyyy-MM-dd'; 'hello from the computer'" + chr(13)})
         time.sleep(2)
 
         def shot(url, name, wait):

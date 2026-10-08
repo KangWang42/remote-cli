@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "0.1.0";
+    const string Version = "0.1.1";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -34,8 +34,11 @@ public sealed class App : Form {
     int generation;
 
     readonly Label status = new Label();
-    readonly RadioButton lan = new RadioButton(), cloud = new RadioButton(), own = new RadioButton();
-    readonly TextBox ownUrl = new TextBox(), addressBox = new TextBox(), passwordBox = new TextBox();
+    readonly Option lan = new Option(), cloud = new Option(), own = new Option();
+    readonly Field ownField = new Field(), addressField = new Field(), passwordField = new Field();
+    TextBox ownUrl { get { return ownField.Box; } }
+    TextBox addressBox { get { return addressField.Box; } }
+    TextBox passwordBox { get { return passwordField.Box; } }
     readonly PictureBox qr = new PictureBox();
     readonly ListBox folders = new ListBox();
     readonly CheckBox enabled = new CheckBox(), autostart = new CheckBox();
@@ -107,7 +110,7 @@ public sealed class App : Form {
 
     void Say(string text, bool problem = false) {
         if (InvokeRequired) { BeginInvoke(new Action(() => Say(text, problem))); return; }
-        status.Text = text; status.ForeColor = problem ? Color.FromArgb(190, 40, 50) : Color.FromArgb(30, 110, 70);
+        status.Text = text; status.ForeColor = problem ? Theme.Bad : Theme.Good;
         tray.Text = ("Remote CLI：" + text).Length > 60 ? ("Remote CLI：" + text).Substring(0, 60) : "Remote CLI：" + text;
     }
     void ShowAddress(string where) {
@@ -208,64 +211,85 @@ public sealed class App : Form {
     }
 
     // ---------- window
-    Control Place(Control parent, Control control, int x, int y, int w, int h, string text = null) {
+    T Place<T>(Control parent, T control, int x, int y, int w, int h) where T : Control {
         control.SetBounds(x, y, w, h);
-        if (text != null) control.Text = text;
         parent.Controls.Add(control);
         return control;
     }
+    Label Note(Control parent, string text, int x, int y, int w, int h, Color color, float size = 0, bool bold = false) {
+        return Place(parent, Theme.Label(text, color, parent is Card ? Theme.Panel : Theme.Bg, size, bold), x, y, w, h);
+    }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Theme.DarkTitle(Handle); }
     public App() {
         LoadSettings();
         KillLeftovers();
-        Text = "Remote CLI " + Version; Font = new Font("Microsoft YaHei UI", 9f);
+        Text = "Remote CLI"; Font = new Font("Microsoft YaHei UI", 9f);
         AutoScaleMode = AutoScaleMode.None;      // positions below are for 100%; the whole window is scaled once at the end
-        ClientSize = new Size(540, 668); FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
-        Icon = SystemIcons.Application;
-        Place(this, status, 16, 12, 508, 40, "正在启动…");
-        status.Font = new Font(Font.FontFamily, 10.5f, FontStyle.Bold);
+        ClientSize = new Size(560, 732); FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
+        BackColor = Theme.Bg; ForeColor = Theme.Ink;
+        Icon = Theme.MarkIcon(32);
 
-        var way = (GroupBox)Place(this, new GroupBox(), 16, 56, 508, 156, "连接方式");
-        Place(way, lan, 14, 22, 480, 24, "局域网直连：手机和电脑在同一个 Wi-Fi，最快");
-        Place(way, cloud, 14, 48, 370, 24, "公网隧道：不需要服务器和账号，手机在哪都能连");
-        var download = (Button)Place(way, new Button(), 388, 46, 106, 28, File.Exists(TunnelFile) ? "重新连接" : "下载隧道程序");
+        Place(this, new PictureBox { Image = Theme.Mark(80), SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Bg }, 20, 18, 40, 40);
+        Note(this, "Remote CLI", 72, 14, 300, 26, Theme.Ink, 14f, true);
+        Note(this, "v" + Version, 478, 22, 62, 18, Theme.Muted).TextAlign = ContentAlignment.TopRight;
+        Place(this, status, 72, 41, 468, 20); status.BackColor = Theme.Bg; status.AutoEllipsis = true; status.Text = "正在启动…"; status.ForeColor = Theme.Busy;
+
+        var way = Place(this, new Card(), 20, 76, 520, 256);
+        Note(way, "连接方式", 16, 12, 200, 18, Theme.Muted, 0, true);
+        lan.Title = "局域网直连"; lan.About = "手机和电脑在同一个 Wi-Fi，速度最快";
+        cloud.Title = "公网隧道"; cloud.About = "不需要服务器和账号，手机在哪都能连";
+        own.Title = "自有中转"; own.About = "已在自己的服务器上部署 relay，地址固定";
+        Place(way, lan, 16, 36, 488, 52); Place(way, cloud, 16, 94, 372, 52); Place(way, own, 16, 152, 488, 52);
+        var download = Place(way, Theme.Button(File.Exists(TunnelFile) ? "重新建立" : "下载隧道程序"), 396, 104, 108, 32);
         download.Click += DownloadTunnel;
-        Place(way, own, 14, 74, 480, 24, "自有中转：已在自己的服务器上部署了 relay");
-        Place(way, new Label(), 34, 104, 62, 22, "中转地址");
-        Place(way, ownUrl, 98, 100, 300, 26, Convert.ToString(config["OwnServer"]));
-        var apply = (Button)Place(way, new Button(), 404, 99, 90, 28, "应用");
-        Place(way, new Label { ForeColor = Color.Gray }, 14, 130, 480, 20, "首次用局域网直连时，Windows 防火墙会询问是否允许，请选“允许”。");
+        Place(way, ownField, 16, 213, 388, 30); ownUrl.Text = Convert.ToString(config["OwnServer"]);
+        var apply = Place(way, Theme.Button("应用"), 412, 212, 92, 32);
         (Mode == "lan" ? lan : Mode == "cloud" ? cloud : own).Checked = true;
         EventHandler pick = (s, e) => {
-            var chosen = (RadioButton)s;
-            if (!chosen.Checked) return;
-            config["Mode"] = chosen == lan ? "lan" : chosen == cloud ? "cloud" : "own";
+            foreach (var option in new[] { lan, cloud, own }) option.Checked = option == s;
+            config["Mode"] = s == lan ? "lan" : s == cloud ? "cloud" : "own";
             config["OwnServer"] = ownUrl.Text.Trim();
             Save(); Reconnect();
         };
-        lan.CheckedChanged += pick; cloud.CheckedChanged += pick; own.CheckedChanged += pick;
-        apply.Click += (s, e) => { config["OwnServer"] = ownUrl.Text.Trim(); Save(); if (!own.Checked) own.Checked = true; else Reconnect(); };
+        lan.Chosen += pick; cloud.Chosen += pick; own.Chosen += pick;
+        apply.Click += (s, e) => { config["OwnServer"] = ownUrl.Text.Trim(); Save(); if (!own.Checked) pick(own, EventArgs.Empty); else Reconnect(); };
 
-        var phone = (GroupBox)Place(this, new GroupBox(), 16, 220, 508, 220, "手机连接");
-        Place(phone, qr, 14, 24, 184, 184); qr.SizeMode = PictureBoxSizeMode.Zoom; qr.BackColor = Color.White; qr.BorderStyle = BorderStyle.FixedSingle;
-        Place(phone, new Label(), 212, 24, 280, 20, "装好 App 后，用手机相机扫左边的二维码，");
-        Place(phone, new Label(), 212, 44, 280, 20, "或在 App 里输入下面的地址和密码：");
-        Place(phone, new Label(), 212, 76, 44, 22, "地址");
-        Place(phone, addressBox, 250, 72, 182, 26); addressBox.ReadOnly = true;
-        ((Button)Place(phone, new Button(), 436, 71, 58, 28, "复制")).Click += (s, e) => { if (addressBox.Text.Length > 0) Clipboard.SetText(addressBox.Text); };
-        Place(phone, new Label(), 212, 112, 44, 22, "密码");
-        Place(phone, passwordBox, 250, 108, 182, 26); passwordBox.ReadOnly = true;
-        ((Button)Place(phone, new Button(), 436, 107, 58, 28, "复制")).Click += (s, e) => Clipboard.SetText(passwordBox.Text);
-        ((Button)Place(phone, new Button(), 256, 144, 110, 28, "换一个密码")).Click += (s, e) => {
+        var phone = Place(this, new Card(), 20, 344, 520, 196);
+        Place(phone, qr, 16, 16, 164, 164); qr.SizeMode = PictureBoxSizeMode.Zoom; qr.BackColor = Color.White;
+        Note(phone, "手机装好 App 后，用相机扫左边的二维码；\n扫不了时在 App 里输入下面的地址和密码。", 196, 14, 308, 38, Theme.Muted);
+        Note(phone, "地址", 196, 62, 40, 20, Theme.Muted);
+        Place(phone, addressField, 238, 56, 202, 30); addressBox.ReadOnly = true;
+        Place(phone, Theme.Button("复制"), 446, 55, 58, 32).Click += (s, e) => { if (addressBox.Text.Length > 0) Clipboard.SetText(addressBox.Text); };
+        Note(phone, "密码", 196, 100, 40, 20, Theme.Muted);
+        Place(phone, passwordField, 238, 94, 202, 30); passwordBox.ReadOnly = true;
+        Place(phone, Theme.Button("复制"), 446, 93, 58, 32).Click += (s, e) => Clipboard.SetText(passwordBox.Text);
+        Place(phone, Theme.Button("换一个密码"), 238, 132, 110, 30).Click += (s, e) => {
             if (MessageBox.Show(this, own.Checked ? "自有中转的密码由中转服务决定。要把这里保存的密码改成中转上的密码吗？" : "换密码后，已连接的手机需要重新扫码。继续吗？", "密码", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
             string wanted = own.Checked ? Ask("中转服务的密码", "") : NewPassword();
             if (String.IsNullOrWhiteSpace(wanted)) return;
             SetPassword(wanted.Trim()); Reconnect();
         };
-        Place(phone, new Label { ForeColor = Color.Gray }, 212, 180, 284, 34, "知道地址和密码的人可以操作这台电脑，\n不要发给别人。");
+        Note(phone, "地址和密码相当于这台电脑的钥匙，不要发给别人。", 196, 168, 312, 18, Theme.Muted, 8.25f);
 
-        var projects = (GroupBox)Place(this, new GroupBox(), 16, 448, 508, 150, "项目文件夹（手机只能在这些文件夹里开终端）");
-        Place(projects, folders, 14, 24, 380, 112); folders.IntegralHeight = false;
-        ((Button)Place(projects, new Button(), 404, 24, 90, 28, "添加…")).Click += (s, e) => {
+        var projects = Place(this, new Card(), 20, 552, 520, 116);
+        Note(projects, "项目文件夹", 16, 10, 90, 18, Theme.Muted, 0, true);
+        Note(projects, "手机只能在这些文件夹里开终端", 104, 10, 300, 18, Theme.Muted, 8.25f);
+        Place(projects, folders, 16, 36, 388, 68);
+        folders.IntegralHeight = false; folders.BorderStyle = BorderStyle.None; folders.BackColor = Theme.Bg; folders.ForeColor = Theme.Ink; folders.DrawMode = DrawMode.OwnerDrawFixed; folders.ItemHeight = 22;
+        folders.DrawItem += (s, e) => {
+            if (e.Index < 0) return;
+            bool chosen = (e.State & DrawItemState.Selected) != 0;
+            using (var back = new SolidBrush(chosen ? Theme.Raised : Theme.Bg)) e.Graphics.FillRectangle(back, e.Bounds);
+            string line = Convert.ToString(folders.Items[e.Index]); int at = line.IndexOf('\t');
+            string name = at > 0 ? line.Substring(0, at) : line, path = at > 0 ? line.Substring(at + 1) : "";
+            using (var bold = new Font(Font, FontStyle.Bold)) using (var ink = new SolidBrush(Theme.Ink)) using (var muted = new SolidBrush(Theme.Muted))
+            using (var format = new StringFormat { Trimming = StringTrimming.EllipsisPath, FormatFlags = StringFormatFlags.NoWrap, LineAlignment = StringAlignment.Center }) {
+                float wide = Math.Min(e.Bounds.Width * 0.4f, e.Graphics.MeasureString(name, bold).Width + 10);
+                e.Graphics.DrawString(name, bold, ink, new RectangleF(e.Bounds.X + 6, e.Bounds.Y, wide, e.Bounds.Height), format);
+                e.Graphics.DrawString(path, Font, muted, new RectangleF(e.Bounds.X + 6 + wide, e.Bounds.Y, e.Bounds.Width - wide - 10, e.Bounds.Height), format);
+            }
+        };
+        Place(projects, Theme.Button("添加…", true), 412, 36, 92, 30).Click += (s, e) => {
             using (var dialog = new FolderBrowserDialog { Description = "选择一个项目文件夹" }) {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 var list = Dirs();
@@ -277,27 +301,28 @@ public sealed class App : Form {
                 config["RemoteDirs"] = list.ToArray(); Save(); ListFolders();
             }
         };
-        ((Button)Place(projects, new Button(), 404, 58, 90, 28, "移除")).Click += (s, e) => {
+        Place(projects, Theme.Button("移除"), 412, 72, 92, 30).Click += (s, e) => {
             if (folders.SelectedIndex < 0) return;
             var list = Dirs(); list.RemoveAt(folders.SelectedIndex);
             config["RemoteDirs"] = list.ToArray(); Save(); ListFolders();
         };
         ListFolders();
 
-        Place(this, enabled, 18, 606, 250, 24, "允许手机访问");
+        foreach (var box in new[] { enabled, autostart }) { box.FlatStyle = FlatStyle.Flat; box.ForeColor = Theme.Ink; box.BackColor = Theme.Bg; box.Cursor = Cursors.Hand; }
+        Place(this, enabled, 22, 680, 260, 22); enabled.Text = "允许手机访问";
         enabled.Checked = Convert.ToString(config["RemoteEnabled"]) == "True";
         enabled.CheckedChanged += (s, e) => { config["RemoteEnabled"] = enabled.Checked; Save(); };
-        Place(this, autostart, 18, 632, 250, 24, "登录 Windows 后自动启动");
+        Place(this, autostart, 22, 702, 260, 22); autostart.Text = "登录 Windows 后自动启动";
         using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) autostart.Checked = key != null && key.GetValue("RemoteCli") != null;
         autostart.CheckedChanged += (s, e) => {
             using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) {
                 if (autostart.Checked) key.SetValue("RemoteCli", "\"" + Application.ExecutablePath + "\" --hidden"); else key.DeleteValue("RemoteCli", false);
             }
         };
-        ((Button)Place(this, new Button(), 316, 616, 100, 32, "重新连接")).Click += (s, e) => Reconnect();
-        ((Button)Place(this, new Button(), 424, 616, 100, 32, "退出")).Click += (s, e) => Quit();
+        Place(this, Theme.Button("重新连接"), 336, 684, 98, 32).Click += (s, e) => Reconnect();
+        Place(this, Theme.Button("退出"), 442, 684, 98, 32).Click += (s, e) => Quit();
 
-        tray.Icon = SystemIcons.Application; tray.Visible = true; tray.Text = "Remote CLI";
+        tray.Icon = Theme.MarkIcon(32); tray.Visible = true; tray.Text = "Remote CLI";
         tray.DoubleClick += (s, e) => Reveal();
         tray.ContextMenuStrip = new ContextMenuStrip();
         tray.ContextMenuStrip.Items.Add("显示窗口", null, (s, e) => Reveal());
@@ -307,13 +332,16 @@ public sealed class App : Form {
             e.Cancel = true; Hide();
             if (!hinted) { hinted = true; tray.ShowBalloonTip(4000, "Remote CLI 仍在运行", "手机可以继续连接。要停止，请在托盘图标上点右键选“退出”。", ToolTipIcon.Info); }
         };
-        using (var g = CreateGraphics()) { float factor = g.DpiX / 96f; if (factor > 1.01f) Scale(new SizeF(factor, factor)); }
+        using (var g = CreateGraphics()) {
+            float factor = g.DpiX / 96f;
+            if (factor > 1.01f) { Scale(new SizeF(factor, factor)); folders.ItemHeight = (int)(22 * factor); }
+        }
         Shown += (s, e) => {
             agent = new TerminalAgent(dataDir);
             Task.Run(async () => { await Connect(); await agent.Run(); });
         };
     }
-    void ListFolders() { folders.Items.Clear(); foreach (string line in Dirs()) { int at = line.IndexOf('='); folders.Items.Add(at > 0 ? line.Substring(0, at) + "   " + line.Substring(at + 1) : line); } }
+    void ListFolders() { folders.Items.Clear(); foreach (string line in Dirs()) { int at = line.IndexOf('='); folders.Items.Add(at > 0 ? line.Substring(0, at) + "\t" + line.Substring(at + 1) : line); } }
     void Reveal() { Show(); WindowState = FormWindowState.Normal; Activate(); }
     void Shutdown() { generation++; tray.Visible = false; StopChildren(); }
     void Quit() {
@@ -342,6 +370,23 @@ public sealed class App : Form {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             var window = new App();
+            // --screenshot <file.png>: draws the window into a picture after a moment and exits; used for the documentation.
+            if (args.Length == 2 && args[0] == "--screenshot") {
+                window.Show();
+                var until = DateTime.UtcNow.AddSeconds(4);
+                while (DateTime.UtcNow < until) { Application.DoEvents(); Thread.Sleep(30); }
+                using (var picture = new Bitmap(window.ClientSize.Width, window.ClientSize.Height)) {
+                    using (var g = Graphics.FromImage(picture)) g.Clear(Theme.Bg);
+                    Rectangle client = window.RectangleToScreen(window.ClientRectangle);
+                    using (var whole = new Bitmap(window.Width, window.Height)) {
+                        window.DrawToBitmap(whole, new Rectangle(0, 0, window.Width, window.Height));
+                        using (var g = Graphics.FromImage(picture)) g.DrawImage(whole, -(client.X - window.Left), -(client.Y - window.Top));
+                    }
+                    picture.Save(args[1], ImageFormat.Png);
+                }
+                window.quitting = true; window.Shutdown();
+                Environment.Exit(0);
+            }
             if (args.Contains("--hidden")) { window.WindowState = FormWindowState.Minimized; window.ShowInTaskbar = false; window.Shown += (s, e) => { window.Hide(); window.ShowInTaskbar = true; }; }
             Application.Run(window);
         }
