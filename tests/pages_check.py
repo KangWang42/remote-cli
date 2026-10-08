@@ -69,7 +69,8 @@ def main():
                             "--window-size=500,900", "--virtual-time-budget=%d" % wait, "--screenshot=" + str(out / name), url],
                            check=True, capture_output=True, timeout=90)
         shot("http://127.0.0.1:%d/#p=%s" % (PORT, password), "signin.png", 6000)           # leaves the sign-in cookie in the profile
-        shot("http://127.0.0.1:%d/" % PORT, "list.png", 6000)
+        skin = os.environ.get("RCLI_TEST_SKIN", "")
+        shot("http://127.0.0.1:%d/%s" % (PORT, "?skin=" + skin if skin else ""), "list.png", 6000)
         shot("http://127.0.0.1:%d/terminal/?id=%s" % (PORT, terminal), "terminal.png", 9000)
         print("saved", sorted(p.name for p in out.glob("*.png")))
     finally:

@@ -36,8 +36,24 @@ import org.json.JSONObject;
  */
 public final class MainActivity extends Activity {
     private static final int SPEECH = 4103;
-    private static final int BG = Color.rgb(26, 27, 38), PANEL = Color.rgb(34, 36, 54), LINE = Color.rgb(47, 51, 77),
-            INK = Color.rgb(192, 202, 245), MUTED = Color.rgb(129, 137, 173), ACCENT = Color.rgb(122, 162, 247), BAD = Color.rgb(247, 118, 142);
+    /** Colours of the screen for choosing a computer; they follow the skin last chosen in the pages. */
+    private int BG, PANEL, LINE, INK, MUTED, ACCENT, ON_ACCENT, BAD;
+    private void palette(boolean light) {
+        BG = light ? Color.rgb(251, 251, 252) : Color.rgb(26, 27, 38); PANEL = light ? Color.rgb(240, 241, 244) : Color.rgb(34, 36, 54);
+        LINE = light ? Color.rgb(213, 216, 223) : Color.rgb(47, 51, 77); INK = light ? Color.rgb(43, 47, 58) : Color.rgb(192, 202, 245);
+        MUTED = light ? Color.rgb(102, 107, 120) : Color.rgb(129, 137, 173); ACCENT = light ? Color.rgb(47, 111, 228) : Color.rgb(122, 162, 247);
+        ON_ACCENT = light ? Color.WHITE : Color.rgb(16, 18, 28); BAD = light ? Color.rgb(201, 60, 55) : Color.rgb(247, 118, 142);
+    }
+    /** Colours the system bars and picks dark or light icons on them, so they stay readable on any skin. */
+    private void bars(int shade) {
+        boolean light = (Color.red(shade) * 299 + Color.green(shade) * 587 + Color.blue(shade) * 114) / 1000 > 150;
+        getWindow().setStatusBarColor(shade); getWindow().setNavigationBarColor(shade);
+        int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        View decor = getWindow().getDecorView();
+        decor.setSystemUiVisibility(light ? decor.getSystemUiVisibility() | flags : decor.getSystemUiVisibility() & ~flags);
+        root.setBackgroundColor(shade);
+        if (light != prefs.getBoolean("light", false)) prefs.edit().putBoolean("light", light).apply();
+    }
     private SharedPreferences prefs;
     private FrameLayout root;
     private WebView web;
@@ -48,9 +64,10 @@ public final class MainActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("remote-cli", MODE_PRIVATE);
+        palette(prefs.getBoolean("light", false));
         root = new FrameLayout(this);
-        root.setBackgroundColor(BG);
         setContentView(root);
+        bars(BG);
         if (!linked(getIntent())) {
             server = prefs.getString("server", "");
             if (server.isEmpty()) choose(""); else open(server, "");
@@ -83,7 +100,7 @@ public final class MainActivity extends Activity {
     private int dp(float value) { return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics())); }
     private TextView text(String value, float size, int color) {
         TextView view = new TextView(this);
-        view.setText(value); view.setTextSize(size); view.setTextColor(color); view.setLineSpacing(dp(3), 1f);
+        view.setText(value); view.setTextSize(size); view.setTextColor(color); view.setLineSpacing(dp(5), 1f);
         return view;
     }
     private GradientDrawable shape(int fill, int stroke) {
@@ -107,7 +124,8 @@ public final class MainActivity extends Activity {
     private void choose(String problem) {
         if (web != null) { root.removeView(web); web.destroy(); web = null; }
         root.removeAllViews();
-        getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG);
+        palette(prefs.getBoolean("light", false));
+        bars(BG);
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
         column.setPadding(dp(24), dp(56), dp(24), dp(32));
@@ -123,7 +141,7 @@ public final class MainActivity extends Activity {
         passwordBox.setImeOptions(EditorInfo.IME_ACTION_GO);
         passwordBox.setOnEditorActionListener((view, action, event) -> { connect(); return true; });
         column.addView(passwordBox, below(10));
-        TextView go = text("连接", 16, Color.rgb(16, 18, 28));
+        TextView go = text("连接", 16, ON_ACCENT);
         go.setTypeface(Typeface.DEFAULT_BOLD); go.setGravity(Gravity.CENTER); go.setBackground(shape(ACCENT, ACCENT)); go.setMinHeight(dp(50));
         go.setClickable(true); go.setFocusable(true); go.setOnClickListener(view -> connect());
         column.addView(go, below(14));
@@ -149,6 +167,7 @@ public final class MainActivity extends Activity {
         root.removeAllViews();
         web = new WebView(this);
         web.setBackgroundColor(BG);
+        bars(BG);
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
         settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
@@ -176,7 +195,7 @@ public final class MainActivity extends Activity {
         @JavascriptInterface public void chrome(String color) {
             if (color == null || !color.matches("#[0-9a-fA-F]{6}")) return;
             final int shade = Color.parseColor(color);
-            runOnUiThread(() -> { getWindow().setStatusBarColor(shade); getWindow().setNavigationBarColor(shade); root.setBackgroundColor(shade); });
+            runOnUiThread(() -> { bars(shade); if (web != null) web.setBackgroundColor(shade); });
         }
         /** Back to the screen for choosing a computer. */
         @JavascriptInterface public void disconnect() { runOnUiThread(() -> choose("")); }

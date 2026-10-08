@@ -5,7 +5,22 @@
   const TOOLS = { claude: 'Claude Code', codex: 'Codex', shell: 'PowerShell' };
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
   let data = null, project = '', timer = 0, busy = false;
-  try { project = localStorage.getItem('rcli-project') || ''; } catch (error) { /* private window */ }
+  const saved = (key, fallback) => { try { return localStorage.getItem('rcli-' + key) || fallback; } catch (error) { return fallback; } };
+  const keep = (key, value) => { try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ } };
+  project = saved('project', '');
+  // The look chosen here is the one the terminal page opens with.
+  const TEXT = { small: ['紧凑', '14px'], normal: ['标准', '15.5px'], large: ['大', '17px'], larger: ['特大', '19px'] };
+  // ?skin=<name> chooses a skin from a link, for example when showing the app to someone.
+  const asked = new URLSearchParams(location.search).get('skin');
+  if (asked && window.RemoteCliSkins[asked]) keep('skin', asked);
+  function paint() {
+    const skin = window.RemoteCliPaint(saved('skin', 'night'));
+    document.documentElement.style.fontSize = (TEXT[saved('text', 'normal')] || TEXT.normal)[1];
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = skin.t.background;
+    if (window.RemoteCliNative) window.RemoteCliNative.chrome(skin.t.background);
+  }
+  paint();
 
   async function api(path, payload) {
     const reply = await fetch(path, payload === undefined ? { credentials: 'same-origin' }
@@ -41,6 +56,16 @@
       $('login').hidden = true; $('home').hidden = false;
       refresh();
     } catch (error) { $('login-error').textContent = error.message; }
+  });
+  $('look').addEventListener('click', async () => {
+    const skins = window.RemoteCliSkins, now = saved('skin', 'night'), size = saved('text', 'normal');
+    const choice = await ask('外观', '配色同时用于列表和终端。',
+      Object.keys(skins).map(key => ({ label: (key === now ? '● ' : '') + skins[key].name + (skins[key].light ? '（明亮）' : ''), value: 'skin:' + key }))
+        .concat(Object.keys(TEXT).map(key => ({ label: (key === size ? '● ' : '') + '文字 ' + TEXT[key][0], value: 'text:' + key }))));
+    if (!choice) return;
+    const [kind, value] = choice.split(':');
+    keep(kind, value);
+    paint();
   });
   $('logout').addEventListener('click', async () => { try { await api('/api/logout', {}); } catch (error) { /* signed out anyway */ } showLogin(); });
 
@@ -101,7 +126,7 @@
     bar.textContent = '';
     names.forEach(name => bar.append(el('button', { type: 'button', textContent: name, ariaPressed: String(name === project), onclick: () => {
       project = name;
-      try { localStorage.setItem('rcli-project', name); } catch (error) { /* private window */ }
+      keep('project', name);
       draw();
     } })));
     bar.append(el('button', { type: 'button', className: 'quiet', textContent: '＋ 项目', disabled: !ready, onclick: addProject }));

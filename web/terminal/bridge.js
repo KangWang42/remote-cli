@@ -136,6 +136,7 @@
     const closed = terminal.state === 'closed', dom = store.get('renderer', 'webgl') === 'dom', choices = [];
     if (closed && terminal.tool !== 'shell') choices.push(['继续这个对话', again]);
     choices.push(['更换外观', () => sheet('终端外观', ui().skins().map(s => [s.name, () => { store.set('skin', s.key); ui().setSkin(s.key); }, s.current]))]);
+    choices.push(['行距', () => sheet('行距', ui().spacings().map(s => [s.name, () => { store.set('spacing', s.key); ui().setSpacing(s.key); }, s.current]))]);
     choices.push(['重命名', async () => {
       const title = (prompt('终端名称', terminal.title) || '').trim();
       if (title) { const { status, body } = await post({ action: 'rename', id: newId(), terminal: id, title }); if (status !== 200) ui().error(body.error || '没有保存'); }
@@ -166,6 +167,7 @@
     voice,
     skin: () => store.get('skin', 'night'),
     renderer: () => store.get('renderer', 'webgl'),
+    spacing: () => store.get('spacing', 'cozy'),
     chrome(color) {
       if (!/^#[0-9a-fA-F]{6}$/.test(color)) return;
       let meta = document.querySelector('meta[name="theme-color"]');

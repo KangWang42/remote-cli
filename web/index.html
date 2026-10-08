@@ -9,6 +9,7 @@
   <title>Remote CLI</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="app.css">
+  <script defer src="terminal/skins.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
@@ -28,7 +29,10 @@
         <h1>Remote CLI</h1>
         <p id="device" role="status" aria-live="polite"><span id="dot" aria-hidden="true"></span><span id="device-text">正在连接…</span></p>
       </div>
-      <button type="button" id="logout" class="quiet">退出</button>
+      <div class="tools">
+        <button type="button" id="look" class="quiet">外观</button>
+        <button type="button" id="logout" class="quiet">退出</button>
+      </div>
     </header>
     <nav id="projects" aria-label="项目"></nav>
     <section id="launch" aria-label="新建终端"></section>
