@@ -78,8 +78,10 @@ public final class MainActivity extends Activity {
 
     /** remotecli://connect?u=address&p=password, from the code on the computer's screen. */
     private boolean linked(Intent intent) {
-        Uri link = intent == null ? null : intent.getData();
-        if (link == null || !"remotecli".equals(link.getScheme())) return false;
+        return link(intent == null ? null : intent.getData());
+    }
+    private boolean link(Uri link) {
+        if (link == null || !"remotecli".equals(link.getScheme()) || !link.isHierarchical()) return false;
         String address = clean(link.getQueryParameter("u")), password = link.getQueryParameter("p");
         if (address.isEmpty()) { choose("二维码里的地址无效，请在电脑上重新显示后再扫。"); return true; }
         open(address, password == null ? "" : password);
@@ -133,16 +135,21 @@ public final class MainActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT_BOLD);
         column.addView(title);
         column.addView(text("在手机上使用电脑里的终端、Claude Code 和 Codex。", 14.5f, MUTED), below(6));
-        column.addView(text("1. 在电脑上打开 Remote CLI。\n2. 用手机相机扫它显示的二维码，会直接回到这里并连上。\n3. 扫不了时，把电脑上显示的地址和密码填在下面。", 14.5f, INK), below(22));
+        column.addView(text("在电脑上打开 Remote CLI，用下面的按钮扫它窗口里的二维码。", 14.5f, INK), below(22));
+        TextView scan = text("扫码连接", 16, ON_ACCENT);
+        scan.setTypeface(Typeface.DEFAULT_BOLD); scan.setGravity(Gravity.CENTER); scan.setBackground(shape(ACCENT, ACCENT)); scan.setMinHeight(dp(52));
+        scan.setClickable(true); scan.setFocusable(true); scan.setOnClickListener(view -> scan());
+        column.addView(scan, below(14));
+        column.addView(text("或者手动输入电脑上显示的地址和密码：", 13.5f, MUTED), below(26));
         addressBox = field("地址，例如 192.168.1.5:8722", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         addressBox.setText(prefs.getString("server", ""));
-        column.addView(addressBox, below(22));
+        column.addView(addressBox, below(8));
         passwordBox = field("访问密码", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         passwordBox.setImeOptions(EditorInfo.IME_ACTION_GO);
         passwordBox.setOnEditorActionListener((view, action, event) -> { connect(); return true; });
         column.addView(passwordBox, below(10));
-        TextView go = text("连接", 16, ON_ACCENT);
-        go.setTypeface(Typeface.DEFAULT_BOLD); go.setGravity(Gravity.CENTER); go.setBackground(shape(ACCENT, ACCENT)); go.setMinHeight(dp(50));
+        TextView go = text("连接", 16, INK);
+        go.setTypeface(Typeface.DEFAULT_BOLD); go.setGravity(Gravity.CENTER); go.setBackground(shape(PANEL, LINE)); go.setMinHeight(dp(50));
         go.setClickable(true); go.setFocusable(true); go.setOnClickListener(view -> connect());
         column.addView(go, below(14));
         message = text(problem, 14, BAD);
@@ -153,6 +160,50 @@ public final class MainActivity extends Activity {
         scroll.addView(column, new ViewGroup.LayoutParams(-1, -2));
         root.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
     }
+    // ---- scanning the code inside the app
+    private static final int CAMERA = 4104;
+    private Scanner scanner;
+    private void scan() {
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.CAMERA}, CAMERA);
+            return;
+        }
+        root.removeAllViews();
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setGravity(Gravity.CENTER_HORIZONTAL);
+        column.setPadding(dp(24), dp(56), dp(24), dp(32));
+        TextView title = text("扫码连接", 22, INK);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        column.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        column.addView(text("对准电脑上 Remote CLI 窗口里的二维码。", 14.5f, MUTED), below(6));
+        final int side = Math.min(getResources().getDisplayMetrics().widthPixels - dp(48), dp(360));
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackground(shape(Color.BLACK, LINE));
+        frame.setClipToOutline(true);
+        LinearLayout.LayoutParams square = new LinearLayout.LayoutParams(side, side);
+        square.topMargin = dp(22);
+        column.addView(frame, square);
+        TextView back = text("取消", 16, INK);
+        back.setGravity(Gravity.CENTER); back.setBackground(shape(PANEL, LINE)); back.setMinHeight(dp(50));
+        back.setClickable(true); back.setFocusable(true); back.setOnClickListener(view -> { endScan(); choose(""); });
+        column.addView(back, below(22));
+        column.addView(text("画面只在手机上用来找二维码，不保存也不上传。", 12.5f, MUTED), below(14));
+        root.addView(column, new FrameLayout.LayoutParams(-1, -1));
+        scanner = new Scanner(this, frame, value -> {
+            scanner = null;
+            if (!link(Uri.parse(value))) choose("这不是 Remote CLI 的二维码。请扫电脑上 Remote CLI 窗口里的那一个。");
+        }, problem -> { scanner = null; choose(problem + "。可以手动输入地址和密码。"); });
+        frame.post(() -> { if (scanner != null) scanner.start(); });
+    }
+    private void endScan() { if (scanner != null) { scanner.stop(); scanner = null; } }
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request != CAMERA) return;
+        if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) scan();
+        else if (message != null) message.setText("没有相机权限，不能扫码。可以在系统设置里允许，或手动输入地址和密码。");
+    }
+
     private void connect() {
         String address = clean(addressBox.getText().toString());
         if (address.isEmpty()) { message.setText("地址无效。例如 192.168.1.5:8722，或 https:// 开头的地址。"); return; }
@@ -218,9 +269,10 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (scanner != null) { endScan(); choose(""); return; }
         if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
-    @Override protected void onPause() { super.onPause(); CookieManager.getInstance().flush(); if (web != null) web.onPause(); }
+    @Override protected void onPause() { super.onPause(); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); choose(""); } }
     @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); }
     @Override protected void onDestroy() { if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
 }

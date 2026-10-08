@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded Python does not add the script's folder
 import relay  # noqa: E402
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024

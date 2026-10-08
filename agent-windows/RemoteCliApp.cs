@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "0.2.0";
+    const string Version = "0.3.0";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -256,7 +256,7 @@ public sealed class App : Form {
 
         var phone = Place(this, new Card(), 20, 344, 520, 196);
         Place(phone, qr, 16, 16, 164, 164); qr.SizeMode = PictureBoxSizeMode.Zoom; qr.BackColor = Color.White;
-        Note(phone, "手机装好 App 后，用相机扫左边的二维码；\n扫不了时在 App 里输入下面的地址和密码。", 196, 14, 308, 38, Theme.Muted);
+        Note(phone, "在手机 App 里点“扫码连接”，扫左边的二维码；\n也可以在 App 里输入下面的地址和密码。", 196, 14, 308, 38, Theme.Muted);
         Note(phone, "地址", 196, 62, 40, 20, Theme.Muted);
         Place(phone, addressField, 238, 56, 202, 30); addressBox.ReadOnly = true;
         Place(phone, Theme.Button("复制"), 446, 55, 58, 32).Click += (s, e) => { if (addressBox.Text.Length > 0) Clipboard.SetText(addressBox.Text); };
@@ -363,7 +363,9 @@ public sealed class App : Form {
         // --qr <text> <file.png>: writes the picture the window would show; used by the tests.
         if (args.Length == 3 && args[0] == "--qr") { using (var picture = Picture(args[1], 8)) { if (picture == null) return 2; picture.Save(args[2], ImageFormat.Png); } return 0; }
         bool created;
-        using (var single = new Mutex(true, "Local\\RemoteCliApp", out created)) {
+        // One copy per data folder: a copy pointed at another folder with REMOTECLI_DATA (a test, a second setup) may run beside it.
+        string elsewhere = Environment.GetEnvironmentVariable("REMOTECLI_DATA");
+        using (var single = new Mutex(true, "Local\\RemoteCliApp" + (String.IsNullOrWhiteSpace(elsewhere) ? "" : "-" + Math.Abs(elsewhere.ToLowerInvariant().GetHashCode())), out created)) {
             if (!created) { MessageBox.Show("Remote CLI 已经在运行，请看屏幕右下角的托盘图标。", "Remote CLI"); return 0; }
             ServicePointManager.DefaultConnectionLimit = 8;      // the held request and the reports run side by side
             SetProcessDPIAware();

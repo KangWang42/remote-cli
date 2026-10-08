@@ -33,7 +33,11 @@
 
 ### 第 1 步：电脑上安装并打开
 
-运行 `RemoteCli-Setup-x.y.z.exe`，装完会自动打开下面这个窗口，桌面和开始菜单里也会有 Remote CLI 的图标。
+运行 `RemoteCli-Setup-x.y.z.exe`。安装位置可以改，点“浏览…”选别的盘或文件夹；选了已有内容的文件夹时，程序会装进里面新建的 `RemoteCli` 文件夹。默认位置不需要管理员权限。
+
+<img src="docs/images/setup.png" alt="安装程序：选择安装位置" width="420">
+
+装完会自动打开下面这个窗口，桌面和开始菜单里也会有 Remote CLI 的图标。以后想换位置，再运行一次安装程序选新位置即可，设置和密码会保留。
 
 <img src="docs/images/windows.png" alt="电脑端窗口" width="420">
 
@@ -55,11 +59,11 @@
 
 ### 第 4 步：手机上安装 App 并扫码
 
-1. 在手机上安装 `RemoteCli-Android.apk`。
-2. 打开手机的**系统相机**（或系统自带的扫一扫），对准电脑窗口里的二维码，点弹出的链接，会跳回 Remote CLI 并自动连上。
-3. 如果相机不识别这个二维码（部分手机的扫码工具不支持跳转到 App），打开 Remote CLI，把电脑窗口里的“地址”和“密码”手动填进去，点“连接”。
+1. 在手机上安装 `RemoteCli-Android.apk` 并打开。
+2. 点“扫码连接”，第一次会询问相机权限，允许后对准电脑窗口里的二维码，识别到就自动连上。
+3. 不想给相机权限或扫不了时，把电脑窗口里的“地址”和“密码”填到下面的输入框，点“连接”。用手机系统相机扫那个二维码也可以，会跳回 App。
 
-连上一次后 App 会记住这台电脑，90 天内不用再输密码。
+相机画面只在手机上用来找二维码，不保存也不上传。连上一次后 App 会记住这台电脑，90 天内不用再输密码。
 
 ### 第 5 步：开一个终端
 
@@ -92,7 +96,7 @@
 
 - 关掉电脑上的窗口只是收到右下角托盘，手机仍然能连。要停止，在托盘图标上点右键选“退出”。
 - 取消勾选“允许手机访问”可以立刻挡住手机，不用退出程序。
-- 卸载：Windows“设置 → 应用”里找到 Remote CLI，或运行安装目录里的 `Uninstall.exe`。
+- 卸载：Windows“设置 → 应用”里找到 Remote CLI，或运行安装目录里的 `Uninstall.exe`。只删除安装程序放进去的文件，同一文件夹里的其他东西不动。
 
 ## 常见问题
 
@@ -163,6 +167,8 @@ powershell -ExecutionPolicy Bypass -File android\build.ps1 -Jdk <JDK 目录> -Sd
 # 测试
 python -m unittest discover -s relay -p "test_*.py"
 python tests\e2e_windows.py
+python tests\setup_check.py dist\RemoteCli-Setup-x.y.z.exe      # 安装程序，沙盒方式，不碰已有安装
+java -cp .cache\zxing-core-3.5.3.jar tests\QrDecodeCheck.java <二维码.png> <内容>   # 手机端的二维码识别
 ```
 
 ## 已知限制

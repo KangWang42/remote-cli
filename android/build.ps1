@@ -25,16 +25,23 @@ function Invoke-Tool([string]$Tool, [string[]]$Arguments) {
     & $Tool @Arguments
     if ($LASTEXITCODE -ne 0) { throw "failed: $(Split-Path $Tool -Leaf), exit code $LASTEXITCODE" }
 }
+# The QR reader (ZXing core, Apache-2.0) comes from Maven Central once and is checked against a known hash.
+$zxing = Join-Path (Split-Path $PSScriptRoot -Parent) '.cache/zxing-core-3.5.3.jar'
+if (!(Test-Path -LiteralPath $zxing)) {
+    New-Item -ItemType Directory -Path (Split-Path $zxing) -Force | Out-Null
+    Invoke-WebRequest -Uri 'https://repo1.maven.org/maven2/com/google/zxing/core/3.5.3/core-3.5.3.jar' -OutFile $zxing -UseBasicParsing
+}
+if ((Get-FileHash -LiteralPath $zxing -Algorithm SHA256).Hash.ToLower() -ne '8d8064c1636fdaef7189dd9055c7d59950a8940a12f2293956446ec3c109fd82') { throw "unexpected content: $zxing" }
 $compiled = Join-Path $build 'resources.zip'
 $unsigned = Join-Path $build 'unsigned.apk'
 Invoke-Tool (Join-Path $buildTools 'aapt2.exe') @('compile', '--dir', 'res', '-o', $compiled)
 Invoke-Tool (Join-Path $buildTools 'aapt2.exe') @('link', '-o', $unsigned, '-I', $androidJar, '--manifest', 'AndroidManifest.xml', '--java', $generated, $compiled)
 $sources = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Filter '*.java' -Recurse | ForEach-Object FullName)
 $sources += @(Get-ChildItem -LiteralPath $generated -Filter '*.java' -Recurse | ForEach-Object FullName)
-Invoke-Tool $javac (@('-J-Duser.language=en', '-Xlint:-options', '--release', '8', '-encoding', 'UTF-8', '-classpath', $androidJar, '-d', $classes) + $sources)
+Invoke-Tool $javac (@('-J-Duser.language=en', '-Xlint:-options', '--release', '8', '-encoding', 'UTF-8', '-classpath', "$androidJar;$zxing", '-d', $classes) + $sources)
 $classesJar = Join-Path $build 'classes.jar'
 Invoke-Tool (Join-Path $Jdk 'bin/jar.exe') @('cf', $classesJar, '-C', $classes, '.')
-Invoke-Tool $java @('-cp', (Join-Path $buildTools 'lib/d8.jar'), 'com.android.tools.r8.D8', '--lib', $androidJar, '--min-api', '26', '--output', $dex, $classesJar)
+Invoke-Tool $java @('-cp', (Join-Path $buildTools 'lib/d8.jar'), 'com.android.tools.r8.D8', '--lib', $androidJar, '--min-api', '26', '--output', $dex, $classesJar, $zxing)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.IO.Compression
 $zip = [System.IO.Compression.ZipFile]::Open($unsigned, [System.IO.Compression.ZipArchiveMode]::Update)

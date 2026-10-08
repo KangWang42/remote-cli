@@ -6,6 +6,7 @@
 | `@xterm/addon-fit` | 0.10.0 | MIT | `web/terminal/vendor/addon-fit.js` |
 | `@xterm/addon-webgl` | 0.18.0 | MIT | `web/terminal/vendor/addon-webgl.js` |
 | JetBrains Mono (`@fontsource/jetbrains-mono`) | 5.2.5 | OFL-1.1 | `web/terminal/vendor/jetbrains-mono-*.woff2` |
+| ZXing core | 3.5.3 | Apache-2.0 | inside the Android app only; reads the QR code |
 | Python embeddable package | 3.12.10 | PSF-2.0 | inside the Windows installer only (`python/`) |
 
 The license texts of the first four are next to the files; `web/terminal/vendor/sources.json` records where
