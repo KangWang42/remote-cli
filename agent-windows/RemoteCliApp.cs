@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "0.4.0";
+    const string Version = "0.4.1";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -42,8 +42,10 @@ public sealed class App : Form {
     readonly PictureBox qr = new PictureBox();
     readonly ListBox folders = new ListBox();
     readonly CheckBox enabled = new CheckBox(), autostart = new CheckBox();
+    Button updateButton;
     readonly NotifyIcon tray = new NotifyIcon();
     bool quitting, hinted;
+    ReleaseUpdate availableUpdate;
 
     string ConfigFile { get { return Path.Combine(dataDir, "config.json"); } }
     string PasswordFile { get { return Path.Combine(dataDir, "password.dpapi"); } }
@@ -319,6 +321,7 @@ public sealed class App : Form {
                 if (autostart.Checked) key.SetValue("RemoteCli", "\"" + Application.ExecutablePath + "\" --hidden"); else key.DeleteValue("RemoteCli", false);
             }
         };
+        updateButton = Place(this, Theme.Button("检查更新"), 214, 684, 112, 32); updateButton.Click += (s, e) => CheckForUpdate(true);
         Place(this, Theme.Button("重新连接"), 336, 684, 98, 32).Click += (s, e) => Reconnect();
         Place(this, Theme.Button("退出"), 442, 684, 98, 32).Click += (s, e) => Quit();
 
@@ -339,7 +342,29 @@ public sealed class App : Form {
         Shown += (s, e) => {
             agent = new TerminalAgent(dataDir);
             Task.Run(async () => { await Connect(); await agent.Run(); });
+            CheckForUpdate(false);
         };
+    }
+    async void CheckForUpdate(bool manual) {
+        if (updateButton == null || !updateButton.Enabled) return;
+        updateButton.Enabled = false; if (manual) Say("正在检查 GitHub 最新版本…");
+        try {
+            ReleaseUpdate found = await AutoUpdater.CheckAsync(Version); availableUpdate = found;
+            if (found == null) { updateButton.Text = "已是最新版"; if (manual) Say("已是最新版"); return; }
+            updateButton.Text = "更新到 v" + found.Version;
+            if (MessageBox.Show(this, "GitHub 发布了 Remote CLI v" + found.Version + "。\n\n现在下载并重启更新吗？更新时手机终端会短暂断开。", "发现新版本", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes) await InstallUpdate(found);
+        } catch (Exception error) { updateButton.Text = "检查更新"; if (manual) Say("检查更新失败：" + error.Message, true); }
+        finally { updateButton.Enabled = true; }
+    }
+    async Task InstallUpdate(ReleaseUpdate found) {
+        updateButton.Enabled = false; updateButton.Text = "下载中…"; Say("正在从 GitHub 下载 v" + found.Version + "…");
+        try {
+            string file = await AutoUpdater.DownloadAsync(found, Path.Combine(dataDir, "updates"));
+            string app = Application.ExecutablePath, folder = appDir;
+            string command = "/c ping -n 3 127.0.0.1 >nul & start \"\" /wait \"" + file + "\" --quiet --dir \"" + folder + "\" & start \"\" \"" + app + "\"";
+            Process.Start(new ProcessStartInfo("cmd.exe", command) { CreateNoWindow = true, UseShellExecute = false, WorkingDirectory = folder });
+            quitting = true; Shutdown(); Application.Exit();
+        } catch (Exception error) { updateButton.Enabled = true; updateButton.Text = "更新失败"; Say("更新失败：" + error.Message, true); }
     }
     void ListFolders() { folders.Items.Clear(); foreach (string line in Dirs()) { int at = line.IndexOf('='); folders.Items.Add(at > 0 ? line.Substring(0, at) + "\t" + line.Substring(at + 1) : line); } }
     void Reveal() { Show(); WindowState = FormWindowState.Normal; Activate(); }

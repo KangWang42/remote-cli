@@ -1,6 +1,7 @@
 package io.github.kangwang42.remotecli;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -60,10 +61,15 @@ public final class MainActivity extends Activity {
     private EditText addressBox, passwordBox;
     private TextView message;
     private String server = "";
+    private GithubUpdater updater;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("remote-cli", MODE_PRIVATE);
+        updater = new GithubUpdater(this, new GithubUpdater.Listener() {
+            @Override public void found(GithubUpdater.Release release) { new AlertDialog.Builder(MainActivity.this).setTitle("发现 Remote CLI 新版本").setMessage("GitHub 上有 v" + release.version + "，现在下载并安装吗？").setPositiveButton("更新", (d, w) -> updater.install(release)).setNegativeButton("稍后", null).show(); }
+            @Override public void message(String text) { if (text != null && !text.isEmpty() && message != null) message.setText(text); }
+        });
         palette(prefs.getBoolean("light", false));
         root = new FrameLayout(this);
         setContentView(root);
@@ -72,6 +78,7 @@ public final class MainActivity extends Activity {
             server = prefs.getString("server", "");
             if (server.isEmpty()) choose(""); else open(server, "");
         }
+        updater.checkIfDue();
     }
 
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); linked(intent); }
@@ -273,6 +280,6 @@ public final class MainActivity extends Activity {
         if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
     @Override protected void onPause() { super.onPause(); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); choose(""); } }
-    @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); }
-    @Override protected void onDestroy() { if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
+    @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); if (updater != null) updater.checkIfDue(); }
+    @Override protected void onDestroy() { if (updater != null) updater.stop(); if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
 }
