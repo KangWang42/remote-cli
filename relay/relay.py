@@ -242,20 +242,23 @@ def command(path, payload, now=None):
             previous = payload.get("previous", "")
             if previous and (not isinstance(previous, str) or not _id.fullmatch(previous)):
                 raise RemoteError("历史对话编号无效")
-            if payload.get("history", False) not in (True, False) or payload.get("takeover", False) not in (True, False):
+            if any(type(payload.get(k, False)) is not bool for k in ("history", "takeover", "fork")):
                 raise RemoteError("历史选项无效")
             session = payload.get("session", "")
             saved = None
+            fork = payload.get("fork", False)
+            if fork and (tool != "codex" or not session or payload.get("takeover") or "codex-fork" not in _device.get("features", [])):
+                raise RemoteError("电脑端不支持这个副本选项，请更新电脑后台")
             if session:
                 saved = next((s for s in _sessions if s["id"] == session and s["tool"] == tool and s["dir"] == folder), None)                     if isinstance(session, str) and _session.fullmatch(session) else None
                 if not saved:
                     raise RemoteError("电脑上没有找到这个对话，请刷新后重试")
-                if any(t.get("session") == session and t["state"] in ("starting", "running") for t in state["threads"].values()):
+                if not fork and any(t.get("session") == session and t["state"] in ("starting", "running") for t in state["threads"].values()):
                     raise RemoteError("这个对话已经在手机终端里打开")
             if sum(t["state"] in ("starting", "running") for t in state["threads"].values()) >= MAX_TERMINALS:
                 raise RemoteError("最多同时运行 8 个终端，请先结束一个")
             terminal = uuid.uuid4().hex
-            term = {"id": terminal, "tool": tool, "dir": folder, "title": LABELS[tool], "session": session, "status": "",
+            term = {"id": terminal, "tool": tool, "dir": folder, "title": LABELS[tool] + (" · 副本" if fork else ""), "session": "" if fork else session, "status": "",
                     "created": int(now * 1000), "state": "starting", "error": "", "seq": 0, "output": [], "size": 0, "cols": 80, "rows": 24,
                     "instance": _device["instance"], "previous": previous, "history": bool(payload.get("history"))}
             state["threads"][terminal] = term
@@ -329,11 +332,14 @@ def agent(path, payload, now=None):
         if isinstance(payload.get("sessions"), list):
             _sessions[:] = [
                 {"id": s["id"], "tool": s["tool"], "dir": s["dir"], "title": s["title"].strip()[:80], "updated": s["updated"],
-                 "live": s.get("live") is True, "status": s.get("status") if s.get("status") in ("idle", "busy") else ""}
+                 "live": s.get("live") is True, "status": s.get("status") if s.get("status") in ("idle", "busy") else "",
+                 "can_takeover": s.get("can_takeover") is True, "ownership_known": s.get("ownership_known") is True,
+                 "takeover_reason": str(s.get("takeover_reason") or "")[:200]}
                 for s in payload["sessions"][:80]
                 if isinstance(s, dict) and isinstance(s.get("id"), str) and _session.fullmatch(s["id"]) and s.get("tool") in ("claude", "codex")
                 and isinstance(s.get("dir"), str) and isinstance(s.get("title"), str) and s["title"].strip() and type(s.get("updated")) is int]
         _device.update(seen=now, instance=instance, enabled=info.get("enabled") is True,
+                       features=[x for x in info.get("features", []) if x in ("codex-fork", "codex-takeover", "terminal-exit")],
                        tools=[x for x in info.get("tools", []) if x in ("claude", "codex", "shell")],
                        workspaces=[x for x in info.get("workspaces", []) if isinstance(x, str) and 0 < len(x) <= 60],
                        projects=_folders(info.get("projects"), 60), candidates=_folders(info.get("candidates"), 12))
@@ -379,6 +385,12 @@ def agent(path, payload, now=None):
                 status = item.get("status") if item.get("status") in ("idle", "busy") and term["state"] == "running" else ""
                 wrote = wrote or status != term.get("status")
                 term["status"] = status
+                exit_code = item.get("exit_code")
+                if term["state"] == "closed" and type(exit_code) is int and term.get("exit_code") != exit_code:
+                    term["exit_code"] = exit_code
+                    if exit_code != 0:
+                        term["error"] = "程序退出（代码 %d），请检查终端画面中的原因" % exit_code
+                    dirty = True
                 for key in ("cols", "rows"):
                     if type(item.get(key)) is int:
                         term[key] = item[key]

@@ -25,6 +25,37 @@ class TerminalRelayTests(unittest.TestCase):
         tr.agent(self.path, {"info": self.info, "acks": [{"id": payload["id"]}], "terminals": [{"id": self.terminal, "state": "running"}]}, now=1003)
         return payload
 
+    def test_codex_fork_preserves_source_and_requires_updated_agent(self):
+        sid = "12345678-1234-1234-1234-123456789abc"
+        session = {"id": sid, "tool": "codex", "dir": "demo", "title": "电脑会话", "updated": 5000,
+                   "live": True, "can_takeover": False, "ownership_known": True, "takeover_reason": "共享后台"}
+        tr.agent(self.path, {"info": self.info, "sessions": [session]}, now=1001)
+        op = {"action": "start", "id": "f" * 32, "tool": "codex", "dir": "demo", "session": sid, "fork": True}
+        with self.assertRaises(RemoteError):
+            tr.command(self.path, op, now=1002)
+        self.info["features"] = ["codex-fork", "terminal-exit"]
+        tr.agent(self.path, {"info": self.info}, now=1003)
+        terminal = tr.command(self.path, op, now=1004)["terminal"]
+        current = tr.overview(self.path, terminal, now=1004)["terminal"]
+        self.assertEqual(current["session"], "")
+        self.assertIn("副本", current["title"])
+        self.assertEqual(tr.overview(self.path, now=1004)["sessions"][0]["terminal"], "")
+        with self.assertRaises(RemoteError):
+            tr.command(self.path, dict(op, id="e" * 32, takeover=True), now=1004)
+        with self.assertRaises(RemoteError):
+            tr.command(self.path, dict(op, id="e" * 32, fork=1), now=1004)
+
+    def test_nonzero_terminal_exit_is_persisted_with_output(self):
+        self.start()
+        tr.agent(self.path, {"info": self.info,
+                           "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 7}],
+                           "output": [{"terminal": self.terminal, "seq": 1, "data": "startup failed"}]}, now=1004)
+        tr._cache.clear()
+        record = tr.overview(self.path, self.terminal, now=1005)
+        self.assertEqual(record["terminal"]["exit_code"], 7)
+        self.assertIn("代码 7", record["terminal"]["error"])
+        self.assertEqual(record["chunks"][0]["data"], "startup failed")
+
     def test_start_retry_and_input_delivery_are_idempotent_and_ordered(self):
         payload = self.start()
         self.assertEqual(len(tr.overview(self.path, now=1004)["terminals"]), 1)

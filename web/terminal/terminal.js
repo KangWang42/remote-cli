@@ -100,42 +100,49 @@
     if (latest.hidden !== atBottom) latest.hidden = atBottom;
   }
   term.onScroll(follow);
-  latest.addEventListener('click', () => { term.scrollToBottom(); follow(); });
+  latest.addEventListener('click', () => { scroller.stop(); term.scrollToBottom(); follow(); });
   term.onData(data => { if (!restoring) send(data); });
 
   // Dragging a finger over the screen scrolls it. Claude Code and Codex draw a full screen of their own and keep the
   // earlier lines themselves, so for them the drag is passed on as mouse-wheel steps; a plain shell keeps its lines
   // here and is scrolled directly.
-  let dragY = null, dragLeft = 0, wheelUp = 0, wheelDown = 0, wheelTimer = 0;
-  function flushWheel() {
-    wheelTimer = 0;
-    const up = Math.min(wheelUp, 40), down = Math.min(wheelDown, 40);
-    wheelUp = wheelDown = 0;
-    const column = Math.max(1, Math.floor(term.cols / 2)), row = Math.max(1, Math.floor(term.rows / 2));
-    if (up || down) send(`\x1b[<64;${column};${row}M`.repeat(up) + `\x1b[<65;${column};${row}M`.repeat(down));
-  }
-  function scrollBy(lines) {   // positive: towards earlier output
-    if (term.modes.mouseTrackingMode !== 'none') {
-      if (lines > 0) wheelUp += lines; else wheelDown -= lines;
-      if (!wheelTimer) wheelTimer = setTimeout(flushWheel, 70);
-    } else if (term.buffer.active.type === 'alternate') {
-      const pages = Math.trunc(lines / 8);
-      if (pages) send((pages > 0 ? KEYS.pageup : KEYS.pagedown).repeat(Math.min(3, Math.abs(pages))));
-    } else { term.scrollLines(-lines); follow(); }
-  }
+  let pageLines = 0;
+  const scroller = new TerminalScroller({
+    request: callback => requestAnimationFrame(callback), cancel: id => cancelAnimationFrame(id),
+    lineHeight: () => tall / Math.max(1, term.rows),
+    mode: () => term.modes.mouseTrackingMode !== 'none' ? 'mouse' : term.buffer.active.type === 'alternate' ? 'page' : 'local',
+    visible: () => !document.hidden,
+    reduced: () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    scroll(lines, mode) {
+      if (mode === 'mouse') {
+        const column = Math.max(1, Math.floor(term.cols / 2)), row = Math.max(1, Math.floor(term.rows / 2));
+        return send(`\x1b[<${lines > 0 ? 64 : 65};${column};${row}M`.repeat(Math.abs(lines)));
+      }
+      if (mode === 'page') {
+        pageLines += lines;
+        const pages = Math.trunc(pageLines / 8);
+        if (pages) { pageLines -= pages * 8; return send((pages > 0 ? KEYS.pageup : KEYS.pagedown).repeat(Math.abs(pages))); }
+        return true;
+      }
+      const before = term.buffer.active.viewportY;
+      term.scrollLines(-lines);
+      return term.buffer.active.viewportY !== before;
+    }
+  });
   screen.addEventListener('touchstart', event => {
-    dragY = event.touches.length === 1 && event.target !== latest ? event.touches[0].clientY : null;
-    dragLeft = 0;
+    pageLines = 0;
+    if (event.touches.length === 1 && !latest.contains(event.target)) scroller.start(event.touches[0].clientY, performance.now());
+    else scroller.stop();
   }, { capture: true, passive: true });
   screen.addEventListener('touchmove', event => {
-    if (dragY === null || event.touches.length !== 1) return;
-    const y = event.touches[0].clientY, cell = Math.max(8, tall / Math.max(1, term.rows));
-    dragLeft += y - dragY; dragY = y;
-    const lines = Math.trunc(dragLeft / cell);
-    if (lines) { dragLeft -= lines * cell; scrollBy(lines); }
+    if (event.touches.length !== 1) { scroller.stop(); return; }
+    if (!scroller.dragging) return;
+    scroller.move(event.touches[0].clientY, performance.now());
     event.preventDefault(); event.stopPropagation();
   }, { capture: true, passive: false });
-  screen.addEventListener('touchend', () => { dragY = null; }, { capture: true, passive: true });
+  screen.addEventListener('touchend', () => scroller.end(performance.now()), { capture: true, passive: true });
+  screen.addEventListener('touchcancel', () => scroller.stop(), { capture: true, passive: true });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) scroller.stop(); });
 
   // Buttons act on the terminal without taking the keyboard away from the message box.
   function keepFocus(element) { element.addEventListener('mousedown', event => event.preventDefault()); }
@@ -216,6 +223,7 @@
       slash.hidden = !(COMMANDS[tool] || []).length;
       if (!initialized || payload.reset) {
         restoring = true; running = false;
+        scroller.stop();
         term.reset(); term.resize(t.cols || 80, t.rows || 24);
         start = payload.chunks.length ? payload.chunks[0].seq - 1 : payload.after;
       }
@@ -238,7 +246,7 @@
         drawPalette();
       }
       const text = payload.chunks.map(c => c.data).join('');
-      term.write(text, () => {
+      const written = () => {
         initialized = true;
         if (!more) {
           const caughtUp = restoring, connected = live && !running;
@@ -248,7 +256,8 @@
         } else if (!restoring) running = live;
         follow();
         if (bridge) bridge.rendered(String(payload.after), more ? 'more' : text || t.status === 'busy' ? 'active' : 'quiet');
-      });
+      };
+      if (text) term.write(text, written); else written();
     },
     error(message) { notice.textContent = message; status.textContent = '连接中断，正在重连'; dot.className = ''; running = false; },
     inputError(message, draft) {

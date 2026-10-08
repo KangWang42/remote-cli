@@ -109,9 +109,10 @@
     } catch (error) { say(error.message); return null; } finally { busy = false; }
   }
   function open(terminal) { location.href = 'terminal/?id=' + encodeURIComponent(terminal); }
-  async function start(tool, session, takeover) {
+  async function start(tool, session, takeover, fork) {
     const payload = { action: 'start', tool, dir: project };
     if (session) Object.assign(payload, { session, takeover: !!takeover });
+    if (fork) payload.fork = true;
     const result = await run(payload, '正在电脑上启动 ' + TOOLS[tool] + '…');
     if (result) open(result.terminal);
   }
@@ -164,6 +165,15 @@
   }
   async function takeOver(session) {
     if (!(data.device.online && data.device.enabled)) return;
+    if (session.tool === 'codex') {
+      if (!(data.device.features || []).includes('codex-fork')) { say('请更新电脑端程序，再使用 Codex 副本和接手功能'); return; }
+      const choices = session.can_takeover
+        ? [{ label: '接手，并结束电脑上的 CLI 会话', value: 'close', kind: 'solid' }, { label: '在手机新开副本，保留电脑会话', value: 'copy' }]
+        : [{ label: '在手机新开副本，保留电脑会话', value: 'copy', kind: 'solid' }];
+      const choice = await ask('打开 Codex 对话', (session.takeover_reason || '请先在电脑结束会话，或新开副本。') + ' 副本保留之前的对话，电脑和手机之后各自继续。', choices);
+      if (choice) start(session.tool, session.id, choice === 'close', choice === 'copy');
+      return;
+    }
     const choices = session.tool === 'claude'
       ? [{ label: '接手，并关闭电脑上的窗口', value: 'close', kind: 'solid' }, { label: '只在手机上打开', value: 'keep' }]
       : [{ label: '在手机上打开', value: 'keep', kind: 'solid' }];

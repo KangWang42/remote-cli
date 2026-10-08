@@ -6,7 +6,7 @@
 
 - 真实终端：电脑上用 ConPTY 运行 `claude`、`codex` 或 PowerShell，手机上看到的就是它的画面，可以输入、按键、翻看、语音输入。
 - 离开后继续运行：关掉 App，电脑上的任务不停；回来接着看。
-- 接着电脑上的对话：列出项目文件夹里 Claude Code 和 Codex 保存的对话，点开就在手机上继续；电脑上正开着的 Claude Code 对话可以接手并关闭电脑上的窗口。
+- 接着电脑上的对话：列出 Claude Code 和 Codex 保存的对话；Codex 可结束电脑上的独立 CLI 后接手，也可保留电脑会话，在手机新开带历史的副本。
 - 六套外观：四套深色、两套明亮，列表和终端一起换；文字大小和终端行距可调。
 - 不需要服务器：同一个 Wi-Fi 下直连；或者一键建立 Cloudflare 临时隧道，在外面也能连。有自己服务器的可以部署中转，地址固定。
 
@@ -71,7 +71,7 @@
 
 - 顶部是项目，点一下切换；“＋ 项目”可以把电脑上别的文件夹加进来。
 - “新建 Claude Code / Codex / PowerShell”在当前项目文件夹里开一个新终端。按钮只显示电脑上装了的工具。
-- “电脑上正在运行”是电脑上正开着的对话，点开可以在手机上接着用；Claude Code 的对话可以选择同时关闭电脑上的窗口，避免两边一起输入。
+- “电脑上正在运行”是电脑上正开着的对话。Claude Code 可接手并结束电脑会话；Codex 可接手已确认归属的独立 CLI，或在手机新开副本保留电脑会话。
 - “历史对话”是这个文件夹里保存过的对话，点开就继续。
 - “手机终端”是从手机开的、还在运行的终端。离开 App 它们不会停。
 - 右上角“外观”可以换配色和文字大小，选的配色同时用于终端。
@@ -87,7 +87,7 @@
 | 下面一行按键 | Esc、方向键、回车、Tab、Shift+Tab、PgUp、PgDn、Ctrl+C，左右滑动可以看到全部 |
 | 输入框 | 输入后点“发送”；空着点“回车”相当于按一次回车。输入 `/` 会列出 Claude Code 或 Codex 的常用命令 |
 | 话筒 | 系统语音识别，识别结果先进输入框，确认后再发送 |
-| 手指上下拖动 | 翻看之前的内容 |
+| 手指上下拖动 | 按屏幕帧翻看之前的内容，松手后短暂惯性滑动；新触摸或反向拖动会停止惯性 |
 | 右上角 Aa | 切换字号（四档） |
 | 右上角 ··· | 更换外观（四套深色、两套明亮）、行距（紧凑、适中、宽松）、重命名、复制终端画面、结束终端；画面花屏时可以改用兼容绘制 |
 | 左上角 ‹ | 回到列表，终端继续在电脑上运行 |
@@ -105,6 +105,10 @@
 **列表里没有“新建 Claude Code”。** 按钮只显示电脑上能找到的工具。先在电脑的命令行里确认 `claude` 或 `codex` 能运行，再重新打开 Remote CLI。
 
 **输入后要等一下才显示。** 终端优先使用 WebSocket 持续连接，输入和输出实时传输，连续按键不用逐次等待上一条请求完成。公网仍有网络往返延迟；同一个 Wi-Fi 下用局域网直连最快。连接不支持 WebSocket 时会自动切换到 HTTP，Cloudflare 临时隧道会跳过不能及时传输的 SSE。
+
+**Codex 为什么有时只能新开副本？** 电脑端核实对话的写入锁和实际进程归属后，才提供“接手，并结束电脑上的 CLI 会话”。桌面应用或编辑器的共享后台可能同时管理多个对话，这时显示具体原因，并提供“在手机新开副本，保留电脑会话”。副本通过 `codex fork` 保留此前历史，之后各自继续；已结束的对话用 `codex resume` 恢复。结束 CLI 后，外层 PowerShell 窗口可能仍保留。新版手机页面需要新版电脑后台，旧后台会提示更新。
+
+**启动后马上结束。** 终端画面和退出代码会保留；检查画面中的 CLI 提示，例如登录状态、命令支持或工作目录。会话扫描遵循 `CODEX_HOME`，旧锁文件不会仅因存在而被显示为运行中。
 
 **端口 8722 被占用。** 退出程序后，把 `%LOCALAPPDATA%\RemoteCli\config.json` 里的 `Port` 改成别的数字再打开。
 
@@ -170,6 +174,8 @@ powershell -ExecutionPolicy Bypass -File android\build.ps1 -Jdk <JDK 目录> -Sd
 python -m unittest discover -s relay -p "test_*.py"
 python tests\e2e_windows.py
 node tests\bridge_check.js                                # 传输选择、连续输入和断线重试
+node tests\terminal_scroll_check.js                       # 拖动、惯性、反向和停止
+python tests\native_owner_check.py                       # 临时进程验证归属，不操作真实 Codex 会话
 python tests\tunnel_check.py --local                       # 直连回显延迟
 python tests\tunnel_check.py <cloudflared.exe> --protocol http2  # 公网回显延迟
 python tests\setup_check.py dist\RemoteCli-Setup-x.y.z.exe      # 安装程序，沙盒方式，不碰已有安装
@@ -181,7 +187,7 @@ java -cp .cache\zxing-core-3.5.3.jar tests\QrDecodeCheck.java <二维码.png> <�
 - 电脑端目前只有 Windows。macOS 和 Linux 的电脑端还没有写；接口在 `docs/PROTOCOL.md`。
 - 没有 iOS App。
 - 界面只有中文。
-- 接手电脑上正开着的对话并关闭电脑端窗口，只支持 Claude Code；Codex 的对话可以在手机上打开，但电脑上的窗口不会被关。
+- Codex 接手仅用于能确认归属的独立 CLI；共享后台使用副本入口。它依赖支持 `fork` 的 Codex CLI（本次核对版本 0.161.0），不把两个独立终端当作同一画面的实时镜像。
 - 经公网时，按键到回显的延迟主要是网络往返（手机 → 中转 → 电脑 → 中转 → 手机），局域网直连最快。
 - 同时最多 8 个终端。
 

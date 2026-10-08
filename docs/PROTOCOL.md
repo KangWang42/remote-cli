@@ -40,6 +40,13 @@ The code shown on the computer is `remotecli://connect?u=<address>&p=<password>`
 the computer; `live` means a program on the computer has it open, `terminal` is set when one of the relay's
 terminals already shows it. `state` is `starting`, `running` or `closed`; `status` is `busy`, `idle` or empty.
 
+Agents may advertise `info.features`: `codex-fork`, `codex-takeover`, and `terminal-exit`. These are forwarded
+under `device.features`. Sessions may include `can_takeover`, `ownership_known`, and `takeover_reason`.
+An agent verifies Codex's actual writer lock and process ownership before advertising takeover, then checks
+again before terminating the selected independent CLI. Shared app servers and phone descendants are protected.
+Process identifiers and command lines are never sent to the viewer. A closed terminal may include `exit_code`;
+a nonzero value produces a visible error while preserving the output.
+
 ### Output
 
 - `GET /api/terminal/ws?terminal=<id>&after=<seq>`: preferred WebSocket transport. Upgrade with
@@ -85,7 +92,7 @@ to held requests. Switching to the background cancels the active reader; returni
 
 | `action` | Fields |
 | --- | --- |
-| `start` | `tool` (`claude`, `codex`, `shell`), `dir` (a workspace name); optional `session` (continue that conversation), `takeover` (end the program that has it open on the computer first), `history` (let the tool show its own list) |
+| `start` | `tool` (`claude`, `codex`, `shell`), `dir` (a workspace name); optional `session` (continue that conversation), `takeover` (end the owning computer CLI first), `fork` (Codex only: new conversation with the source history), `history` (let the tool show its own list) |
 | `input` | `terminal`, `data` (at most 16,000 characters) |
 | `resize` | `terminal`, `cols` (20–240), `rows` (6–100) |
 | `rename` | `terminal`, `title` |
@@ -95,6 +102,11 @@ to held requests. Switching to the background cancels the active reader; returni
 | `project_remove` | `name` |
 
 ## Computer
+
+`fork` requires a session UUID, the `codex-fork` capability, and `takeover=false`. The new terminal starts with
+an empty session association; the source remains untouched. The agent only associates a new Codex conversation
+when its verified writer belongs to that terminal's process tree, never by picking the first conversation in
+the same folder. A locked source cannot be resumed concurrently; choose fork or first release its writer.
 
 `POST /api/terminal/agent`, a few times a second while something happens and about once a second otherwise:
 
