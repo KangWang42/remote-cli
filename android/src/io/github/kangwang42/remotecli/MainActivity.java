@@ -23,6 +23,7 @@ import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -83,6 +84,10 @@ public final class MainActivity extends Activity {
     private final Map<String, String[]> glance = new HashMap<>();       // address -> {state, text} from the last look
     private final Map<String, TextView[]> glanceViews = new HashMap<>();
     private final Runnable look = this::lookAtAll;
+    private final Runnable watch = this::checkConnection;
+    private boolean foreground, checkingConnection;
+    private String currentOrigin = "";
+    private ConnectionHealth connectionHealth = new ConnectionHealth();
 
     // ---- the computers this phone knows: [{"name": ..., "url": ...}]
     private JSONArray computers() {
@@ -205,6 +210,7 @@ public final class MainActivity extends Activity {
     }
     private void show(View content, String name) {
         ticker.removeCallbacks(look);
+        ticker.removeCallbacks(watch);
         if (web != null) { root.removeView(web); web.destroy(); web = null; }
         root.removeAllViews();
         palette(prefs.getBoolean("light", false));
@@ -262,7 +268,7 @@ public final class MainActivity extends Activity {
             column.addView(bold("我的电脑", 13.5f, MUTED), below(26));
             for (int i = 0; i < list.length(); i++) column.addView(computerCard(list.optJSONObject(i), i), below(i == 0 ? 10 : 10));
         }
-        column.addView(button("扫码添加电脑", 0, this::scan), below(24));
+        column.addView(button(problem.contains("重新扫码") ? "重新扫码连接电脑" : "扫码添加电脑", 0, this::scan), below(24));
         column.addView(button("手动输入地址", 1, () -> add("")), below(10));
         if (problem.isEmpty()) column.addView(message, below(12));
         column.addView(text("地址和密码相当于电脑的钥匙，不要发给别人。长按一台电脑可以改名或移除。", 12.5f, MUTED), below(18));
@@ -446,6 +452,9 @@ public final class MainActivity extends Activity {
     /** Shows the pages of the computer at this address; a password signs in first. */
     private void open(String address, String password) {
         ticker.removeCallbacks(look);
+        ticker.removeCallbacks(watch);
+        currentOrigin = address;
+        connectionHealth = new ConnectionHealth();
         prefs.edit().putString("server", address).apply();
         if (web != null) { root.removeView(web); web.destroy(); }
         root.removeAllViews();
@@ -466,11 +475,70 @@ public final class MainActivity extends Activity {
                 return !request.getUrl().toString().startsWith(origin + "/");       // the pages of this computer only
             }
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                if (request.isForMainFrame() && view == web) root.post(() -> home("连不上 " + host(origin) + "。请确认电脑上的 Remote CLI 在运行；局域网直连时手机要连同一个 Wi-Fi。公网隧道的地址每次启动都会变，需要重新扫码。"));
+                if (request.isForMainFrame()) reconnect(view, origin);
+            }
+            @Override public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
+                String url = request.getUrl().toString();
+                boolean relayRequest = url.startsWith(origin + "/api/");
+                if (ConnectionHealth.httpError(request.isForMainFrame(), relayRequest, response.getStatusCode())) reconnect(view, origin);
             }
         });
         root.addView(web, new FrameLayout.LayoutParams(-1, -1));
         web.loadUrl(address + "/" + (password.isEmpty() ? "" : "#p=" + Uri.encode(password)));
+        if (foreground) ticker.post(watch);
+    }
+
+    /** Runs independently of the page, including while a terminal is open or its WebSocket has stopped. */
+    private void checkConnection() {
+        ticker.removeCallbacks(watch);
+        if (!foreground || web == null || !"web".equals(screen)) return;
+        if (checkingConnection) { ticker.postDelayed(watch, 1000); return; }
+        final WebView checked = web;
+        final String origin = currentOrigin;
+        final ConnectionHealth health = connectionHealth;
+        checkingConnection = true;
+        net.execute(() -> {
+            boolean reachable = false;
+            int status = 0;
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(origin + "/api/session").openConnection();
+                connection.setConnectTimeout(3000); connection.setReadTimeout(3000);
+                connection.setInstanceFollowRedirects(false); connection.setUseCaches(false);
+                status = connection.getResponseCode();
+                if (status == 200) {
+                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                    try (InputStream input = connection.getInputStream()) {
+                        byte[] part = new byte[1024]; int n;
+                        while ((n = input.read(part)) > 0) {
+                            if (bytes.size() + n > 16384) throw new java.io.IOException("Unexpected session response");
+                            bytes.write(part, 0, n);
+                        }
+                    }
+                    JSONObject session = new JSONObject(bytes.toString("UTF-8"));
+                    reachable = session.opt("signed_in") instanceof Boolean;
+                }
+            } catch (Exception unreachable) { /* A second failed check returns to pairing. */ }
+            finally { if (connection != null) connection.disconnect(); }
+            final boolean ok = reachable;
+            final int code = status;
+            runOnUiThread(() -> {
+                checkingConnection = false;
+                if (!foreground || web != checked || !"web".equals(screen)) return;
+                if (health.sample(ok, code)) reconnect(checked, origin);
+                else ticker.postDelayed(watch, 3000);
+            });
+        });
+    }
+
+    private void reconnect(WebView failed, String origin) {
+        root.post(() -> {
+            // A late error from a destroyed page must not close a newly scanned connection.
+            if (web != failed || !"web".equals(screen)) return;
+            failed.stopLoading();
+            home("电脑连接已断开。请确认电脑上的 Remote CLI 已打开，然后重新扫码连接；局域网直连时请检查是否在同一个 Wi-Fi。");
+            paint(origin, "off", "连接已断开，请重新扫码");
+        });
     }
 
     private final class Bridge {
@@ -513,7 +581,7 @@ public final class MainActivity extends Activity {
         if (web != null && computers().length() > 1) { home(""); return; }
         super.onBackPressed();
     }
-    @Override protected void onPause() { super.onPause(); ticker.removeCallbacks(look); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); home(""); } }
-    @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); if ("home".equals(screen)) lookAtAll(); if (updater != null) updater.checkIfDue(); }
-    @Override protected void onDestroy() { ticker.removeCallbacks(look); net.shutdownNow(); if (updater != null) updater.stop(); if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
+    @Override protected void onPause() { super.onPause(); foreground = false; ticker.removeCallbacks(look); ticker.removeCallbacks(watch); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); home(""); } }
+    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) { web.onResume(); ticker.post(watch); } if ("home".equals(screen)) lookAtAll(); if (updater != null) updater.checkIfDue(); }
+    @Override protected void onDestroy() { foreground = false; ticker.removeCallbacks(look); ticker.removeCallbacks(watch); net.shutdownNow(); if (updater != null) updater.stop(); if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
 }
