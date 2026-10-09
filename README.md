@@ -28,7 +28,7 @@
   &nbsp;
   <img src="docs/images/look.png" alt="电脑上打开着的对话：先看内容，再决定要不要在手机上继续" width="205">
   &nbsp;
-  <img src="docs/images/files-word.png" alt="Word 文件保持原来的版式" width="205">
+  <img src="docs/images/files-word.png" alt="Word 文件带格式的预览" width="205">
   &nbsp;
   <img src="docs/images/terminal-dark.png" alt="深色外观下的终端" width="205">
 </p>
@@ -66,7 +66,7 @@
 | 状态一目了然 | 等你确认、已完成、正在执行、等待输入各有一种颜色 |
 | 不用进终端就能回答 | 程序问“是否允许”时，提问原文和“允许 / 拒绝”直接出现在列表的卡片上 |
 | 任务提醒 | 开启后，离开 App 时有任务等你确认或做完，手机会收到通知 |
-| 查看文件 | 在手机上翻看项目文件夹：代码、Markdown、笔记本、表格、PDF、图片，也可以保存到手机；Word 和 PowerPoint 保持原来的版式 |
+| 查看文件 | 在手机上翻看项目文件夹：代码、Markdown、笔记本、表格、PDF、图片，也可以保存到手机；Word 和 PowerPoint 带格式显示 |
 | 六套外观 | 两套明亮、四套深色，文字大小和行距可调 |
 | 软件内更新 | 电脑端和 App 都会检查新版本，下载并校验后安装 |
 
@@ -120,7 +120,7 @@ curl -fsSL https://raw.githubusercontent.com/KangWang42/remote-cli/main/agent-li
   &nbsp;
   <img src="docs/images/terminal.png" alt="终端页" width="200">
   &nbsp;
-  <img src="docs/images/files-slides.png" alt="PowerPoint 文件保持原来的版式" width="200">
+  <img src="docs/images/files-slides.png" alt="PowerPoint 文件的预览" width="200">
   &nbsp;
   <img src="docs/images/list-dark.png" alt="深色外观下的首页" width="200">
 </p>
@@ -161,7 +161,7 @@ App 有三层：**工作台**（所有电脑）→ **一台电脑**（它的项�
 - 你在电脑上自己开的命令行窗口，手机只能看它的对话内容，不能接着那个窗口用；要在手机上继续，得先结束它。想两边共用，请从手机或电脑端“活动”页新建终端。Codex 的“另开一份继续”依赖支持 `fork` 的 Codex CLI（核对版本 0.161.0）。
 - 经公网时，按键到回显的延迟主要是网络往返（手机 → 中转 → 电脑 → 中转 → 手机），局域网直连最快。
 - 同时最多 8 个终端。
-- 查看文件是只读的，不能在手机上编辑、上传或删除。旧格式的 doc、ppt 和 PowerPoint 的准确版式需要电脑上装有 Word、PowerPoint、WPS 或 LibreOffice 之一；都没有时，pptx 只有近似的版式，doc、ppt 只能保存到手机后用别的应用打开。
+- 查看文件是只读的，不能在手机上编辑、上传或删除。Word 和 PowerPoint 的预览是手机页面自己排的，不分页，PowerPoint 的母版样式和图表可能走样；要完全一致的样子，或要看旧格式的 doc、ppt，需要电脑上装有 Word、PowerPoint、WPS 或 LibreOffice 之一。
 
 ## 许可
 

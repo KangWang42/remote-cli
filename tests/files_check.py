@@ -179,6 +179,10 @@ def main():
     for folder in (data, project, outside):
         folder.mkdir()
     made = samples(project)
+    # RCLI_TEST_DOCX and RCLI_TEST_PPTX put a document of one's own in place of the made-up ones, to see how it is shown.
+    for wanted, kind in (("RCLI_TEST_DOCX", "word"), ("RCLI_TEST_PPTX", "slides")):
+        if os.environ.get(wanted) and kind in made:
+            (project / made[kind]).write_bytes(Path(os.environ[wanted]).read_bytes())
     (outside / "secret.txt").write_text("not part of the project")
     linked = subprocess.run(["cmd", "/c", "mklink", "/J", str(project / "link"), str(outside)], capture_output=True).returncode == 0
     (data / "config.json").write_text(json.dumps({"Server": "http://127.0.0.1:%d" % PORT, "RemoteEnabled": True, "RemoteMaxMode": "full", "RemoteDirs": ["cohort-study=%s" % project]}), encoding="utf-8")
@@ -328,15 +332,13 @@ def main():
                     if kind not in ("word", "slides"):
                         shot(view(path), kind + ".png", drawn[kind])
                         continue
-                    # Word and PowerPoint: as the program on the computer writes them out where there is one, then as
-                    # this page lays them out itself, then as text.
-                    laid = "document.querySelectorAll('.word-looks section.docx').length > 0" if kind == "word" else "document.querySelectorAll('.slide-looks .pptx-preview-wrapper > *').length >= 2"
+                    # Word and PowerPoint: with their formatting as this page lays them out, then as plain text, then, where
+                    # the computer has an office program and only when asked for, exactly as that program writes them.
+                    laid = "document.querySelectorAll('.word-looks section.docx table').length > 0" if kind == "word" else "document.querySelectorAll('.slide-looks .pptx-preview-wrapper > *').length >= 2"
+                    shot(view(path), kind + ".png", laid, seconds=60)
+                    tab("纯文字", drawn[kind], kind + "-text.png")
                     if exact:
-                        shot(view(path), kind + "-exact.png", drawn["pdf"], seconds=120)
-                        tab("版式" if kind == "word" else "版式（近似）", laid, kind + ".png")
-                    else:
-                        shot(view(path), kind + ".png", laid, seconds=60)
-                    tab("文字", drawn[kind], kind + "-text.png")
+                        tab("原样", drawn["pdf"], kind + "-exact.png", seconds=120)
                 # Saving inside the app: the page hands the file to the phone piece by piece. A stand-in for the app
                 # collects the pieces; together they must be the file.
                 stand_in = ask("Page.addScriptToEvaluateOnNewDocument", source="window.RemoteCliNative = { got: [], saveStart(n) { this.name = n; this.got = []; return ''; }, "

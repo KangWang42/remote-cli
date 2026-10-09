@@ -123,31 +123,21 @@
     $('progress').hidden = true;
     return whole;
   }
-  // A Word file laid out as its pages, and a PowerPoint file as its slides, by this page itself. A page of paper is
-  // wider than a phone: it is shown whole, scaled to the width there is, and a tap changes to its real size.
-  function fitted(box, pick, sheet) {
-    const fit = () => {
-      const inner = box.querySelector(pick), page = box.querySelector(sheet);
-      if (!inner || !page || !box.clientWidth) return;
-      inner.style.zoom = '';
-      const wide = page.offsetWidth + 16;           // the page as it was made, with a little air beside it
-      inner.style.zoom = box.classList.contains('actual') || wide <= box.clientWidth ? '' : String(box.clientWidth / wide);
-    };
-    new ResizeObserver(fit).observe(box);
-    box.addEventListener('click', () => { box.classList.toggle('actual'); fit(); });
-    return box;
-  }
+  // A Word file with its formatting (headings, emphasis, colours, tables, pictures, lists), flowing to the width
+  // of the screen like any page of text; a PowerPoint file as its slides, each the width of the screen.
   async function wordLooks(bytes) {
     await need('jszip.min.js');           // the second looks for the first when it is loaded
     await need('docx-preview.min.js');
     const box = el('div', { className: 'looks word-looks' });
-    await docx.renderAsync(bytes, box, null, { inWrapper: true, breakPages: true, useBase64URL: true, renderHeaders: true, renderFooters: true, renderFootnotes: true });
-    return fitted(box, '.docx-wrapper', 'section.docx');
+    await docx.renderAsync(bytes, box, null, { inWrapper: false, ignoreWidth: true, ignoreHeight: true, breakPages: false, useBase64URL: true,
+      renderHeaders: false, renderFooters: false, renderFootnotes: true });
+    box.querySelectorAll('table').forEach(table => { const wrap = el('div', { className: 'wide' }); table.replaceWith(wrap); wrap.append(table); });
+    return box;
   }
   async function slideLooks(bytes) {
     await need('pptx-preview.umd.js');
     const box = el('div', { className: 'looks slide-looks' });
-    const width = Math.max(320, Math.min(document.documentElement.clientWidth, 960));
+    const width = Math.max(300, Math.min(document.documentElement.clientWidth - 20, 960));       // the margin beside the slides
     const viewer = pptxPreview.init(box, { width, height: Math.round(width * 9 / 16), mode: 'list' });
     await viewer.preview(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
     return box;
@@ -445,31 +435,25 @@
       if (!view && K.readable(bytesOf(first.data))) { view = 'code'; language = 'plaintext'; }
       if (!view) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '这种文件不能在这里预览。')); }
       const limit = kind.limit || 3e6;
-      // Word and PowerPoint keep their look. This page lays the newer formats out itself, pages and slides as they
-      // were made, so no program is needed on the computer. Where the computer has Word, PowerPoint or WPS, the
-      // program writes a PDF and that is shown first: it is exact, and the only way for the older formats.
+      // Word and PowerPoint are shown with their formatting, laid out by this page: light, at once, and with nothing
+      // to install on the computer. A Word file flows to the width of the screen, so it reads without zooming; its
+      // pages are not kept. The exact look, as a PDF written by an office program on the computer, is one tap away
+      // where the computer has such a program, and made only when asked for: it takes a while.
       if (LOOKS.includes(kind.ext)) {
-        const modern = kind.ext === 'docx' || kind.ext === 'pptx';
-        let exact = null, why = '';
-        if (first.size <= 150e6 && await canRender()) {
-          try { exact = await rendered(path, mine); } catch (error) { if (error.message === 'left') throw error; why = error.message; $('progress').hidden = true; }
-        } else if (!modern) why = '旧格式的文件需要电脑上装有 Word、PowerPoint 或 WPS 才能预览。';
+        const modern = kind.ext === 'docx' || kind.ext === 'pptx', exact = first.size <= 150e6 && await canRender();
         if (mine !== run) return;
-        if (!exact && !modern) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, why || '这种文件不能在这里预览。')); }
-        if (!exact && first.size > limit) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '文件有 ' + K.size(first.size) + '，超过了预览的上限 ' + K.size(limit) + '。')); }
+        if (!modern && !exact) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '旧格式的文件需要电脑上装有 Word、PowerPoint、WPS 或 LibreOffice 才能预览。')); }
+        if (modern && !exact && first.size > limit) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '文件有 ' + K.size(first.size) + '，超过了预览的上限 ' + K.size(limit) + '。')); }
         let whole = null;
         const bytes = async () => { if (!whole) { whole = (await read(path, limit, mine, first)).bytes; current.bytes = whole; } return whole; };
         const list = [];
-        if (exact) list.push({ label: '原样', draw: () => pdf(exact, mine) });
         if (modern && first.size <= limit) {
-          // Word pages come out as they were made. Slides are a likeness: where a slide takes its sizes and bullets
-          // from the deck's master, this page does not follow all of it, and says so in the name.
-          list.push({ label: kind.ext === 'docx' ? '版式' : '版式（近似）', draw: async () => kind.ext === 'docx' ? wordLooks(await bytes()) : slideLooks(await bytes()) });
-          list.push({ label: '文字', draw: async () => kind.ext === 'docx' ? word(await bytes()) : slides(await bytes()) });
+          list.push({ label: '预览', draw: async () => kind.ext === 'docx' ? wordLooks(await bytes()) : slideLooks(await bytes()) });
+          list.push({ label: '纯文字', draw: async () => kind.ext === 'docx' ? word(await bytes()) : slides(await bytes()) });
         }
+        if (exact) list.push({ label: '原样', draw: async () => pdf(await rendered(path, mine), mine) });
         await tabs(list, 0);
         $('loading').hidden = true;
-        if (why && modern) toast('电脑没有转出原样预览：' + why);
         return;
       }
       if (first.size > limit) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '文件有 ' + K.size(first.size) + '，超过了预览的上限 ' + K.size(limit) + '。')); }

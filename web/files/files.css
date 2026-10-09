@@ -141,10 +141,14 @@
 .picture.actual { place-items: start; }
 .picture.actual img { max-width: none; cursor: zoom-out; }
 
-/* Word pages and PowerPoint slides as they were made */
-.looks { overflow-x: auto; }
-.word-looks .docx-wrapper { background: transparent !important; padding: 10px 8px 24px !important; align-items: flex-start !important; width: max-content; min-width: 100%; box-sizing: border-box; }
-.word-looks .docx-wrapper > section.docx { margin-bottom: 14px !important; box-shadow: 0 1px 6px rgba(0, 0, 0, .28) !important; color: #000; }
-.word-looks.actual { cursor: zoom-out; }
+/* Word with its formatting, flowing to the screen; PowerPoint as its slides */
+.word-looks { margin: 0 10px 24px; border: 1px solid var(--line); border-radius: 16px; background: #fff; color: #111; overflow: hidden; }
+.word-looks section.docx { width: auto !important; min-height: 0 !important; padding: 18px 16px 22px !important; margin: 0 !important; box-shadow: none !important; background: transparent !important; box-sizing: border-box; overflow-wrap: anywhere; font-size: 15px; line-height: 1.6; }
+.word-looks section.docx + section.docx { border-top: 1px dashed #d0d0d0; }
+.word-looks section.docx p { line-height: 1.6 !important; }
+.word-looks img, .word-looks svg { max-width: 100% !important; height: auto !important; }
+.word-looks .wide { overflow-x: auto; margin: .4em 0; }
+.word-looks table { max-width: none; }
+.slide-looks { margin: 0 10px 24px; }
 .slide-looks .pptx-preview-wrapper { height: auto !important; overflow: visible !important; background: transparent !important; }
-.slide-looks .pptx-preview-wrapper > * { margin-bottom: 10px; box-shadow: 0 1px 6px rgba(0, 0, 0, .28); }
+.slide-looks .pptx-preview-wrapper > * { margin-bottom: 10px; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
