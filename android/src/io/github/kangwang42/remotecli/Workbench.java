@@ -425,7 +425,7 @@ final class Workbench {
             card.addView(rule());
             LinearLayout help = kit.row();
             help.setPadding(kit.dp(16), kit.dp(10), kit.dp(12), kit.dp(12));
-            help.addView(kit.text("key".equals(snapshot.state) ? "登录已过期。" : "确认电脑开着、Remote CLI 在运行；公网隧道的地址每次启动都会变。", 12.5f, kit.MUTED), new LinearLayout.LayoutParams(0, -2, 1));
+            help.addView(kit.text("key".equals(snapshot.state) ? "登录已过期。" : "确认电脑开着、Remote CLI 在运行；退出电脑端或重启电脑后，公网隧道的地址会变。", 12.5f, kit.MUTED), new LinearLayout.LayoutParams(0, -2, 1));
             TextView again = kit.bold("重新扫码", 13.5f, kit.ACCENT);
             again.setGravity(Gravity.CENTER); again.setMinHeight(kit.dp(40)); again.setPadding(kit.dp(14), 0, kit.dp(14), 0);
             again.setBackground(kit.shape(Kit.tint(kit.ACCENT, 34), 0, 12));

@@ -283,7 +283,7 @@
     const offline = $('offline');
     offline.hidden = ready;
     if (!ready) offline.replaceChildren(el('b', { textContent: device.online ? '电脑端暂停了手机访问' : '电脑离线' }),
-      el('span', { textContent: device.online ? '在电脑上的 Remote CLI“设置”里打开“允许手机访问”。' : '请确认电脑开着、Remote CLI 在运行。用公网隧道时地址每次启动都会变，需要重新扫码。' }));
+      el('span', { textContent: device.online ? '在电脑上的 Remote CLI“设置”里打开“允许手机访问”。' : '请确认电脑开着、Remote CLI 在运行。用公网隧道时，退出程序或重启电脑后地址会变，需要重新扫码。' }));
     if (project && !names.includes(project)) { project = ''; }
     const terminals = data.terminals || [], sessions = (data.sessions || []).filter(s => !s.terminal);
     const mine = terminals.filter(running).map(t => Object.assign({ rank: PHASE[phaseOf(t)][1], at: t.phase_at || t.created }, t));

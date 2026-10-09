@@ -22,14 +22,15 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "0.6.5";
+    const string Version = "0.6.6";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
     readonly JavaScriptSerializer json = new JavaScriptSerializer();
     Dictionary<string, object> config;
     string password = "", address = "";
-    Process relay, tunnel;
+    Process relay, tunnel, kept;
+    string keptUrl = "";
     TerminalAgent agent;
     int generation;
 
@@ -51,13 +52,14 @@ public sealed class App : Form {
     bool trouble, preparing = true;
     static string ComputerName = Environment.MachineName;
     readonly NotifyIcon tray = new NotifyIcon();
-    bool quitting, hinted;
+    bool quitting, hinted, updating;
     ReleaseUpdate availableUpdate;
 
     string ConfigFile { get { return Path.Combine(dataDir, "config.json"); } }
     string PasswordFile { get { return Path.Combine(dataDir, "password.dpapi"); } }
     string TunnelFile { get { return Path.Combine(dataDir, "cloudflared.exe"); } }
     string ChildrenFile { get { return Path.Combine(dataDir, "children.json"); } }
+    string KeptFile { get { return Path.Combine(dataDir, "tunnel.json"); } }
     string Mode { get { return Convert.ToString(config["Mode"]); } }
     int Port { get { return Convert.ToInt32(config["Port"]); } }
 
@@ -102,10 +104,37 @@ public sealed class App : Form {
     void KillLeftovers() {
         try {
             foreach (object id in json.Deserialize<object[]>(File.ReadAllText(ChildrenFile)))
-                try { var p = Process.GetProcessById(Convert.ToInt32(id)); if (p.ProcessName == "python" || p.ProcessName == "cloudflared") Kill(p); } catch { }
+                try { var p = Process.GetProcessById(Convert.ToInt32(id)); if (kept != null && p.Id == kept.Id) continue; if (p.ProcessName == "python" || p.ProcessName == "cloudflared") Kill(p); } catch { }
         } catch { }
     }
-    void StopChildren() { Kill(tunnel); Kill(relay); tunnel = relay = null; Remember(); }
+    // An update leaves the tunnel running: the new version takes it over, so the phone keeps the address it knows.
+    void StopChildren() { if (!updating) { Kill(tunnel); tunnel = null; } Kill(relay); relay = null; Remember(); }
+    void Keep(string url, int port) {
+        try {
+            File.WriteAllText(KeptFile, json.Serialize(new Dictionary<string, object> { { "Pid", tunnel.Id }, { "Started", tunnel.StartTime.ToFileTimeUtc().ToString() }, { "Url", url },
+                { "Port", port }, { "Protocol", Convert.ToString(config["TunnelProtocol"]) } }));
+        } catch { }
+    }
+    // The tunnel an update or a crash of this program left running, when it still fits the settings.
+    Process Kept() {
+        try {
+            var was = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(KeptFile));
+            var p = Process.GetProcessById(Convert.ToInt32(was["Pid"]));
+            if (p.ProcessName != "cloudflared" || p.StartTime.ToFileTimeUtc().ToString() != Convert.ToString(was["Started"])) return null;
+            if (Mode != "cloud" || Convert.ToInt32(was["Port"]) != Port || Convert.ToString(was["Protocol"]) != Convert.ToString(config["TunnelProtocol"])) return null;
+            keptUrl = Convert.ToString(was["Url"]);
+            return p;
+        } catch { return null; }
+    }
+    // Cloudflare answers 530 for an address whose tunnel is gone; anything else, even no answer, leaves it in use.
+    static bool Gone(string url) {
+        try {
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            var request = (HttpWebRequest)WebRequest.Create(url + "/api/session"); request.Timeout = 8000;
+            using (request.GetResponse()) return false;
+        } catch (WebException error) { var reply = error.Response as HttpWebResponse; return reply != null && (int)reply.StatusCode == 530; }
+        catch { return false; }
+    }
     static bool Listening(int port) {
         try { using (var client = new TcpClient()) { var attempt = client.BeginConnect("127.0.0.1", port, null, null); bool ok = attempt.AsyncWaitHandle.WaitOne(400) && client.Connected; return ok; } } catch { return false; }
     }
@@ -151,6 +180,7 @@ public sealed class App : Form {
     // Starts what the chosen way of connecting needs. Runs off the window's thread.
     async Task Connect() {
         int mine = ++generation;
+        Process held = kept; kept = null;      // only the first start takes a tunnel over; "reconnect" always makes a new one
         ShowAddress("");
         StopChildren();
         string mode = Mode;
@@ -187,21 +217,32 @@ public sealed class App : Form {
                 return;
             }
             if (!File.Exists(TunnelFile)) { Say("还没有隧道程序，点下面的“下载隧道程序”", true); return; }
+            EventHandler lost = (s, e) => { if (mine == generation && !quitting) { ShowAddress(""); Say("公网隧道断开了，点“重新连接”。经常断开时到“设置”把隧道协议改为 HTTP/2", true); } };
+            if (held != null && !held.HasExited && !Gone(keptUrl)) {
+                if (mine != generation) return;
+                tunnel = held; tunnel.Exited += lost; tunnel.EnableRaisingEvents = true;
+                Remember();
+                ShowAddress(keptUrl);
+                Say("公网隧道已就绪，地址和上次相同，手机不用重新扫码");
+                return;
+            }
             Say("正在建立公网隧道…");
             var found = new TaskCompletionSource<string>();
-            var run = new ProcessStartInfo(TunnelFile, "tunnel --no-autoupdate" + (Convert.ToString(config["TunnelProtocol"]) == "http2" ? " --protocol http2" : "") + " --url http://127.0.0.1:" + port) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
+            var run = new ProcessStartInfo(TunnelFile, "tunnel --no-autoupdate" + (Convert.ToString(config["TunnelProtocol"]) == "http2" ? " --protocol http2" : "") + " --url http://127.0.0.1:" + port) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true, WorkingDirectory = dataDir };
             tunnel = new Process { StartInfo = run, EnableRaisingEvents = true };
             DataReceivedEventHandler look = (s, e) => { if (e.Data == null) return; var m = Regex.Match(e.Data, @"https://[a-z0-9-]+\.trycloudflare\.com"); if (m.Success) found.TrySetResult(m.Value); };
             tunnel.ErrorDataReceived += look; tunnel.OutputDataReceived += look;
-            tunnel.Exited += (s, e) => { found.TrySetResult(""); if (mine == generation && !quitting) { ShowAddress(""); Say("公网隧道断开了，点“重新连接”。经常断开时到“设置”把隧道协议改为 HTTP/2", true); } };
+            tunnel.Exited += (s, e) => { found.TrySetResult(""); lost(s, e); };
             tunnel.Start(); tunnel.BeginErrorReadLine(); tunnel.BeginOutputReadLine();
             Remember();
             string url = await Task.WhenAny(found.Task, Task.Delay(40000)) == found.Task ? found.Task.Result : "";
             if (mine != generation) return;
             if (url.Length == 0) { Kill(tunnel); Say("公网隧道没有建立成功，请检查网络后重试", true); return; }
+            Keep(url, port);
             ShowAddress(url);
-            Say("公网隧道已就绪。手机在任何网络下用 App 扫码；地址每次启动都会变");
+            Say("公网隧道已就绪。手机在任何网络下用 App 扫码；更新程序后地址不变");
         } catch (Exception error) { Say("启动失败：" + error.Message, true); }
+        finally { if (held != null && held != tunnel) Kill(held); }
     }
     void Reconnect() { Task.Run(() => Connect()); }
 
@@ -267,7 +308,7 @@ public sealed class App : Form {
         int mode = Mode == "lan" ? 0 : Mode == "cloud" ? 1 : 2;
         modePick.Chosen = mode;
         modeAbout.Text = mode == 0 ? "手机和电脑连同一个 Wi-Fi 时用，速度最快。第一次使用时 Windows 防火墙会询问，请选“允许”。"
-            : mode == 1 ? "不需要服务器和账号，手机在任何网络都能连。地址每次启动都会变，手机需要重新扫码。"
+            : mode == 1 ? "不需要服务器和账号，手机在任何网络都能连。更新程序后地址不变；退出程序或重启电脑后地址会变，手机需要重新扫码。"
             : "已经在自己的服务器上部署了 relay 时用，地址固定。密码用中转服务的密码。";
         tunnelButton.Visible = mode == 1; ownField.Visible = ownApply.Visible = mode == 2;
         tunnelButton.Text = File.Exists(TunnelFile) ? "重新建立隧道" : "下载隧道程序（约 60 MB）";
@@ -345,6 +386,7 @@ public sealed class App : Form {
     protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Theme.DarkTitle(Handle); }
     public App() {
         LoadSettings();
+        kept = Kept();
         KillLeftovers();
         Text = "Remote CLI"; Font = Theme.Text();
         AutoScaleMode = AutoScaleMode.None;      // positions below are for 100%; the whole window is scaled once at the end
@@ -530,7 +572,7 @@ public sealed class App : Form {
             ReleaseUpdate found = await AutoUpdater.CheckAsync(Version); availableUpdate = found;
             if (found == null) { updateButton.Text = "已是最新版"; updateButton.Glyph = Theme.IconCheck; if (manual) Toast("已是最新版"); return; }
             updateButton.Text = "更新到 v" + found.Version; updateButton.Kind = ButtonKind.Primary; updateButton.Glyph = Theme.IconDownload; nav[3].SetBadge("新");
-            if (Confirm("发现新版本 v" + found.Version, "现在下载并重启更新吗？更新时手机终端会短暂断开。", "下载并更新", false)) await InstallUpdate(found);
+            if (Confirm("发现新版本 v" + found.Version, "现在下载并重启更新吗？更新时手机终端会短暂断开，公网隧道的地址不变。", "下载并更新", false)) await InstallUpdate(found);
         } catch (Exception error) { updateButton.Text = "检查更新"; if (manual) Toast("检查更新失败：" + error.Message); }
         finally { updateButton.Enabled = true; }
     }
@@ -540,7 +582,7 @@ public sealed class App : Form {
             string file = await AutoUpdater.DownloadAsync(found, Path.Combine(dataDir, "updates"));
             string folder = appDir;
             Process.Start(new ProcessStartInfo(file, "--quiet --dir \"" + folder + "\" --wait-pid " + Process.GetCurrentProcess().Id + " --launch") { CreateNoWindow = true, UseShellExecute = false, WorkingDirectory = folder });
-            quitting = true; Shutdown(); Application.Exit();
+            updating = Mode == "cloud" && address.Length > 0; quitting = true; Shutdown(); Application.Exit();
         } catch (Exception error) { updateButton.Enabled = true; updateButton.Text = "更新失败"; Say("更新失败：" + error.Message, true); }
     }
     void Reveal() { Show(); WindowState = FormWindowState.Normal; Activate(); }
