@@ -228,6 +228,42 @@
       : session.takeover_reason || '手机不能确定是哪个程序在用这段对话，所以不会去关它。请先在电脑上结束使用它的程序。';
     return { choices, why };
   }
+  // What was said, laid out to be read: the tools answer in Markdown, which is set as text with headings, lists, code
+  // and tables rather than shown as its source; what the person asked stands apart on the right; and a run of things
+  // the tool did is one quiet block, folded when it is long, so that it does not push the talk off the screen.
+  const loading = {};
+  const need = name => loading[name] || (loading[name] = new Promise((done, failed) => {
+    const script = el('script', { src: 'files/vendor/' + name, onload: done, onerror: failed });
+    document.head.append(script);
+  }));
+  async function writeSaid(box, messages, toolName) {
+    let rich = false;
+    try { await Promise.all([need('marked.min.js'), need('purify.min.js')]); rich = !!(window.marked && window.DOMPurify); } catch (error) { /* plain text then */ }
+    const set = text => {
+      if (!rich) return el('div', { className: 'plain', textContent: text });
+      // nothing that could act or load: no links to follow, no pictures, no forms, no styles of its own
+      const html = DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }),
+        { FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select', 'input', 'img', 'a', 'iframe', 'video', 'audio'], FORBID_ATTR: ['style', 'href', 'src'] });
+      const body = el('div', { className: 'md', html });
+      body.querySelectorAll('table').forEach(table => { const wrap = el('div', { className: 'wide' }); table.replaceWith(wrap); wrap.append(table); });
+      return body;
+    };
+    let run = null, last = '';
+    messages.forEach(m => {
+      if (m.role === 'tool') {
+        if (!run) { run = { list: el('ul'), count: 0 }; run.box = el('details', { className: 'did' }, el('summary'), run.list); box.append(run.box); }
+        run.list.append(el('li', { textContent: m.text })); run.count++;
+        run.box.firstChild.textContent = '做了 ' + run.count + ' 个操作';
+        run.box.open = run.count <= 3;          // a few are shown; a long run is opened by a tap
+        return;
+      }
+      run = null;
+      const mine = m.role === 'user';
+      box.append(el('div', { className: 'turn ' + (mine ? 'user' : 'assistant') },
+        !mine && last !== 'assistant' ? el('b', { textContent: toolName }) : '', set(m.text)));
+      last = m.role;
+    });
+  }
   async function takeOver(session) {
     if (!usable()) return;
     const { choices, why } = ways(session), canPeek = (data.device.features || []).includes('peek');
@@ -242,9 +278,7 @@
           const messages = got.messages || [];
           if (got.more) said.append(el('p', { className: 'quiet', textContent: '更早的内容没有显示' }));
           if (!messages.length) said.append(el('p', { className: 'quiet', textContent: '这段对话还没有内容' }));
-          messages.forEach(m => said.append(el('div', { className: 'line ' + (m.role === 'tool' ? 'did' : m.role) },
-            el('b', { textContent: m.role === 'user' ? '你' : m.role === 'assistant' ? TOOLS[session.tool] : '操作' }), el('span', { textContent: m.text }))));
-          said.scrollTop = said.scrollHeight;       // what was said last is what one came to see
+          writeSaid(said, messages, TOOLS[session.tool]).then(() => { said.scrollTop = said.scrollHeight; });      // what was said last is what one came to see
         }).catch(error => { said.textContent = ''; said.append(el('p', { className: 'quiet', textContent: error.message })); });
       }
       if (why) form.append(el('p', { className: 'why', textContent: why }));
