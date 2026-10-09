@@ -404,7 +404,40 @@
   }
   function unknown(size, why) {
     const picture = K.picture(place.file, false);
-    return el('section', { className: 'unknown' }, el('span', { className: 'tool kind-' + picture, html: ICON[picture] }), el('b', { textContent: place.file }), el('p', { textContent: K.size(size) }), el('p', { textContent: why }));
+    return el('section', { className: 'unknown' }, el('span', { className: 'tool kind-' + picture, html: ICON[picture] }), el('b', { textContent: place.file }), el('p', { textContent: K.size(size) }), el('p', { textContent: why }),
+      el('button', { type: 'button', className: 'solid', textContent: native ? '保存到手机' : '保存到这台设备', onclick: save }));
+  }
+  // The file is fetched from the computer again, piece by piece, and kept on this device: inside the app in the
+  // phone's Download folder, each piece handed on as it arrives; in a browser as an ordinary download.
+  const SAVE_LIMIT = 300 * 1024 * 1024;
+  let saving = false;
+  async function save() {
+    if (saving) return toast('正在保存上一个文件');
+    if (native && !native.saveStart) return toast('请先更新手机 App，再保存文件');
+    const path = join(place.path, place.file), name = place.file, parts = [];
+    saving = true;
+    try {
+      let piece = await ask('file_read', path, 0), at = 0;
+      if (piece.size > SAVE_LIMIT) throw new Error('文件有 ' + K.size(piece.size) + '，超过了保存的上限 ' + K.size(SAVE_LIMIT));
+      if (native) { const refused = native.saveStart(name); if (refused) throw new Error(refused); }
+      for (;;) {
+        if (native) { const refused = native.savePiece(piece.data); if (refused) throw new Error(refused); } else parts.push(bytesOf(piece.data));
+        at += Math.floor(piece.data.length * 3 / 4) - (piece.data.endsWith('==') ? 2 : piece.data.endsWith('=') ? 1 : 0);
+        $('progress').hidden = false;
+        $('progress-text').textContent = '正在保存 ' + name + '  ' + K.size(Math.min(at, piece.size)) + ' / ' + K.size(piece.size);
+        $('progress-bar').style.width = Math.round(100 * Math.min(at, piece.size) / Math.max(1, piece.size)) + '%';
+        if (piece.end || !piece.data.length) break;
+        piece = await ask('file_read', path, at);
+      }
+      if (native) {
+        const where = native.saveEnd();
+        if (!where) throw new Error('没有保存成功，请检查手机的存储空间');
+        choose('已保存到手机', [{ label: '打开', sub: '用手机上的应用打开 ' + name, act: () => native.openSaved() }, { label: '知道了', sub: '文件在：' + where, act: () => {} }]);
+      } else { el('a', { href: hand(new Blob(parts), 'application/octet-stream'), download: name }).click(); toast('已交给浏览器保存'); }
+    } catch (error) {
+      if (native && native.saveCancel) native.saveCancel();
+      toast(error.message || '没有保存');
+    } finally { saving = false; $('progress').hidden = true; }
   }
 
   // ---- the menu
@@ -414,7 +447,7 @@
       if (current && (current.kind.view === 'code' || current.kind.view === 'markdown' || current.kind.ext === 'svg' || !current.kind.view))
         list.push({ label: '长行自动换行', sub: '关闭时可以左右滑动看完整的一行', on: wrap, act: () => { wrap = !wrap; keep('files-wrap', wrap ? '1' : ''); document.querySelectorAll('.code').forEach(c => c.classList.toggle('wrap', wrap)); } });
       list.push({ label: '复制文件路径', sub: join(dir, join(place.path, place.file)), act: async () => { try { await navigator.clipboard.writeText(join(place.path, place.file)); toast('已复制'); } catch (error) { toast('这里不能复制'); } } });
-      if (current && current.bytes && !native) list.push({ label: '保存到这台设备', sub: K.size(current.bytes.length), act: () => { el('a', { href: hand(current.bytes, current.kind.type), download: place.file }).click(); } });
+      list.push({ label: native ? '保存到手机' : '保存到这台设备', sub: native ? '放进手机的“下载 / RemoteCLI”，之后可以用别的应用打开' : '作为浏览器的下载', act: save });
     } else {
       [['name', '按名称排列'], ['time', '最近修改的在前'], ['size', '最大的在前']].forEach(([key, label]) => list.push({ label, on: sort === key, act: () => { sort = key; keep('files-sort', key); show(); } }));
       list.push({ label: '显示隐藏的文件', sub: '以 . 开头的和系统隐藏的', on: hidden, act: () => { hidden = !hidden; keep('files-hidden', hidden ? '1' : ''); show(); } });

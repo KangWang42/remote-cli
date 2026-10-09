@@ -102,6 +102,7 @@ def samples(project):
     (project / "model.bin").write_bytes(bytes(range(256)) * 8)
     (project / "notes").write_text("没有后缀的文本文件\n第二行\n", encoding="utf-8")
     (project / "big.log").write_bytes(b"0123456789abcdef" * 150_000)          # 2.4 MB: more than one piece
+    (project / "bundle.zip").write_bytes(os.urandom(1_600_000))               # not shown, only saved: three pieces
     made.update(code="analysis.py", markdown="README.md", notebook="explore.ipynb", sheet_csv="data/cohort.csv", unknown="model.bin")
     try:
         picture(project / "figures" / "trend.png")
@@ -306,6 +307,22 @@ def main():
                 shot(base + "/files/?dir=cohort-study", "folder.png", "document.querySelectorAll('#entries li').length > 5")
                 for kind, path in sorted(made.items()):
                     shot(view(path), kind + ".png", drawn[kind])
+                # Saving inside the app: the page hands the file to the phone piece by piece. A stand-in for the app
+                # collects the pieces; together they must be the file.
+                stand_in = ask("Page.addScriptToEvaluateOnNewDocument", source="window.RemoteCliNative = { got: [], saveStart(n) { this.name = n; this.got = []; return ''; }, "
+                               "savePiece(d) { this.got.push(d); return ''; }, saveEnd() { this.done = true; return '下载 / RemoteCLI'; }, saveCancel() { this.cancelled = true; }, openSaved() {}, chrome() {}, pref() { return ''; }, setPref() {} };")
+                shot(view("bundle.zip"), "save.png", "!!document.querySelector('.unknown button')")
+                ask("Runtime.evaluate", expression="document.querySelector('.unknown button').click()")
+                deadline = time.time() + 30
+                while time.time() < deadline and ask("Runtime.evaluate", expression="window.RemoteCliNative.done === true", returnByValue=True).get("result", {}).get("value") is not True:
+                    time.sleep(0.3)
+                digest = ask("Runtime.evaluate", awaitPromise=True, returnByValue=True, expression="(async () => { const n = window.RemoteCliNative, raw = n.got.map(p => atob(p)).join(''), bytes = Uint8Array.from(raw, c => c.charCodeAt(0)); "
+                             "const hash = await crypto.subtle.digest('SHA-256', bytes); return n.name + ' ' + n.got.length + ' ' + Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join(''); })()")["result"]["value"]
+                assert digest == "bundle.zip 3 " + hashlib.sha256((project / "bundle.zip").read_bytes()).hexdigest(), digest
+                time.sleep(0.5)
+                (out / "save.png").write_bytes(base64.b64decode(ask("Page.captureScreenshot", format="png")["data"]))
+                ask("Page.removeScriptToEvaluateOnNewDocument", identifier=stand_in["identifier"])
+                report["saved_in_pieces"] = 3
                 pipe.close()
             finally:
                 browser.kill()

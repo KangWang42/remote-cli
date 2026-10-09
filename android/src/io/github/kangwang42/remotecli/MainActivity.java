@@ -434,6 +434,7 @@ public final class MainActivity extends Activity {
         return script.append("}catch(e){}})()").toString();
     }
     private static final java.util.List<String> LOOK = java.util.Arrays.asList("skin", "termskin", "text", "font", "spacing", "renderer");
+    private final Saver saver = new Saver(this);
     private final class Bridge {
         /** The system's speech recognizer; what was said goes into the page's message box. */
         @JavascriptInterface public void voice() { runOnUiThread(MainActivity.this::dictate); }
@@ -459,6 +460,17 @@ public final class MainActivity extends Activity {
             if ("termskin".equals(key) && "app".equals(value)) prefs.edit().remove("look-termskin").apply();
             else prefs.edit().putString("look-" + key, value).apply();
         }
+        /**
+         * A file from the computer is kept on the phone: the page begins it, hands over its pieces as base64 text and
+         * ends it. Each answers with nothing when it went well, else with what to tell the user; the end answers
+         * with where the file is.
+         */
+        @JavascriptInterface public String saveStart(String name) { return saver.start(name); }
+        @JavascriptInterface public String savePiece(String data) { return saver.piece(data); }
+        @JavascriptInterface public String saveEnd() { return saver.finish(); }
+        @JavascriptInterface public void saveCancel() { saver.cancel(); }
+        /** Opens the file saved last with an app of the phone. */
+        @JavascriptInterface public void openSaved() { runOnUiThread(() -> { if (!saver.open()) say("手机上没有能打开这种文件的应用，文件在“下载 / RemoteCLI”里"); }); }
         /** Back to the workbench. disconnect is the name older pages call. */
         @JavascriptInterface public void home() { runOnUiThread(() -> MainActivity.this.home("")); }
         @JavascriptInterface public void disconnect() { home(); }

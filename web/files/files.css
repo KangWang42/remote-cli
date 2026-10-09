@@ -44,6 +44,7 @@
 .unknown { display: grid; justify-items: center; gap: 6px; margin-top: 12vh; text-align: center; color: var(--muted); }
 .unknown .tool { width: 64px; height: 64px; border-radius: 20px; margin-bottom: 8px; }
 .unknown .tool svg { width: 32px; height: 32px; }
+.unknown button { margin-top: 14px; padding: 0 26px; }
 .unknown b { color: var(--ink); font-size: 1.05rem; overflow-wrap: anywhere; }
 
 /* ---- one file */
