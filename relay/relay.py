@@ -20,22 +20,97 @@ class RemoteError(ValueError):
     """A request the relay refuses; its text is shown to the person at the phone."""
 
 
+# The list of terminals is one small file. The output of each terminal is a file of its own, one piece per line,
+# and saving adds only the new pieces: with megabytes of history kept, writing all of it again every few seconds
+# held up every key and every line for as long as the writing took.
+_logged = {}  # (path, terminal) -> [seq of the last piece in its file, characters in the file]
+
+
+def _folder(path):
+    return os.path.splitext(path)[0] + "-output"
+
+
+def _write(path, text, mode="w"):
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "a" else os.O_TRUNC), 0o600), mode, encoding="utf-8", newline="\n") as stream:
+        stream.write(text)
+
+
+def _replace(tmp, path):
+    for attempt in range(6):
+        try:
+            return os.replace(tmp, path)
+        except PermissionError:     # Windows: a virus scanner or the indexer is reading the file at this moment
+            if attempt == 5:
+                raise
+            time.sleep(0.01)
+
+
+def _lines(chunks):
+    return "".join(json.dumps(c, ensure_ascii=False) + "\n" for c in chunks)
+
+
 def _load(path):
     try:
         with open(path, encoding="utf-8") as stream:
             state = json.load(stream)
-        if isinstance(state, dict) and isinstance(state.get("threads"), dict):
-            return state
+        if not isinstance(state, dict) or not isinstance(state.get("threads"), dict):
+            raise ValueError
     except (OSError, ValueError):
-        pass
-    return {"threads": {}}
+        return {"threads": {}}
+    for key, term in state["threads"].items():
+        _logged.pop((path, key), None)
+        if "output" not in term:        # a list from before this arrangement carries the output itself
+            chunks, whole = [], True
+            try:
+                with open(os.path.join(_folder(path), key + ".jsonl"), encoding="utf-8", newline="\n") as stream:
+                    for line in stream:
+                        try:
+                            chunk = json.loads(line)
+                            if type(chunk["seq"]) is not int or not isinstance(chunk["data"], str) or (chunks and chunk["seq"] <= chunks[-1]["seq"]):
+                                raise ValueError
+                        except (ValueError, KeyError, TypeError):
+                            whole = False       # a line cut off by a crash: what came before it is kept
+                            break
+                        chunks.append({"seq": chunk["seq"], "data": chunk["data"]})
+            except OSError:
+                whole = False
+            term["output"] = chunks
+            if chunks:
+                term["seq"] = max(term.get("seq", 0), chunks[-1]["seq"])
+            if whole:
+                _logged[(path, key)] = [chunks[-1]["seq"] if chunks else 0, sum(len(c["data"]) for c in chunks)]
+        term["size"] = sum(len(c["data"]) for c in term["output"])
+    return state
 
 
 def _save(path, state):
-    tmp = path + ".tmp"
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as stream:
-        json.dump(state, stream, ensure_ascii=False)
-    os.replace(tmp, path)
+    folder = _folder(path)
+    os.makedirs(folder, exist_ok=True)
+    for key, term in state["threads"].items():
+        output, kept, file = term.get("output", []), _logged.get((path, key)), os.path.join(folder, key + ".jsonl")
+        last = output[-1]["seq"] if output else 0
+        # Added to while the file continues where the kept output goes on; written again when it does not, and when
+        # the file has grown to twice what is still kept.
+        if kept and kept[0] <= last and (not output or output[0]["seq"] <= kept[0] + 1) and kept[1] <= 2 * term.get("size", 0) + 100_000:
+            start = len(output)
+            while start > 0 and output[start - 1]["seq"] > kept[0]:
+                start -= 1
+            if start < len(output):
+                _write(file, _lines(output[start:]), "a")
+                kept[0], kept[1] = last, kept[1] + sum(len(c["data"]) for c in output[start:])
+        elif not kept or kept != [last, term.get("size", 0)]:
+            _write(file + ".tmp", _lines(output))
+            _replace(file + ".tmp", file)
+            _logged[(path, key)] = [last, sum(len(c["data"]) for c in output)]
+    _write(path + ".tmp", json.dumps({"threads": {key: {k: v for k, v in term.items() if k != "output"} for key, term in state["threads"].items()}}, ensure_ascii=False))
+    _replace(path + ".tmp", path)
+    for name in os.listdir(folder):
+        if name.endswith(".jsonl") and name[:-6] not in state["threads"]:
+            _logged.pop((path, name[:-6]), None)
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
 
 _lock = threading.Lock()
 _changed = threading.Condition(_lock)  # new output, a new state or a new operation: waiting requests look again
@@ -43,7 +118,23 @@ _unsaved = {}  # path -> time of the oldest output not yet written to disk
 _tick = [0]    # counts every wake-up, so a waiter can tell that one happened between its look and its wait
 SAVE_SECONDS = 2
 _cache = {}
-_pending = collections.OrderedDict()
+
+
+class _Operations(collections.OrderedDict):
+    """Operations by their id, oldest first, kept a while so that a repeated request gets the same answer. The few
+    the computer has not carried out yet are kept beside them: a phone that scrolls sends dozens a second, and
+    going through all of them at every request made the relay slower the longer it was used."""
+
+    def __init__(self):
+        super().__init__()
+        self.queued = {}
+
+    def clear(self):
+        super().clear()
+        self.queued.clear()
+
+
+_pending = _Operations()
 _id = re.compile(r"^[a-f0-9]{16,32}$")
 _session = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 _device = {"seen": 0, "instance": "", "enabled": False, "workspaces": [], "tools": [], "projects": [], "candidates": []}
@@ -61,8 +152,8 @@ def _state(path):
         # Starts awaiting delivery are in memory. Never replay them after a server restart.
         for term in state["threads"].values():
             if term.get("state") == "starting" and not any(
-                    op["terminal"] == term["id"] and op["state"] == "queued"
-                    for op in _pending.values()):
+                    op["terminal"] == term["id"]
+                    for op in _pending.queued.values()):
                 term.update(state="closed", error="中转服务重启前的启动未完成，请重新打开终端")
                 changed = True
             changed = _trim(term) or changed
@@ -90,11 +181,17 @@ def _folders(items, limit):
 def _trim(term):
     """A running screen keeps its recent history; an ended one keeps only its final screens."""
     limit = OUTPUT_LIMIT if term.get("state") in ("starting", "running") else CLOSED_LIMIT
-    output, before = term.get("output", []), term.get("size", 0)
-    term["size"] = sum(len(c["data"]) for c in output)
-    while term["size"] > limit and len(output) > 1:
-        term["size"] -= len(output.pop(0)["data"])
-    return term["size"] != before
+    output = term.get("output", [])
+    if "size" not in term:
+        term["size"] = sum(len(c["data"]) for c in output)
+    # The size is kept as pieces come and go: counting every piece again for each new one took longer the more there were.
+    size, drop = term["size"], 0
+    while size > limit and drop < len(output) - 1:
+        size -= len(output[drop]["data"])
+        drop += 1
+    del output[:drop]
+    term["size"] = size
+    return drop > 0
 
 
 def _view(now):
@@ -167,11 +264,16 @@ def _said(term):
             size += len(output[start]["data"])
         kept[1].seq = output[start]["seq"] - 1
     view = kept[1]
+    if view.seq < term["seq"]:
+        start, size = len(output), 0
+        while start > 0 and output[start - 1]["seq"] > view.seq and size < 200_000:
+            start -= 1
+            size += len(output[start]["data"])
+        if start > 0 and output[start - 1]["seq"] > view.seq:      # nobody looked for a long time: again from the last screens
+            view = _screen.Screen(term.get("cols", 80), term.get("rows", 24))
+            _screens[term["id"]] = (term.get("instance"), view)
     view.resize(term.get("cols", 80), term.get("rows", 24))
     if view.seq < term["seq"]:
-        start = len(output)
-        while start > 0 and output[start - 1]["seq"] > view.seq:
-            start -= 1
         for chunk in output[start:]:
             view.feed(chunk["data"])
         view.seq = term["seq"]
@@ -208,19 +310,19 @@ def _public_session(session, terminal=""):
 
 
 def _expire(now):
-    for op in _pending.values():
-        if op["state"] == "queued" and now - op["at"] > OP_SECONDS:
-            op.update(state="error", error="电脑未及时接收，操作没有执行，请重试")
-            for path, state in _cache.items():
-                term = state["threads"].get(op["terminal"])
-                if term:
-                    term["error"] = op["error"]
-                    if op["payload"]["action"] == "start":
-                        term["state"] = "closed"
-                        _trim(term)
-                    _save(path, state)
-    for key in [k for k, op in _pending.items() if now - op["at"] > 600]:
-        del _pending[key]
+    for op in [o for o in _pending.queued.values() if now - o["at"] > OP_SECONDS]:
+        op.update(state="error", error="电脑未及时接收，操作没有执行，请重试")
+        del _pending.queued[op["id"]]
+        for path, state in _cache.items():
+            term = state["threads"].get(op["terminal"])
+            if term:
+                term["error"] = op["error"]
+                if op["payload"]["action"] == "start":
+                    term["state"] = "closed"
+                    _trim(term)
+                _save(path, state)
+    while _pending and now - next(iter(_pending.values()))["at"] > 600:
+        _pending.queued.pop(_pending.popitem(last=False)[0], None)
 
 
 def overview(path, terminal="", after=0, now=None, wait=0):
@@ -293,15 +395,19 @@ def _overview(path, terminal, after, now):
             raise RemoteError("终端已不存在")
         chunks = term.get("output", [])
         reset = bool(chunks and (after < chunks[0]["seq"] - 1 or after > term.get("seq", 0)))
-        selected = chunks if reset else [c for c in chunks if c["seq"] > after]
+        # A reader is nearly always at the end: the new pieces are found from there, not by going through all of them.
+        start = 0 if reset else len(chunks)
+        while start > 0 and chunks[start - 1]["seq"] > after:
+            start -= 1
         # Bound each mobile reply, without skipping the remaining output.
         out, length = [], 0
-        for chunk in selected:
-            out.append(chunk)
-            length += len(chunk["data"])
+        for at in range(start, len(chunks)):
+            out.append(dict(chunks[at]))
+            length += len(chunks[at]["data"])
             if length >= 180_000:
                 break
-        return {"device": _view(now), "terminal": _public(term), "chunks": copy.deepcopy(out), "reset": reset,
+        # A terminal's page needs to know only whether the computer is there; the lists of folders stay with the list.
+        return {"device": {"online": now - _device["seen"] < 15, "enabled": _device["enabled"]}, "terminal": _public(term), "chunks": out, "reset": reset,
                 "after": out[-1]["seq"] if out else term.get("seq", 0), "tick": _tick[0]}
 
 
@@ -400,7 +506,7 @@ def command(path, payload, now=None):
             elif action != "close":
                 raise RemoteError("不支持此操作")
         op = {"id": op_id, "terminal": terminal, "state": "queued", "error": "", "at": now, "payload": copy.deepcopy(payload)}
-        _pending[op_id] = op
+        _pending[op_id] = _pending.queued[op_id] = op
         _wake()
         if action == "start":
             _save(path, state)
@@ -416,7 +522,7 @@ def pull(path, payload, now=None):
     deadline = time.monotonic() + (min(max(seconds, 0), 12) if type(seconds) in (int, float) else 12)
     with _changed:
         while True:
-            fresh = [op for op in _pending.values() if op["state"] == "queued" and not op.get("sent")] if payload["instance"] == _device["instance"] else []
+            fresh = [op for op in _pending.queued.values() if not op.get("sent")] if payload["instance"] == _device["instance"] else []
             if fresh:
                 for op in fresh:
                     op["sent"] = True
@@ -467,8 +573,9 @@ def agent(path, payload, now=None):
             op = _pending.get(ack.get("id"))
             if op and op["state"] == "queued":
                 op.update(state="error" if ack.get("error") else "done", error=str(ack.get("error", ""))[:300])
+                _pending.queued.pop(op["id"], None)
                 term = state["threads"].get(op["terminal"])
-                if term:
+                if term and term.get("error") != op["error"]:       # nearly every key ends without one: nothing to write
                     term["error"] = op["error"]
                     dirty = True
                 if op["payload"]["action"] == "project_rename" and not op["error"]:
@@ -534,8 +641,7 @@ def agent(path, payload, now=None):
             _unsaved.pop(path, None)
         if dirty or wrote:
             _wake()
-        for op in _pending.values():
-            if op["state"] == "queued":
-                op["sent"] = True
-        ops = [{**op["payload"], "terminal": op["terminal"], "at": op["at"]} for op in _pending.values() if op["state"] == "queued"]
+        for op in _pending.queued.values():
+            op["sent"] = True
+        ops = [{**op["payload"], "terminal": op["terminal"], "at": op["at"]} for op in _pending.queued.values()]
         return {"operations": ops, "output_ack": {t["id"]: t["seq"] for t in state["threads"].values() if t.get("instance") == instance}}

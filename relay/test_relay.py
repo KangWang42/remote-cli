@@ -306,6 +306,80 @@ class TerminalRelayTests(unittest.TestCase):
         self.assertEqual(report(9, 2003.2), 9)
         self.assertEqual(report(9, 2003.3), 9)
         self.assertEqual([c["data"] for c in tr.overview(self.path, self.terminal, after=3, now=2004)["chunks"]], ["片4", "片9"])
+    def test_saving_adds_only_new_output_and_survives_a_restart_an_old_list_and_a_cut_line(self):
+        import json
+        import os
+        self.start()
+        live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
+        report = lambda seq, now: tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": seq, "data": "片%d\n" % seq}]), now=now)
+        file = os.path.join(tr._folder(self.path), self.terminal + ".jsonl")
+        def read(name):
+            with open(name, encoding="utf-8") as stream:
+                return stream.read()
+        report(1, 3000.0)
+        report(2, 3002.5)
+        before = read(file)
+        self.assertNotIn("output", json.loads(read(self.path))["threads"][self.terminal])
+        saved = []
+        write = tr._write
+        tr._write = lambda path, text, mode="w": (saved.append((os.path.basename(path), mode, text)), write(path, text, mode))[1]
+        self.addCleanup(setattr, tr, "_write", write)
+        report(3, 3005.0)
+        tr._save(self.path, tr._state(self.path))
+        self.assertEqual([s for s in saved if s[0].startswith(self.terminal)], [(self.terminal + ".jsonl", "a", '{"seq": 3, "data": "片3\\n"}\n')])
+        self.assertEqual(read(file), before + '{"seq": 3, "data": "片3\\n"}\n')
+        restarted = lambda: (tr._cache.clear(), tr._unsaved.clear(), [c["data"] for c in tr.overview(self.path, self.terminal, now=3006)["chunks"]])[2]
+        self.assertEqual(restarted(), ["片1\n", "片2\n", "片3\n"])
+        with open(file, "a", encoding="utf-8") as stream:
+            stream.write('{"seq": 4, "da')                       # the relay was ended in the middle of a line
+        self.assertEqual(restarted(), ["片1\n", "片2\n", "片3\n"])
+        report(4, 3010.0)
+        tr._save(self.path, tr._state(self.path))
+        self.assertEqual(restarted(), ["片1\n", "片2\n", "片3\n", "片4\n"])
+        # A list written by an earlier version holds the output itself; it is read and then kept the new way.
+        state = json.loads(read(self.path))
+        state["threads"][self.terminal]["output"] = [{"seq": 1, "data": "旧"}, {"seq": 4, "data": "的"}]
+        os.remove(file)
+        with open(self.path, "w", encoding="utf-8") as stream:
+            json.dump(state, stream, ensure_ascii=False)
+        self.assertEqual(restarted(), ["旧", "的"])
+        report(5, 3020.0)
+        tr._save(self.path, tr._state(self.path))
+        self.assertEqual(restarted(), ["旧", "的", "片5\n"])
+        del tr._state(self.path)["threads"][self.terminal]
+        tr._save(self.path, tr._state(self.path))
+        self.assertFalse(os.path.exists(file))
+
+    def test_a_long_history_does_not_slow_new_output(self):
+        import time
+        self.start()
+        live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
+        piece = "x" * 60 + "\r\n"
+        for n in range(0, 30000, 200):
+            tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": n + i + 1, "data": piece} for i in range(200)]), now=4000 + n / 1000)
+        began = time.perf_counter()
+        for n in range(30000, 30100):
+            tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": n + 1, "data": piece}]), now=4100 + (n - 30000) * 0.05)
+            self.assertEqual(len(tr.overview(self.path, self.terminal, after=n, now=4100 + (n - 30000) * 0.05)["chunks"]), 1)
+        self.assertLess((time.perf_counter() - began) / 100, 0.005)      # it was a tenth of a second and more for each piece
+
+    def test_finished_operations_do_not_slow_later_requests(self):
+        import time
+        self.start()
+        live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
+        for n in range(6000):       # a few minutes of scrolling a full-screen program
+            key = "%032x" % (n + 1)
+            tr.command(self.path, {"action": "input", "id": key, "terminal": self.terminal, "data": "x"}, now=1004)
+            tr.agent(self.path, dict(live, acks=[{"id": key}]), now=1004)
+        self.assertEqual((len(tr._pending), len(tr._pending.queued)), (6001, 0))
+        began = time.perf_counter()
+        for n in range(200):
+            tr.overview(self.path, self.terminal, after=0, now=1005)
+        self.assertLess((time.perf_counter() - began) / 200, 0.0005)
+        self.assertEqual(tr.command(self.path, {"action": "input", "id": "%032x" % 1, "terminal": self.terminal, "data": "x"}, now=1006)["state"], "done")
+        tr.overview(self.path, now=1004 + 601)
+        self.assertEqual(len(tr._pending), 0)
+
     def test_output_is_streamed_as_it_arrives_and_a_wake_up_between_look_and_wait_is_not_lost(self):
         import threading
         import time

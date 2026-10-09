@@ -314,6 +314,7 @@ python tests\native_owner_check.py                        # 临时进程验证�
 python tests\tunnel_check.py --local                      # 直连回显延迟
 python tests\tunnel_check.py <cloudflared.exe> --protocol http2  # 公网回显延迟
 python tests\tunnel_keep_check.py <cloudflared.exe>       # 程序结束后再启动，公网地址不变
+python tests\smooth_check.py                           # 历史很长时按键回显和连续输出的间隔
 python tests\setup_check.py dist\RemoteCli-Setup-x.y.z.exe      # 安装程序，沙盒方式，不碰已有安装
 python tests\pages_check.py <chrome.exe> <输出文件夹>     # 用本机的中转和电脑端截取列表页和终端页
 java -cp .cache\zxing-core-3.5.3.jar tests\QrDecodeCheck.java <二维码.png> <内容>   # 手机端的二维码识别

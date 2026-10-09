@@ -219,8 +219,13 @@ public sealed class TerminalAgent {
     public static string ProjectFolder(string path) { return Regex.Replace(path, "[^a-zA-Z0-9]", "-"); }
     static bool SamePath(string a, string b) { return String.Equals(a.TrimEnd('\\', '/'), b.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase); }
     static long Milliseconds(DateTime utc) { return (long)(utc - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds; }
+    // Reading the conversation lists can take seconds. The reports start it beside themselves, with the terminals as
+    // they were at that moment, so that no key and no line of output waits for it; one reading at a time.
+    readonly object scanGate = new object();
+    int scanning;
+    public List<SessionInfo> Scan(Dictionary<string, string> dirs, LiveTerminal[] running = null) { lock (scanGate) return ScanAll(dirs, running ?? terminals.Values.ToArray()); }
     // Conversations of the allowed folders: what each tool saved, and which of them a program on this computer has open.
-    public List<SessionInfo> Scan(Dictionary<string, string> dirs) {
+    List<SessionInfo> ScanAll(Dictionary<string, string> dirs, LiveTerminal[] running) {
         var found = new List<SessionInfo>();
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var open = new Dictionary<string, ClaudeSessions.Owner>();
@@ -243,7 +248,7 @@ public sealed class TerminalAgent {
                     int pid = source.Pid; string session = source.Session;
                     LiveTerminal owner = null; int at = pid;
                     for (int depth = 0; depth < 12 && owner == null; depth++) {
-                        owner = terminals.Values.FirstOrDefault(t => !t.Pty.Closed && t.Pty.Id == at);
+                        owner = running.FirstOrDefault(t => !t.Pty.Closed && t.Pty.Id == at);
                         int parent; if (!parents.TryGetValue(at, out parent) || parent == at || parent == 0) break; at = parent;
                     }
                     if (owner != null) { owner.Session = session; owner.Status = source.Status; }
@@ -298,7 +303,7 @@ public sealed class TerminalAgent {
                 string dir = dirs.Where(d => SamePath(d.Value, folder)).Select(d => d.Key).FirstOrDefault();
                 var owner = codexSessions.Get(id);
                 bool live = owner.Live;
-                bool phone = owner.Pid > 0 && CodexSessions.Descends(owner.Pid, terminals.Values.Select(t => t.Pty.Id), ownerParents);
+                bool phone = owner.Pid > 0 && CodexSessions.Descends(owner.Pid, running.Select(t => t.Pty.Id), ownerParents);
                 if (dir == null) { note(folder, "codex", file.LastWriteTimeUtc, live); continue; }
                 int count; counts.TryGetValue(dir, out count);
                 if (!live && count >= 15) continue;
@@ -309,8 +314,8 @@ public sealed class TerminalAgent {
         } catch { }
         // Associate a phone terminal only with the verified writer process in its own process tree.
         var codexParents = Parents();
-        foreach (LiveTerminal t in terminals.Values.Where(t => t.Tool == "codex" && t.Session.Length == 0 && !t.Pty.Closed)) {
-            var mine = found.Where(s => s.Tool == "codex" && s.Dir == t.Dir && !terminals.Values.Any(o => o.Session == s.Id)
+        foreach (LiveTerminal t in running.Where(t => t.Tool == "codex" && t.Session.Length == 0 && !t.Pty.Closed)) {
+            var mine = found.Where(s => s.Tool == "codex" && s.Dir == t.Dir && !running.Any(o => o.Session == s.Id)
                 && codexSessions.Get(s.Id).Pid > 0 && CodexSessions.Descends(codexSessions.Get(s.Id).Pid, new[] { t.Pty.Id }, codexParents)).ToArray();
             if (mine.Length == 1) t.Session = mine[0].Id;
         }
@@ -634,7 +639,11 @@ public sealed class TerminalAgent {
             // Reading the conversation lists takes a moment; it waits while someone is typing.
             if (DateTime.UtcNow >= nextScan && (DateTime.UtcNow - lastInput > TimeSpan.FromSeconds(2) || DateTime.UtcNow - lastScan > TimeSpan.FromSeconds(20))) {
                 nextScan = DateTime.UtcNow.AddSeconds(5); lastScan = DateTime.UtcNow;
-                if (enabled) Scan(allowed); else { sessions.Clear(); candidates.Clear(); }
+                if (!enabled) { sessions = new List<SessionInfo>(); candidates = new List<Dictionary<string, object>>(); }
+                else if (Interlocked.CompareExchange(ref scanning, 1, 0) == 0) {
+                    var running = terminals.Values.ToArray();
+                    Task.Run(() => { try { Scan(allowed, running); } catch { } finally { scanning = 0; Wake(); } });
+                }
             }
             if (DateTime.UtcNow - toolsAt > TimeSpan.FromSeconds(30)) { tools = new[] { "claude", "codex", "shell" }.Where(t => FindTool(t) != null).ToArray(); toolsAt = DateTime.UtcNow; }
             lock (gate) { foreach (var t in terminals.Values) Seal(t); output = OutputBatch(terminals.Values.SelectMany(t => t.Output.Take(30))); }

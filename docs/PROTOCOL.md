@@ -79,7 +79,7 @@ Session records carry optional `host`: `cli` is a verified standalone CLI, `shar
 All three give
 
 ```json
-{"device": {...}, "terminal": {...}, "chunks": [{"seq": 13, "data": "..."}], "reset": false, "after": 13}
+{"device": {"online": true, "enabled": true}, "terminal": {...}, "chunks": [{"seq": 13, "data": "..."}], "reset": false, "after": 13}
 ```
 
 `data` is what the program wrote to its terminal, escape sequences included. Sequence numbers are consecutive.
@@ -146,7 +146,8 @@ waiting and returns it at once, so a key press does not wait for the next report
 
 ## Storage
 
-The relay keeps `terminals.json` (the terminals and their recent output, up to about 2,000,000 characters per
-running terminal), `sessions.json` (hashes of sign-in tokens) and, when it made the password itself,
+The relay keeps `terminals.json` (the list of terminals), `terminals-output/<terminal>.jsonl` (the recent output of
+each, one piece per line, up to about 2,000,000 characters for a running terminal; new pieces are added to the
+file rather than the file written again), `sessions.json` (hashes of sign-in tokens) and, when it made the password itself,
 `password.txt`, all in its data folder with owner-only permissions where the system supports them. It writes
 no terminal input or output to any log.
