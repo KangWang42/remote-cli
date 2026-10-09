@@ -18,9 +18,9 @@
 # Headless servers keep the service alive without a login session:
 #   sudo loginctl enable-linger $USER
 #
-# The pairing address and password are printed once on first connect:
-#   journalctl --user -u remote-cli-agent -n 30
-# (install the qrencode package to also get a scannable QR in the journal)
+# The pairing address and password never reach the journal. Show them in a console:
+#   python3 ~/.local/share/remote-cli-agent/agent.py --pair --data ~/.local/state/remote-cli-agent
+# (install the qrencode package to also get a scannable QR)
 
 [Unit]
 Description=remote-cli agent (terminals of this machine for the phone)

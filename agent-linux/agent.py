@@ -4,6 +4,7 @@
     python3 agent.py                              # data in ~/.local/state/remote-cli-agent
     python3 agent.py --data /var/lib/remote-cli-agent
     python3 agent.py --set-password [folder]      # store the relay's password, read from stdin
+    python3 agent.py --pair [--data folder]       # show the address, password and QR for the phone
 
 It signs in to the relay (relay/server.py) the same way the phone does, reports terminal
 state and output a few times a second, and carries out the operations the phone sends.
@@ -24,6 +25,7 @@ import os
 import pty
 import re
 import secrets
+import select
 import shutil
 import signal
 import socket
@@ -43,7 +45,8 @@ MAX_TERMINALS = 8
 MAX_OWN_PROJECTS = 30
 OP_TTL = 150            # seconds an operation may travel before it is refused
 CHUNK_CHARS = 12000
-OUTPUT_FLOOR_BYTES = 2 * 1024 * 1024  # unsent output is dropped past this; the relay dedups by seq     # one numbered piece of output, as the Windows agent seals them
+OUTPUT_FLOOR_BYTES = 2 * 1024 * 1024  # unsent output is dropped past this; the relay dedups by seq
+WRITE_WAIT = 1.0        # seconds input may wait for a program that is not reading
 BATCH_BYTES = 512 * 1024
 BATCH_CHUNKS = 150
 STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT")
@@ -196,9 +199,10 @@ class Http:
 class Live:
     """One terminal: the child process, its pty, and the output waiting to be numbered."""
 
-    def __init__(self, terminal_id, cwd, cols, rows, shell, wake):
+    def __init__(self, terminal_id, project, cwd, cols, rows, shell, wake):
         self.id = terminal_id
-        self.dir = cwd
+        self.project = project          # the project's name, which a rename follows
+        self.dir = cwd                  # its folder on this computer
         self.wake = wake
         self.lock = threading.Lock()
         self.pending = []               # read from the program, not yet numbered
@@ -227,6 +231,7 @@ class Live:
                 os._exit(127)
         self.pid = pid
         self.fd = fd
+        os.set_blocking(fd, False)      # input never waits on a program that is not reading
         self.resize(cols, rows)         # the kernel sends SIGWINCH to the foreground group
         threading.Thread(target=self._read, daemon=True).start()
         threading.Thread(target=self._wait, daemon=True).start()
@@ -234,7 +239,11 @@ class Live:
     def _read(self):
         try:
             while True:
-                data = os.read(self.fd, 8192)
+                select.select([self.fd], [], [])
+                try:
+                    data = os.read(self.fd, 8192)
+                except BlockingIOError:
+                    continue
                 if not data:
                     break
                 text = self.decoder.decode(data)
@@ -242,7 +251,7 @@ class Live:
                     with self.lock:
                         self.pending.append(text)
                     self.wake()
-        except OSError:
+        except (OSError, ValueError):
             pass                        # the terminal was closed or the program left
         finally:
             tail = self.decoder.decode(b"", final=True)
@@ -270,15 +279,29 @@ class Live:
         self.wake()
 
     def write(self, text):
-        # the lock is held for the whole write: closing the terminal between the fd check
-        # and the write could otherwise hand the reused fd number to a new terminal
-        data = text.encode("utf-8")
-        with self.lock:
-            if self.fd < 0:
-                raise OpError("终端已结束")
+        # The pty does not block: a program that has stopped reading would otherwise hold
+        # this write, and with it every other terminal, for as long as it liked. Each piece
+        # is written under the lock, so the fd cannot be closed and reused in between.
+        data = memoryview(text.encode("utf-8"))
+        deadline = time.monotonic() + WRITE_WAIT
+        while data:
+            with self.lock:
+                fd = self.fd
+                if fd < 0:
+                    raise OpError("终端已结束")
+                try:
+                    data = data[os.write(fd, data):]
+                    continue
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    raise OpError("终端已结束")
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise OpError("终端里的程序暂时没有读取输入，请稍后再试")
             try:
-                os.write(self.fd, data)
-            except OSError:
+                select.select([], [fd], [], left)
+            except (OSError, ValueError):
                 raise OpError("终端已结束")
 
     def resize(self, cols, rows):
@@ -447,7 +470,7 @@ class Projects:
                 raise OpError("这个项目写在电脑的配置文件里，请在电脑上修改"
                               if name in fixed else "没有这个项目")
             if action == "project_remove":
-                if any(t.dir == name and not t.closed for t in terminals.values()):
+                if any(t.project == name and not t.closed for t in terminals.values()):
                     raise OpError("这个项目还有终端在运行，请先结束")
                 del self.own[at]
             else:
@@ -458,8 +481,8 @@ class Projects:
                     raise OpError("已有同名项目")
                 self.own[at] = {"name": to, "path": self.own[at]["path"]}
                 for t in terminals.values():
-                    if t.dir == name:
-                        t.dir = to
+                    if t.project == name:
+                        t.project = to
         self._save()
 
 
@@ -527,8 +550,10 @@ class Agent:
                 return
         if not self.paired:
             self.paired = True
-            print_pairing(self.server, self.password,
-                          tidy(str(cfg.get("Name") or socket.gethostname()), 60))
+            if sys.stderr.isatty():
+                print_pairing(self.server, self.password, pairing_name(cfg))
+            else:                               # a service: this output is kept in the journal
+                say("配对信息不写入日志；在终端运行 agent.py --pair --data %s 查看地址、密码和二维码" % self.data)
         with self.work:
             enabled = cfg.get("RemoteEnabled") is True
             if not enabled:
@@ -613,7 +638,8 @@ class Agent:
                 live = self.terminals.get(terminal)
                 if live is None or live.closed:
                     raise OpError("终端已结束")
-                if live.dir not in dirs.values():
+                # a terminal can always be ended; typing into it needs its folder still allowed
+                if action != "close" and live.dir not in dirs.values():
                     raise OpError("目录不再获允许")
                 if action == "input":
                     data = op.get("data")
@@ -657,7 +683,7 @@ class Agent:
         if sum(1 for live in self.terminals.values() if not live.closed) >= MAX_TERMINALS:
             raise OpError("最多同时运行 %d 个终端，请先结束一个" % MAX_TERMINALS)
         cfg = read_config(self.data)
-        self.terminals[terminal] = Live(terminal, cwd, 80, 24, self.shell(cfg), self.wake)
+        self.terminals[terminal] = Live(terminal, name, cwd, 80, 24, self.shell(cfg), self.wake)
 
     # ---- loops
     def listen(self):
@@ -716,6 +742,22 @@ class Agent:
         return 0
 
 
+def pairing_name(cfg):
+    return tidy(str(cfg.get("Name") or socket.gethostname()), 60)
+
+
+def show_pairing(data):
+    """--pair: what the phone needs to add this computer, for the person at the console."""
+    cfg = read_config(data)
+    server = str(cfg.get("Server") or "").strip().rstrip("/")
+    password = read_password(data)
+    if not SERVER_RE.match(server) or not password:
+        say("缺少中转地址或密码：先在 %s 的 config.json 填写 Server，并用 --set-password 存入密码" % data)
+        return 2
+    print_pairing(server, password, pairing_name(cfg))
+    return 0
+
+
 def print_pairing(server, password, name):
     """The same code the Windows program shows as a picture, printed for the console."""
     payload = "remotecli://connect?u=%s&p=%s&n=%s" % (
@@ -752,6 +794,8 @@ def main():
             data = argv[at + 1]
     if argv and argv[0] == "--set-password":
         return set_password(argv[1] if len(argv) > 1 else data)
+    if "--pair" in argv:
+        return show_pairing(data)
     os.makedirs(data, mode=0o700, exist_ok=True)
     # One agent per data directory (the Windows agent's mutex): a second instance would
     # report with its own id and the relay would keep closing the first one's terminals.

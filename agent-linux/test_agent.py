@@ -130,9 +130,9 @@ class Pure(unittest.TestCase):
         cfg = {"RemoteDirs": ["固定=" + root]}
         terminals = {}
 
-        def live_for(name):
+        def live_for(name):                       # as start_terminal makes it: name and folder
             t = agent.Live.__new__(agent.Live)
-            t.dir, t.closed = name, True
+            t.project, t.dir, t.closed = name, root + "/" + name, True
             return t
 
         terminals["a"] = live_for("手机")
@@ -146,6 +146,12 @@ class Pure(unittest.TestCase):
         terminals["a"].closed = True
         projects.change({"name": "手机", "to": "改名"}, "project_rename", cfg, terminals)
         self.assertEqual(projects.own[0]["name"], "改名")
+        # the terminal follows the rename, so removal is still held back while it runs
+        self.assertEqual(terminals["a"].project, "改名")
+        terminals["a"].closed = False
+        with self.assertRaises(agent.OpError):
+            projects.change({"name": "改名"}, "project_remove", cfg, terminals)
+        terminals["a"].closed = True
         # a fixed project cannot be touched from the phone
         with self.assertRaises(agent.OpError):
             projects.change({"name": "固定"}, "project_remove", cfg, terminals)
