@@ -285,6 +285,11 @@ public final class MainActivity extends Activity {
     void open(String address, String password, String project) {
         openPage(address, password, project.isEmpty() ? "/" : "/?project=" + Uri.encode(project));
     }
+    /** A conversation running on the computer: its project page asks at once how to take it over. */
+    void openSession(String address, String project, String session) {
+        if (session == null || !session.matches("[A-Za-z0-9-]{8,64}")) { open(address, "", project); return; }
+        openPage(address, "", "/?project=" + Uri.encode(project) + "&take=" + session);
+    }
     /** Straight into one terminal; its page is told to come back here rather than to that computer's list. */
     void openTerminal(String address, String terminal) {
         try { openPage(address, "", AggregateSessions.terminalPath(terminal) + "&from=bench"); }

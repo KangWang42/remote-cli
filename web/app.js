@@ -171,7 +171,10 @@
       return result;
     } catch (error) { toast(error.message); return null; } finally { busy = false; }
   }
-  function open(terminal) { location.href = 'terminal/?id=' + encodeURIComponent(terminal); }
+  // ?take=<conversation> comes from the app's workbench: the question about taking over a conversation that runs on
+  // the computer is asked at once, and the terminal that follows leads back to the workbench.
+  let take = new URLSearchParams(location.search).get('take') || '', fromBench = !!take;
+  function open(terminal) { location.href = 'terminal/?id=' + encodeURIComponent(terminal) + (fromBench ? '&from=bench' : ''); }
   async function start(tool, dir, session, takeover, fork) {
     const payload = { action: 'start', tool, dir, history: false };
     if (session) Object.assign(payload, { session, takeover: !!takeover });
@@ -348,7 +351,14 @@
 
   async function refresh() {
     clearTimeout(timer);
-    try { data = await api('/api/terminal'); draw(); }
+    try {
+      data = await api('/api/terminal'); draw();
+      if (take) {
+        const wanted = (data.sessions || []).find(s => s.id === take && !s.terminal);
+        take = ''; history.replaceState(history.state, '', location.pathname + (project ? '?project=' + encodeURIComponent(project) : ''));
+        if (wanted && usable()) { if (wanted.live) takeOver(wanted); else start(wanted.tool, wanted.dir, wanted.id, false); }
+      }
+    }
     catch (error) { if (!$('home').hidden) { $('device-text').textContent = error.message; $('dot').className = 'off'; } }
     if (!$('home').hidden) timer = setTimeout(refresh, document.hidden ? 15000 : 2500);
   }

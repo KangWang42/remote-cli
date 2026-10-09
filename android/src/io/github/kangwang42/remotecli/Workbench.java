@@ -37,14 +37,14 @@ final class Workbench {
         final AggregateSessions.Entry entry;
         Task(String url, String computer, AggregateSessions.Entry entry, String kind) { this.url = url; this.computer = computer; this.entry = entry; this.kind = kind; }
     }
-    private static final int SHOWN = 4, TASKS = 12;
+    private static final int SHOWN = 4, TASKS = 12, TALKS = 8;
 
     private final MainActivity activity;
     private final Kit kit;
     private final Map<String, Snapshot> snapshots = new HashMap<>();
     private final Map<String, LinearLayout> holders = new HashMap<>();
     private final Map<String, String> marks = new HashMap<>();
-    private final Set<String> pending = new HashSet<>(), expanded = new HashSet<>();
+    private final Set<String> pending = new HashSet<>(), expanded = new HashSet<>(), unfolded = new HashSet<>();      // unfolded: address, line break, project
     private final Runnable tick = this::refresh;
     private JSONObject seen;
     private LinearLayout attention;
@@ -348,7 +348,7 @@ final class Workbench {
         texts.addView(meta, kit.below(4));
         card.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
         kit.press(card, () -> {
-            if (!entry.terminal) { activity.open(task.url, "", entry.project); return; }
+            if (!entry.terminal) { activity.openSession(task.url, entry.project, entry.id); return; }
             markSeen(task.url, entry.id, entry.at);
             activity.openTerminal(task.url, entry.id);
         });
@@ -363,7 +363,7 @@ final class Workbench {
         Snapshot snapshot = snapshots.get(url);
         Map<String, Long> looked = seen(url);
         String name = computer.optString("name").isEmpty() ? MainActivity.host(url) : computer.optString("name");
-        String mark = name + '\n' + expanded.contains(url) + '\n' + (snapshot == null ? "" : snapshot.state + '\n' + snapshot.line + '\n' + AggregateSessions.signature(snapshot.projects, looked));
+        String mark = name + '\n' + expanded.contains(url) + '\n' + unfolded + '\n' + (snapshot == null ? "" : snapshot.state + '\n' + snapshot.line + '\n' + AggregateSessions.signature(snapshot.projects, looked));
         if (mark.equals(marks.get(url))) return;
         marks.put(url, mark);
         holder.removeAllViews();
@@ -391,7 +391,7 @@ final class Workbench {
             for (AggregateSessions.Project project : snapshot.projects) if (project.active.isEmpty()) order.add(project);
             boolean all = expanded.contains(url);
             int shown = all ? order.size() : Math.max(busy, Math.min(SHOWN, order.size()));
-            for (int i = 0; i < shown; i++) { card.addView(rule()); card.addView(projectRow(url, order.get(i), looked)); }
+            for (int i = 0; i < shown; i++) { card.addView(rule()); card.addView(projectRow(computer, order.get(i), looked)); }
             if (order.isEmpty()) { card.addView(rule()); card.addView(note("还没有项目。在电脑端的“项目”页添加文件夹。")); }
             if (order.size() > Math.max(busy, SHOWN) || all && order.size() > SHOWN) {
                 card.addView(rule());
@@ -429,17 +429,20 @@ final class Workbench {
         note.setPadding(kit.dp(16), kit.dp(12), kit.dp(16), kit.dp(14));
         return note;
     }
-    private View projectRow(String url, AggregateSessions.Project project, Map<String, Long> looked) {
+    /** One project. A tap unfolds its conversations here, so that one of them is opened without a trip through that computer's pages. */
+    private View projectRow(JSONObject computer, AggregateSessions.Project project, Map<String, Long> looked) {
+        final String url = computer.optString("url"), key = url + '\n' + project.name;
         int need = 0, work = 0;
         for (AggregateSessions.Entry entry : project.active) {
             String kind = entry.kind(looked);
             if ("confirm".equals(kind) || "done".equals(kind)) need++;
             else if ("busy".equals(kind) || "starting".equals(kind) || "pc-busy".equals(kind)) work++;
         }
+        boolean open = unfolded.contains(key);
         LinearLayout row = kit.row();
         row.setMinimumHeight(kit.dp(52)); row.setPadding(kit.dp(16), kit.dp(8), kit.dp(12), kit.dp(8));
-        row.addView(kit.icon(R.drawable.ic_folder, kit.MUTED, 20));
-        TextView name = kit.line(project.name, 15, kit.INK, false);
+        row.addView(kit.icon(R.drawable.ic_folder, open ? kit.ACCENT : kit.MUTED, 20));
+        TextView name = kit.line(project.name, 15, kit.INK, open);
         name.setPadding(kit.dp(12), 0, kit.dp(8), 0);
         row.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
         if (need > 0) row.addView(kit.pill(need + " 个等你处理", kit.BAD));
@@ -447,8 +450,42 @@ final class Workbench {
         if (need == 0 && work == 0) row.addView(kit.text(!project.active.isEmpty() ? project.active.size() + " 个终端开着" : project.history.isEmpty() ? "还没有对话" : project.history.size() + " 段对话", 12.5f, kit.MUTED));
         View chevron = kit.icon(R.drawable.ic_chevron, Kit.tint(kit.MUTED, 150), 16);
         ((LinearLayout.LayoutParams) chevron.getLayoutParams()).leftMargin = kit.dp(6);
+        chevron.setRotation(open ? 90 : 0);
         row.addView(chevron);
-        kit.press(row, () -> activity.open(url, "", project.name));
+        kit.press(row, () -> { if (!unfolded.remove(key)) unfolded.add(key); drawComputer(computer); });
+        if (!open) return row;
+        LinearLayout box = kit.column();
+        box.addView(row);
+        LinearLayout inside = kit.column();
+        inside.setPadding(kit.dp(8), kit.dp(2), kit.dp(8), kit.dp(8));
+        inside.setBackground(kit.shape(kit.BG, 0, 14));
+        for (AggregateSessions.Entry entry : project.active) inside.addView(talkRow(url, entry, entry.kind(looked)));
+        for (int i = 0; i < Math.min(TALKS, project.history.size()); i++) inside.addView(talkRow(url, project.history.get(i), project.history.get(i).kind(looked)));
+        int rest = project.history.size() - Math.min(TALKS, project.history.size());
+        TextView enter = kit.bold(rest > 0 ? "新建终端，或查看其余 " + rest + " 段对话" : "新建终端 · 进入项目", 13.5f, kit.ACCENT);
+        enter.setGravity(Gravity.CENTER_VERTICAL); enter.setMinHeight(kit.dp(46)); enter.setPadding(kit.dp(8), 0, kit.dp(8), 0);
+        kit.press(enter, () -> activity.open(url, "", project.name));
+        inside.addView(enter);
+        LinearLayout.LayoutParams inset = new LinearLayout.LayoutParams(-1, -2);
+        inset.setMargins(kit.dp(10), 0, kit.dp(10), kit.dp(10));
+        box.addView(inside, inset);
+        return box;
+    }
+    /** One conversation of an unfolded project: a phone terminal is entered, a saved one is continued or taken over. */
+    private View talkRow(String url, AggregateSessions.Entry entry, String kind) {
+        LinearLayout row = kit.row();
+        row.setMinimumHeight(kit.dp(50)); row.setPadding(kit.dp(8), kit.dp(6), kit.dp(8), kit.dp(6));
+        row.addView(kit.tile(toolIcon(entry.tool), toolColor(entry.tool), 30));
+        TextView title = kit.line(entry.shownTitle(), 14.5f, "history".equals(kind) ? kit.MUTED : kit.INK, false);
+        title.setPadding(kit.dp(10), 0, kit.dp(8), 0);
+        row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        if ("history".equals(kind)) row.addView(kit.text("继续", 12.5f, kit.MUTED));
+        else row.addView(kit.pill(AggregateSessions.label(kind), color(kind)));
+        kit.press(row, () -> {
+            if (!entry.terminal) { activity.openSession(url, entry.project, entry.id); return; }
+            markSeen(url, entry.id, entry.at);
+            activity.openTerminal(url, entry.id);
+        });
         return row;
     }
 }

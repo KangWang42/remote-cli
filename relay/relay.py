@@ -107,6 +107,9 @@ _ESCAPES = re.compile(r"\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\
 # Questions the tools draw when they need a decision, compared without spaces and in lower case.
 _ASKS = ("doyouwantto", "wouldyouliketo", "1.yes", "allowcommand", "yes,proceed", "approve?", "[y/n]", "(y/n)", "[y]yes", "[y]是", "presstoconfirm", "enter确认")
 QUIET_SECONDS, ACTIVE_SECONDS = 1.5, 4
+# Output that is only the screen being drawn again is not work: what a program prints before it has been given
+# anything, the redraw after the phone changed the size of the screen, and the echo of keys without Enter.
+REDRAW_SECONDS, ECHO_SECONDS = 3, 1.2
 
 
 def _asks(term):
@@ -145,7 +148,7 @@ def _track(term, now):
 
 
 def _public(term):
-    shown = {k: v for k, v in term.items() if k not in ("output", "instance", "size", "out_at")}
+    shown = {k: v for k, v in term.items() if k not in ("output", "instance", "size", "out_at", "touched", "calm_until")}
     # Until the owner names a terminal, it carries the name of the conversation it has open.
     if not term.get("renamed"):
         shown["title"] = next((s["title"] for s in _sessions if s["id"] == term.get("session")), term["title"])
@@ -329,7 +332,7 @@ def command(path, payload, now=None):
             terminal = uuid.uuid4().hex
             term = {"id": terminal, "tool": tool, "dir": folder, "title": LABELS[tool] + (" · 副本" if fork else ""), "session": "" if fork else session, "status": "",
                     "created": int(now * 1000), "state": "starting", "error": "", "seq": 0, "output": [], "size": 0, "cols": 80, "rows": 24,
-                    "instance": _device["instance"], "previous": previous, "history": bool(payload.get("history"))}
+                    "instance": _device["instance"], "previous": previous, "history": bool(payload.get("history")), "touched": False}
             state["threads"][terminal] = term
             while len(state["threads"]) > MAX_HISTORY:
                 closed = [t for t in state["threads"].values() if t["state"] not in ("starting", "running")]
@@ -353,9 +356,13 @@ def command(path, payload, now=None):
                 data = payload.get("data")
                 if not isinstance(data, str) or not data or len(data) > 16000:
                     raise RemoteError("输入为空或超过 16000 字")
+                term["touched"] = True
+                if "\r" not in data and "\n" not in data:
+                    term["calm_until"] = max(term.get("calm_until", 0), now + ECHO_SECONDS)
             elif action == "resize":
                 if any(type(payload.get(k)) is not int for k in ("cols", "rows")) or not (20 <= payload["cols"] <= 240 and 6 <= payload["rows"] <= 100):
                     raise RemoteError("终端尺寸无效")
+                term["calm_until"] = max(term.get("calm_until", 0), now + REDRAW_SECONDS)
             elif action != "close":
                 raise RemoteError("不支持此操作")
         op = {"id": op_id, "terminal": terminal, "state": "queued", "error": "", "at": now, "payload": copy.deepcopy(payload)}
@@ -476,7 +483,9 @@ def agent(path, payload, now=None):
                 continue
             term["output"].append({"seq": seq, "data": data})
             term["seq"] = seq
-            term["out_at"] = now
+            # A terminal from before this rule has no "touched" and keeps the old behaviour.
+            if term.get("touched", True) and now >= term.get("calm_until", 0):
+                term["out_at"] = now
             term["size"] = term.get("size", 0) + len(data)
             _trim(term)
             wrote = True

@@ -355,14 +355,29 @@ class TerminalRelayTests(unittest.TestCase):
         phase = lambda now: tr.overview(self.path, now=now)["terminals"][0]
         self.assertEqual(phase(1004)["phase"], "idle")
         self.assertFalse(phase(1004).get("done"))                      # it has not worked yet
-        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 1, "data": "building\r\n"}]), now=1010)
+        key = lambda n, data, now: tr.command(self.path, {"action": "input", "id": "%032x" % n, "terminal": self.terminal, "data": data}, now=now)
+        # the banner a program prints when it opens is not work, and neither is the echo of a key
+        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 1, "data": "Welcome\r\n"}]), now=1005)
+        self.assertEqual(phase(1005)["phase"], "idle")
+        key(1, "n", 1006)
+        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 2, "data": "n"}]), now=1006.5)
+        self.assertEqual(phase(1006.5)["phase"], "idle")
+        self.assertFalse(phase(1006.5).get("done"))
+        key(2, "pm run build\r", 1008)
+        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 3, "data": "building\r\n"}]), now=1010)
         self.assertEqual(phase(1010)["phase"], "busy")                 # without a status of its own, fresh output means work
         tr.agent(self.path, live(), now=1016)
         done = phase(1016)
         self.assertEqual((done["phase"], done["done"]), ("idle", True))
         self.assertNotIn("out_at", done)
+        self.assertNotIn("touched", done)
+        # opening the terminal on the phone resizes it; the screen drawn again must not look like new work
+        tr.command(self.path, {"action": "resize", "id": "%032x" % 3, "terminal": self.terminal, "cols": 50, "rows": 30}, now=1017)
+        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 4, "data": "\x1b[2Jbuilding\r\n"}]), now=1018)
+        self.assertEqual(phase(1018)["phase"], "idle")
+        self.assertEqual(phase(1018)["phase_at"], done["phase_at"])
         # a question on the screen that stays there
-        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 2, "data": "\x1b[1mDo you want to proceed?\x1b[0m\r\n\x1b[36m> 1. Yes\x1b[0m\r\n  2. No"}]), now=1020)
+        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 5, "data": "\x1b[1mDo you want to proceed?\x1b[0m\r\n\x1b[36m> 1. Yes\x1b[0m\r\n  2. No"}]), now=1020)
         self.assertEqual(phase(1020)["phase"], "busy")                 # just written: still drawing
         tr.agent(self.path, live(), now=1023)
         self.assertEqual(phase(1023)["phase"], "confirm")
@@ -371,7 +386,7 @@ class TerminalRelayTests(unittest.TestCase):
         self.assertEqual(phase(1030)["phase"], "idle")
         tr.agent(self.path, live("busy"), now=1031)
         self.assertEqual(phase(1031)["phase"], "confirm")
-        tr.agent(self.path, dict(live("busy"), output=[{"terminal": self.terminal, "seq": 3, "data": "x" * 2000}]), now=1040)
+        tr.agent(self.path, dict(live("busy"), output=[{"terminal": self.terminal, "seq": 6, "data": "x" * 2000}]), now=1040)
         tr.agent(self.path, live("busy"), now=1045)
         self.assertEqual(phase(1045)["phase"], "busy")                 # answered: the question has scrolled out of the last screen
         tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 3}]}, now=1050)
