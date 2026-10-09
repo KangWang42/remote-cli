@@ -24,6 +24,10 @@
         brightBlack: '#6e6a86', brightRed: '#c2607a', brightGreen: '#4a8d6b', brightYellow: '#c98820', brightBlue: '#357793', brightMagenta: '#907aa9', brightCyan: '#56949f', brightWhite: '#4a4566' } }
   };
   window.RemoteCliSkins = SKINS;
+  /* Claude Code colours its code with fixed colours made for a dark screen: white for the code itself, pale yellow
+     for strings. On a light skin they vanished. The terminal darkens or lightens any letter that would not stand
+     out from what is behind it, whatever colour the program asked for. */
+  window.RemoteCliLook = { minimumContrastRatio: 4.5 };
   /* Sets the page colours of a skin and returns it; an unknown name gives the default, the light paper skin. */
   window.RemoteCliPaint = name => {
     const s = SKINS[name] || SKINS.paper, style = document.documentElement.style;

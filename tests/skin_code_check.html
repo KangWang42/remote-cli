@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- Draws what Claude Code, Codex and PowerShell print for code, in every skin, with the terminal page's own
+     settings. Open it in a browser, or let a headless one take a picture of it:
+       chrome --headless=new --window-size=1480,520 --screenshot=skins.png tests/skin_code_check.html
+     ?plain=1 shows the colours without the contrast floor, ?webgl=1 draws on the graphics card as the app does. -->
+<meta charset="utf-8">
+<link rel="stylesheet" href="../web/terminal/vendor/xterm.css">
+<style>
+  body { margin: 0; background: #888; font: 12px sans-serif; }
+  section { display: inline-block; vertical-align: top; margin: 4px; }
+  h2 { margin: 0 0 2px; font-size: 12px; color: #fff; }
+</style>
+<script src="../web/terminal/vendor/xterm.js"></script>
+<script src="../web/terminal/vendor/addon-webgl.js"></script>
+<script src="../web/terminal/skins.js"></script>
+<body>
+<script>
+  const E = '\x1b[', fg = n => `${E}38;5;${n}m`, bg = n => `${E}48;5;${n}m`, off = `${E}0m`;
+  // The colour codes are the ones these tools really send; they are fixed and know nothing of the skin.
+  const SAMPLE = [
+    `${E}1mClaude Code${off}  ${E}2msyntax highlighting in a code block${off}`,
+    `  ${fg(197)}def${off} ${fg(148)}relay${off}${fg(231)}(path, ${off}${fg(208)}wait${off}${fg(197)}=${off}${fg(141)}20${off}${fg(231)}):${off}`,
+    `      ${fg(242)}# comment in grey${off}`,
+    `      ${fg(231)}text ${off}${fg(197)}=${off} ${fg(186)}"a pale yellow string"${off}`,
+    `      ${fg(197)}return${off} ${fg(81)}len${off}${fg(231)}(text) ${off}${fg(197)}+${off} ${fg(141)}0x1F${off}`,
+    `${E}2mdiff${off}`,
+    `  ${bg(22)}${fg(231)} 12 + ${off}${bg(22)}${fg(77)}added${off}${bg(22)}${fg(231)} line with ${off}${bg(28)}${fg(231)}changed words${off}${bg(22)}${fg(231)}  ${off}`,
+    `  ${bg(52)}${fg(231)} 12 - ${off}${bg(52)}${fg(167)}removed${off}${bg(52)}${fg(231)} line of code     ${off}`,
+    `${E}2mCodex${off}  ${E}1mbold${off} ${E}2mdim${off} ${E}3mitalic${off} ${E}4munderlined${off}`,
+    `${E}2mPowerShell and git${off}`,
+    `  ${E}93mGet-ChildItem${off} ${E}90m-Path${off} ${E}36m"C:\\code"${off} ${E}90m|${off} ${E}93mSelect${off} ${E}97m10${off}`,
+    `  ${E}31mred${off} ${E}32mgreen${off} ${E}33myellow${off} ${E}34mblue${off} ${E}35mmagenta${off} ${E}36mcyan${off} ${E}37mwhite${off} ${E}30mblack${off}`,
+    `  ${E}91mred${off} ${E}92mgreen${off} ${E}93myellow${off} ${E}94mblue${off} ${E}95mmagenta${off} ${E}96mcyan${off} ${E}97mwhite${off} ${E}90mblack${off}`,
+    `  ${E}38;2;255;255;255mrgb white${off} ${E}38;2;0;0;0mrgb black${off} ${E}38;2;255;193;7mrgb amber${off} ${E}38;2;177;185;249mrgb lilac${off}`,
+    `  ${E}7m reversed ${off} ${E}41;97m on red ${off} ${E}43;30m on yellow ${off} ${E}44;97m on blue ${off}`
+  ].join('\r\n');
+  const asked = new URLSearchParams(location.search), plain = asked.get('plain') === '1';
+  window.terminals = {};
+  Object.keys(window.RemoteCliSkins).forEach(key => {
+    const box = document.createElement('section'), title = document.createElement('h2'), holder = document.createElement('div');
+    title.textContent = key + ' · ' + window.RemoteCliSkins[key].name;
+    box.append(title, holder); document.body.append(box);
+    const term = new Terminal(Object.assign({ cols: 58, rows: 15, fontSize: 13, fontFamily: 'Consolas, monospace', cursorBlink: false, theme: window.RemoteCliSkins[key].t },
+      plain ? {} : window.RemoteCliLook));
+    term.open(holder);
+    if (asked.get('webgl') === '1') term.loadAddon(new WebglAddon.WebglAddon());
+    term.write(SAMPLE);
+    window.terminals[key] = term;
+  });
+</script>
+</body>

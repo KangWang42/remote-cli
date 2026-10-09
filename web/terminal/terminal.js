@@ -20,7 +20,7 @@
   if (!sizes.includes(fontSize)) fontSize = 13;
   const term = new Terminal({ fontSize, fontFamily: FAMILY, cursorBlink: false, lineHeight: SPACING[spacing][1],
     // No per-row accessibility tree: on a phone it is rebuilt on every refresh and makes typing stutter.
-    scrollback: 5000, screenReaderMode: false, allowProposedApi: false, theme: SKINS[skin].t });
+    scrollback: 5000, screenReaderMode: false, allowProposedApi: false, theme: SKINS[skin].t, ...window.RemoteCliLook });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(holder);
