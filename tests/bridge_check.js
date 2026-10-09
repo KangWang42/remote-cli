@@ -103,6 +103,21 @@ async function check() {
   assert.notEqual(current, stale);
   current.resolve({ status: 200, ok: true, json: async () => output }); await settle();
   assert.equal(buffered.received.length, 1, 'only the current reader may update the screen');
+  const fresh = page();
+  fresh.context.ProjectTerminal.ready(); fresh.sockets[0].open();
+  fresh.sockets[0].message({ ...output, terminal: { id: terminalId, state: 'closed', tool: 'claude', dir: 'new-project', session: '' } });
+  fresh.context.ProjectTerminal.again();
+  const freshRequest = fresh.requests.find(item => item.options.method === 'POST');
+  const freshPayload = JSON.parse(freshRequest.options.body);
+  assert.equal(freshPayload.history, false, 'a terminal without an ID must restart fresh instead of opening the resume picker');
+  assert.equal(freshPayload.session, undefined);
+  freshRequest.resolve({ status: 200, json: async () => ({ terminal: terminalId }) }); await settle();
+  const resumedPage = page();
+  resumedPage.context.ProjectTerminal.ready(); resumedPage.sockets[0].open();
+  const savedSession = '12345678-1234-1234-1234-123456789abc';
+  resumedPage.sockets[0].message({ ...output, terminal: { id: terminalId, state: 'closed', tool: 'claude', dir: 'demo', session: savedSession } });
+  resumedPage.context.ProjectTerminal.again();
+  assert.equal(JSON.parse(resumedPage.requests.find(item => item.options.method === 'POST').options.body).session, savedSession, 'continue must preserve the exact conversation');
   console.log('bridge transport checks passed');
 }
 

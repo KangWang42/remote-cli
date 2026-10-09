@@ -173,7 +173,7 @@
   }
   function open(terminal) { location.href = 'terminal/?id=' + encodeURIComponent(terminal); }
   async function start(tool, dir, session, takeover, fork) {
-    const payload = { action: 'start', tool, dir };
+    const payload = { action: 'start', tool, dir, history: false };
     if (session) Object.assign(payload, { session, takeover: !!takeover });
     if (fork) payload.fork = true;
     const result = await run(payload, '正在电脑上启动 ' + TOOLS[tool] + '…');
@@ -186,18 +186,15 @@
   }
   async function takeOver(session) {
     if (!usable()) return;
-    if (session.tool === 'codex') {
-      if (!(data.device.features || []).includes('codex-fork')) { toast('请更新电脑端程序，再使用 Codex 副本和接手功能'); return; }
-      const choices = session.can_takeover
-        ? [{ label: '接手，并结束电脑上的 CLI 会话', value: 'close', kind: 'solid' }, { label: '在手机新开副本', sub: '保留电脑上的会话，两边之后各自继续', value: 'copy' }]
-        : [{ label: '在手机新开副本', value: 'copy', kind: 'solid' }];
-      const choice = await ask('打开 Codex 对话', (session.takeover_reason || '请先在电脑结束会话，或新开副本。') + ' 副本保留之前的对话，电脑和手机之后各自继续。', choices);
-      if (choice) start(session.tool, session.dir, session.id, choice === 'close', choice === 'copy');
-      return;
-    }
-    const choice = await ask('接手这个对话', '同一个对话同时在电脑和手机上输入会互相覆盖，建议关闭电脑上的窗口。',
-      [{ label: '接手，并关闭电脑上的窗口', value: 'close', kind: 'solid' }, { label: '只在手机上打开', sub: '电脑上的窗口保留，请不要两边同时输入', value: 'keep' }]);
-    if (choice) start(session.tool, session.dir, session.id, choice === 'close');
+    const host = sessionHost(session), locked = sessionActivity(session) === 'locked';
+    const canClose = session.can_takeover === true && !locked;
+    const choices = [{ label: canClose ? '结束原终端并接管对话' : '我已关闭原应用，检查接管', sub: '继续同一段历史；后台锁释放后才能接管', value: 'close', kind: 'solid' }];
+    if (session.tool === 'codex' && (data.device.features || []).includes('codex-fork')) choices.push({ label: '另建副本', sub: '这是独立的新对话，两边之后各自继续，不是接管', value: 'copy' });
+    const reason = host === 'shared'
+      ? '电脑没有可定位的可见终端；Codex 共享 app-server 仍占用写入锁。请先在原应用中结束并关闭对应会话，再检查接管；也可以直接新开副本。'
+      : canClose ? '接管会结束原终端中的这段对话，正在执行的任务可能中断。' : (session.takeover_reason || '请先在原终端中结束并关闭这段对话，再检查接管。');
+    const choice = await ask('接管 ' + TOOLS[session.tool] + ' 原对话', reason, choices);
+    if (choice) start(session.tool, session.dir, session.id, choice === 'close', choice === 'copy');
   }
   async function addProject() {
     const candidates = (data.device.candidates || []).slice(0, 4).map(c => ({ label: '添加 ' + c.name, sub: c.path, value: c.path }));
@@ -226,12 +223,20 @@
   function sessionHost(s) {
     if (s.host) return s.host;
     // Older agents did not report host; never infer a visible window from a lock.
-    return s.tool === 'codex' ? 'unknown' : 'cli';
+    return 'unknown';
   }
-  const hostLabel = { cli: '电脑 CLI 运行中', shared: '共享后台保留', remote: '其它远程终端运行中', unknown: '会话仍被占用' };
+  function sessionActivity(s) {
+    if (s.activity === 'active' || s.activity === 'locked' || s.activity === 'history') return s.activity;
+    if (!s.live) return 'history';
+    return sessionHost(s) === 'cli' ? 'active' : 'locked';
+  }
+  const hostLabel = { cli: '电脑 CLI 运行中', shared: '后台锁定 · 没有可见窗口', remote: '其它远程终端锁定', unknown: '后台锁定 · 归属待确认' };
   function sessionCard(s, withProject) {
     const meta = el('span', { className: 'meta' });
-    if (s.live) meta.append(pill(s.status === 'busy' ? 'busy' : 'pc', hostLabel[sessionHost(s)] || hostLabel.unknown));
+    if (s.live) {
+      const state = sessionActivity(s);
+      meta.append(pill(state === 'active' && s.status === 'busy' ? 'busy' : state === 'active' ? 'pc' : 'locked', (s.origin ? s.origin + ' · ' : '') + (hostLabel[sessionHost(s)] || hostLabel.unknown)));
+    }
     if (withProject) meta.append(el('span', { className: 'chip', textContent: s.dir }));
     meta.append(el('span', { textContent: TOOLS[s.tool] + ' · ' + ago(s.updated) }));
     return el('li', { className: 'card' }, el('button', { type: 'button', className: 'open', onclick: () => { if (!usable()) return toast('电脑离线，暂时打不开'); if (s.live) takeOver(s); else start(s.tool, s.dir, s.id, false); } },
@@ -256,8 +261,8 @@
     if (project && !names.includes(project)) { project = ''; }
     const terminals = data.terminals || [], sessions = (data.sessions || []).filter(s => !s.terminal);
     const mine = terminals.filter(running).map(t => Object.assign({ rank: PHASE[phaseOf(t)][1], at: t.phase_at || t.created }, t));
-    const live = sessions.filter(s => s.live && sessionHost(s) === 'cli');
-    const background = sessions.filter(s => s.live && sessionHost(s) !== 'cli');
+    const live = sessions.filter(s => sessionActivity(s) === 'active');
+    const background = sessions.filter(s => sessionActivity(s) === 'locked');
     $('overview').hidden = !!project; $('project').hidden = !project; $('back').hidden = !project;
     $('heading').textContent = project || 'Remote CLI';
     const waiting = mine.filter(t => phaseOf(t) === 'confirm').length, done = mine.filter(t => phaseOf(t) === 'done').length, working = mine.filter(t => phaseOf(t) === 'busy').length;
@@ -268,9 +273,10 @@
       const order = mine.slice().sort((a, b) => a.rank - b.rank || b.at - a.at);
       const cards = order.map(t => terminalCard(t, true)).concat(live.sort((a, b) => b.updated - a.updated).map(s => sessionCard(s, true)));
       $('active').hidden = !cards.length;
-      fill($('active-list'), cards, JSON.stringify([order.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), live.map(s => [s.id, s.status, s.title, s.host]), stamp(1), ready]));
+      fill($('active-list'), cards, JSON.stringify([order.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), live.map(s => [s.id, s.status, s.title, s.host, s.origin]), stamp(1), ready]));
       $('background').hidden = !background.length;
-      fill($('background-list'), background.map(s => sessionCard(s, true)), JSON.stringify([background.map(s => [s.id, s.status, s.title, s.host]), stamp(1), ready]));
+      $('background-summary').textContent = background.length + ' 段历史会话仍被锁定；不计入电脑运行中';
+      fill($('background-list'), background.map(s => sessionCard(s, true)), JSON.stringify([background.map(s => [s.id, s.status, s.title, s.host, s.origin]), stamp(1), ready]));
       const parts = [];
       if (waiting) parts.push(waiting + ' 个等你确认'); if (done) parts.push(done + ' 个已完成'); if (working) parts.push(working + ' 个在执行');
       $('active-summary').textContent = parts.join(' · ') || (cards.length + ' 个终端在运行');
@@ -306,11 +312,12 @@
     const own = mine.filter(t => t.dir === project).sort((a, b) => a.rank - b.rank || b.at - a.at);
     $('p-active').hidden = !own.length;
     fill($('p-active').querySelector('ul'), own.map(t => terminalCard(t, false)), JSON.stringify([own.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), stamp(1)]));
-    const here = sessions.filter(s => s.dir === project), open2 = here.filter(s => s.live && sessionHost(s) === 'cli'), held = here.filter(s => s.live && sessionHost(s) !== 'cli');
+    const here = sessions.filter(s => s.dir === project), open2 = here.filter(s => sessionActivity(s) === 'active'), held = here.filter(s => sessionActivity(s) === 'locked');
     $('p-live').hidden = !open2.length;
-    fill($('p-live').querySelector('ul'), open2.map(s => sessionCard(s, false)), JSON.stringify([open2.map(s => [s.id, s.status, s.title, s.host]), stamp(1)]));
+    fill($('p-live').querySelector('ul'), open2.map(s => sessionCard(s, false)), JSON.stringify([open2.map(s => [s.id, s.status, s.title, s.host, s.origin]), stamp(1)]));
     $('p-background').hidden = !held.length;
-    fill($('p-background').querySelector('ul'), held.map(s => sessionCard(s, false)), JSON.stringify([held.map(s => [s.id, s.status, s.title, s.host]), stamp(1)]));
+    $('p-background-summary').textContent = held.length + ' 段历史会话仍被锁定；不计入电脑运行中';
+    fill($('p-background').querySelector('ul'), held.map(s => sessionCard(s, false)), JSON.stringify([held.map(s => [s.id, s.status, s.title, s.host, s.origin]), stamp(1)]));
     const all = here.filter(s => !s.live).sort((a, b) => b.updated - a.updated), wanted = $('search').value.trim().toLowerCase();
     const found = wanted ? all.filter(s => s.title.toLowerCase().includes(wanted)) : all;
     $('p-history').hidden = !all.length;

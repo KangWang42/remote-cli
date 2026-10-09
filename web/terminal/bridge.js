@@ -193,7 +193,8 @@
   async function again() {
     if (!terminal || terminal.state !== 'closed' || terminal.tool === 'shell') return;
     const start = { action: 'start', id: newId(), tool: terminal.tool, dir: terminal.dir };
-    if (terminal.session) start.session = terminal.session; else start.history = true;
+    if (terminal.session) start.session = terminal.session;
+    start.history = false;
     try {
       const { status, body } = await post(start);
       if (status !== 200) throw new Error(body.error || '没有打开');
@@ -203,7 +204,7 @@
   function menu() {
     if (!terminal) return;
     const closed = terminal.state === 'closed', dom = store.get('renderer', 'webgl') === 'dom', choices = [];
-    if (closed && terminal.tool !== 'shell') choices.push(['继续这个对话', again]);
+    if (closed && terminal.tool !== 'shell') choices.push([terminal.session ? '继续这个对话' : '重新新建对话', again]);
     choices.push(['更换外观', () => sheet('终端外观', ui().skins().map(s => [s.name, () => { store.set('skin', s.key); ui().setSkin(s.key); }, s.current]))]);
     choices.push(['行距', () => sheet('行距', ui().spacings().map(s => [s.name, () => { store.set('spacing', s.key); ui().setSpacing(s.key); }, s.current]))]);
     choices.push(['重命名', async () => {

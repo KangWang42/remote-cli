@@ -152,6 +152,26 @@ def _public(term):
     return shown
 
 
+def _session_activity(session):
+    """Classify a saved conversation without treating a writer lock as a window.
+
+    The agent can prove an independent CLI owner (``host=cli``), but a shared
+    app-server, another remote terminal, or an unknown lock has no visible
+    computer window that this app can locate.  Keep those records available for
+    history/fork actions while keeping them out of the active count.
+    """
+    if not session.get("live"):
+        return "history"
+    return "active" if session.get("host") == "cli" else "locked"
+
+
+def _public_session(session, terminal=""):
+    shown = dict(session)
+    shown["activity"] = _session_activity(session)
+    shown["terminal"] = terminal
+    return shown
+
+
 def _expire(now):
     for op in _pending.values():
         if op["state"] == "queued" and now - op["at"] > OP_SECONDS:
@@ -230,7 +250,7 @@ def _overview(path, terminal, after, now):
             attached = {t.get("session"): t["id"] for t in state["threads"].values() if t["state"] in ("starting", "running")}
             return {"device": _view(now), "terminals": sorted(
                 [_public(t) for t in state["threads"].values()], key=lambda t: -t["created"]),
-                "sessions": [{**s, "terminal": attached.get(s["id"], "")} for s in _sessions]}
+                "sessions": [_public_session(s, attached.get(s["id"], "")) for s in _sessions]}
         term = state["threads"].get(terminal)
         if not term:
             raise RemoteError("终端已不存在")
@@ -290,6 +310,8 @@ def command(path, payload, now=None):
             if any(type(payload.get(k, False)) is not bool for k in ("history", "takeover", "fork")):
                 raise RemoteError("历史选项无效")
             session = payload.get("session", "")
+            if payload.get("history") and not session and not previous:
+                raise RemoteError("请在项目中选择具体的历史对话；新建终端不会打开 resume 选择器")
             saved = None
             fork = payload.get("fork", False)
             if fork and (tool != "codex" or not session or payload.get("takeover") or "codex-fork" not in _device.get("features", [])):
@@ -298,6 +320,8 @@ def command(path, payload, now=None):
                 saved = next((s for s in _sessions if s["id"] == session and s["tool"] == tool and s["dir"] == folder), None)                     if isinstance(session, str) and _session.fullmatch(session) else None
                 if not saved:
                     raise RemoteError("电脑上没有找到这个对话，请刷新后重试")
+                if saved.get("live") and not fork and not payload.get("takeover"):
+                    raise RemoteError("原对话仍被占用，请选择接管原对话，先结束原终端")
                 if not fork and any(t.get("session") == session and t["state"] in ("starting", "running") for t in state["threads"].values()):
                     raise RemoteError("这个对话已经在手机终端里打开")
             if sum(t["state"] in ("starting", "running") for t in state["threads"].values()) >= MAX_TERMINALS:
@@ -379,6 +403,7 @@ def agent(path, payload, now=None):
                 {"id": s["id"], "tool": s["tool"], "dir": s["dir"], "title": s["title"].strip()[:80], "updated": s["updated"],
                  "live": s.get("live") is True, "status": s.get("status") if s.get("status") in ("idle", "busy") else "",
                  "host": s.get("host") if s.get("host") in ("cli", "shared", "remote", "unknown") else "",
+                 "origin": str(s.get("origin") or "")[:60],
                  "can_takeover": s.get("can_takeover") is True, "ownership_known": s.get("ownership_known") is True,
                  "takeover_reason": str(s.get("takeover_reason") or "")[:200]}
                 for s in payload["sessions"][:80]

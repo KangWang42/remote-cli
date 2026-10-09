@@ -18,12 +18,29 @@ class TerminalRelayTests(unittest.TestCase):
         tr.agent(self.path, {"info": self.info}, now=1000)
 
     def start(self):
-        payload = {"action": "start", "id": "a" * 32, "tool": "codex", "dir": "demo", "history": True}
+        payload = {"action": "start", "id": "a" * 32, "tool": "codex", "dir": "demo", "history": False}
         result = tr.command(self.path, payload, now=1001)
         self.assertEqual(result, tr.command(self.path, payload, now=1002))
         self.terminal = result["terminal"]
         tr.agent(self.path, {"info": self.info, "acks": [{"id": payload["id"]}], "terminals": [{"id": self.terminal, "state": "running"}]}, now=1003)
         return payload
+
+    def test_fresh_start_never_becomes_anonymous_resume(self):
+        payload = {"action": "start", "id": "a" * 32, "tool": "claude", "dir": "demo", "history": True}
+        with self.assertRaisesRegex(RemoteError, "resume"):
+            tr.command(self.path, payload, now=1001)
+        result = tr.command(self.path, dict(payload, history=False), now=1002)
+        ops = tr.pull(self.path, {"instance": self.info["instance"], "wait": 0})["operations"]
+        self.assertFalse(ops[0]["history"])
+        self.assertEqual(tr.overview(self.path, result["terminal"], now=1003)["terminal"]["session"], "")
+
+    def test_live_original_requires_explicit_takeover(self):
+        sid = "12345678-1234-1234-1234-123456789abc"
+        for tool in ("claude", "codex"):
+            tr.agent(self.path, {"info": self.info, "sessions": [{"id": sid, "tool": tool, "dir": "demo", "title": "原对话", "updated": 1, "live": True, "origin": "Positron"}]}, now=1001)
+            with self.assertRaisesRegex(RemoteError, "接管"):
+                tr.command(self.path, {"action": "start", "id": "d" * 32, "tool": tool, "dir": "demo", "session": sid}, now=1002)
+            self.assertEqual(tr.overview(self.path, now=1002)["sessions"][0]["origin"], "Positron")
 
     def test_codex_fork_preserves_source_and_requires_updated_agent(self):
         sid = "12345678-1234-1234-1234-123456789abc"
@@ -54,6 +71,20 @@ class TerminalRelayTests(unittest.TestCase):
             self.assertEqual(actual["host"], expected)
             self.assertTrue(actual["live"])
             self.assertFalse(actual["can_takeover"])
+
+    def test_writer_lock_activity_does_not_claim_a_computer_window(self):
+        base = {"tool": "codex", "dir": "demo", "title": "会话", "updated": 5000,
+                "live": True, "can_takeover": False}
+        sessions = [
+            dict(base, id="12345678-1234-1234-1234-123456789abc", host="cli"),
+            dict(base, id="22345678-1234-1234-1234-123456789abc", host="shared"),
+            dict(base, id="32345678-1234-1234-1234-123456789abc", host="remote"),
+            dict(base, id="42345678-1234-1234-1234-123456789abc", host="unknown"),
+            dict(base, id="52345678-1234-1234-1234-123456789abc", live=False, host=""),
+        ]
+        tr.agent(self.path, {"info": self.info, "sessions": sessions}, now=1001)
+        activity = {s["host"] or "history": s["activity"] for s in tr.overview(self.path, now=1002)["sessions"]}
+        self.assertEqual(activity, {"cli": "active", "shared": "locked", "remote": "locked", "unknown": "locked", "history": "history"})
 
     def test_nonzero_terminal_exit_is_persisted_with_output(self):
         self.start()

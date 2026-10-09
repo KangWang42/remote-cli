@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "0.5.2";
+    const string Version = "0.5.3";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -304,19 +304,42 @@ public sealed class App : Form {
         List<string[]> running = agent == null ? new List<string[]>() : agent.Running();
         if (running == null) return;
         string mark = String.Join("|", running.Select(r => String.Join(",", r)));
-        int busy = running.Count(r => r[2] == "busy");
+        int phones = running.Count(r => r[6] == "phone"), cli = running.Count(r => r[6] == "cli");
         nav[2].SetBadge(running.Count > 0 ? running.Count.ToString() : "");
         bool allowed = Convert.ToString(config["RemoteEnabled"]) == "True";
-        sideStatus.Set(trouble ? "还不能连接" : preparing ? "正在准备…" : !allowed ? "已暂停手机访问" : running.Count == 0 ? "手机可以连接" : running.Count + " 个终端运行中",
+        sideStatus.Set(trouble ? "还不能连接" : preparing ? "正在准备…" : !allowed ? "已暂停手机访问" : phones == 0 ? "手机可以连接" : phones + " 个手机终端运行中",
             trouble ? Theme.Bad : preparing || !allowed ? Theme.Busy : Theme.Good);
         if (mark == activityMark && running.Count > 0 && !pages[2].Visible) return;
         activityMark = mark;
         activity.Show(running.Select(r => {
             DateTime started; DateTime.TryParse(r[3], null, System.Globalization.DateTimeStyles.RoundtripKind, out started);
-            return new Row { Glyph = Theme.IconTerminal, Title = (r[0] == "claude" ? "Claude Code" : r[0] == "codex" ? "Codex" : "PowerShell") + " · " + r[1], About = Since(started.ToUniversalTime()),
-                             Tag = r[2] == "busy" ? "正在执行" : r[2] == "idle" ? "等待输入" : "已连接", TagColour = r[2] == "busy" ? Theme.Busy : Theme.Good };
+            string tool = r[0] == "claude" ? "Claude Code" : r[0] == "codex" ? "Codex" : "PowerShell";
+            string tag = r[6] == "shared" ? "共享后台保留" : r[6] == "remote" ? "其它远程终端" : r[6] == "unknown" ? "归属待确认" : r[6] == "cli" ? "电脑 CLI" : r[2] == "busy" ? "正在执行" : "手机终端";
+            return new Row { Glyph = Theme.IconTerminal, Title = (r[4].Length > 0 ? r[4] : tool) + " · " + r[1], About = (r[5].Length > 0 ? r[5] + " · " : "") + tool + (r[6] == "phone" ? " · 双击可在电脑接管 · " + Since(started.ToUniversalTime()) : ""), Value = r,
+                             Tag = tag, TagColour = r[6] == "phone" || r[6] == "cli" ? Theme.Good : Theme.Busy };
         }));
-        activityNote.Text = running.Count == 0 ? "" : busy > 0 ? busy + " 个正在执行，" + (running.Count - busy) + " 个等待输入。终端由手机开启，在手机上结束。" : running.Count + " 个终端在等待输入。终端由手机开启，在手机上结束。";
+        activityNote.Text = running.Count == 0 ? "" : phones + " 个手机终端 · " + cli + " 个电脑 CLI。这里仅显示可操作的活动；后台写入锁不代表电脑有窗口。";
+    }
+    void TakeoverActivity() {
+        var row = activity.Selected; var raw = row == null ? null : row.Value as string[];
+        if (raw == null || raw.Length < 8 || raw[6] != "phone") { Toast("只有手机创建的终端可以从电脑接管"); return; }
+        if (agent == null) { Toast("电脑后台还没有准备好，请稍后再试"); return; }
+        string tool = raw[0] == "claude" ? "Claude Code" : raw[0] == "codex" ? "Codex" : "PowerShell";
+        if (raw[0] == "shell") { Toast("PowerShell 没有可恢复的会话，请在电脑端项目页重新新建"); return; }
+        if (!Confirm("在电脑上接管这个终端？", "手机终端会先结束，然后在电脑打开 " + tool + "。对话会继续使用同一个会话；接管期间手机不能继续输入。", "接管并在电脑打开", true)) return;
+        activity.Enabled = false;
+        Task.Run(() => {
+            try {
+                var takeover = agent.TakeoverForComputer(raw[7]);
+                BeginInvoke(new Action(() => {
+                    activity.Enabled = true;
+                    try { Process.Start(TerminalAgent.ComputerProcess(takeover, Convert.ToString(config["RemoteMaxMode"]))); Toast("已在电脑上接管 " + tool); RefreshActivity(); }
+                    catch (Exception error) { Toast("电脑终端没有打开：" + error.Message); }
+                }));
+            } catch (Exception error) {
+                BeginInvoke(new Action(() => { activity.Enabled = true; Toast(error.Message); RefreshActivity(); }));
+            }
+        });
     }
 
     protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Theme.DarkTitle(Handle); }
@@ -416,10 +439,12 @@ public sealed class App : Form {
         ShowProjects();
 
         // ---- page: activity
-        var activityPage = Page("活动", "手机上开着的终端。它们在这台电脑上运行，关掉手机也不会停。");
+        var activityPage = Page("活动", "电脑和手机看到同一份会话。这里显示手机终端和可定位的电脑 CLI；双击手机终端，可结束手机输入并在电脑接管。");
         var liveCard = Place(activityPage, new Card(), 28, 92, 652, 410);
         Place(liveCard, activity, 8, 8, 636, 394);
         activity.EmptyTitle = "没有正在运行的终端"; activity.EmptyAbout = "在手机上选一个项目，新建 Claude Code、Codex 或 PowerShell 终端，\n它就会出现在这里。";
+        activity.DoubleClick += (s, e) => TakeoverActivity();
+        activity.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; TakeoverActivity(); } };
         Place(activityPage, activityNote, 28, 518, 652, 20); activityNote.BackColor = Theme.Bg; activityNote.ForeColor = Theme.Muted;
 
         // ---- page: settings

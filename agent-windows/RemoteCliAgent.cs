@@ -132,7 +132,11 @@ public sealed class TerminalAgent {
         public StringBuilder Pending = new StringBuilder();   // read from the program, not yet numbered
         public List<Dictionary<string, object>> Output = new List<Dictionary<string, object>>();
     }
-    public sealed class SessionInfo { public string Id, Tool, Dir, Title, Status = "", Host = ""; public long Updated; public DateTime Created; public bool Live, CanTakeover, OwnershipKnown; public string TakeoverReason = ""; }
+    public sealed class ComputerTakeover {
+        public string Tool, Dir, Session, Launcher;
+        public bool PhoneTerminal;
+    }
+    public sealed class SessionInfo { public string Id, Tool, Dir, Title, Status = "", Host = "", Origin = ""; public long Updated; public DateTime Created; public bool Live, CanTakeover, OwnershipKnown; public string TakeoverReason = ""; }
     sealed class TitleCache { public long Stamp, Length; public string Title; }
     readonly Dictionary<string, TitleCache> titles = new Dictionary<string, TitleCache>();
     readonly CodexSessions codexSessions = new CodexSessions();
@@ -219,7 +223,7 @@ public sealed class TerminalAgent {
     public List<SessionInfo> Scan(Dictionary<string, string> dirs) {
         var found = new List<SessionInfo>();
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var open = new Dictionary<string, string>();
+        var open = new Dictionary<string, ClaudeSessions.Owner>();
         var seen = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);   // folders that are not projects
         Action<string, string, DateTime, bool> note = delegate(string folder, string tool, DateTime at, bool live) {
             folder = (folder ?? "").TrimEnd('\\', '/');
@@ -234,17 +238,16 @@ public sealed class TerminalAgent {
             var parents = Parents();
             foreach (string file in Directory.GetFiles(Path.Combine(home, ".claude", "sessions"), "*.json")) {
                 try {
-                    var record = json.Deserialize<Dictionary<string, object>>(ReadPart(file, false, 64 * 1024));
-                    int pid; string session = Get(record, "sessionId");
-                    if (!Int32.TryParse(Get(record, "pid"), out pid) || !parents.ContainsKey(pid) || !Regex.IsMatch(session, Uuid)) continue;
-                    using (Process process = Process.GetProcessById(pid)) if (process.ProcessName.IndexOf("node", StringComparison.OrdinalIgnoreCase) < 0 && process.ProcessName.IndexOf("claude", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    var source = ClaudeSessions.Inspect(file);
+                    if (!source.Live) continue;
+                    int pid = source.Pid; string session = source.Session;
                     LiveTerminal owner = null; int at = pid;
                     for (int depth = 0; depth < 12 && owner == null; depth++) {
                         owner = terminals.Values.FirstOrDefault(t => !t.Pty.Closed && t.Pty.Id == at);
                         int parent; if (!parents.TryGetValue(at, out parent) || parent == at || parent == 0) break; at = parent;
                     }
-                    if (owner != null) { owner.Session = session; owner.Status = Get(record, "status"); }
-                    else { open[session] = Get(record, "status"); note(Get(record, "cwd"), "claude", File.GetLastWriteTimeUtc(file), true); }
+                    if (owner != null) { owner.Session = session; owner.Status = source.Status; }
+                    else { open[session] = source; note(source.Dir, "claude", File.GetLastWriteTimeUtc(file), true); }
                 } catch { }
             }
         } catch { }
@@ -252,11 +255,13 @@ public sealed class TerminalAgent {
             try {
                 var folder = new DirectoryInfo(Path.Combine(home, ".claude", "projects", ProjectFolder(dir.Value)));
                 if (!folder.Exists) continue;
-                foreach (FileInfo file in folder.GetFiles("*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).Take(15)) {
+                var recent = folder.GetFiles("*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).ToArray();
+                var recentNames = new HashSet<string>(recent.Take(15).Select(f => f.Name));
+                foreach (FileInfo file in recent.Where(f => recentNames.Contains(f.Name) || open.ContainsKey(Path.GetFileNameWithoutExtension(f.Name)))) {
                     string id = Path.GetFileNameWithoutExtension(file.Name), title;
                     if (!Regex.IsMatch(id, Uuid) || (title = ClaudeTitle(file)).Length == 0) continue;
-                    string status; bool live = open.TryGetValue(id, out status);
-                    found.Add(new SessionInfo { Id = id, Tool = "claude", Dir = dir.Key, Title = title, Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? "cli" : "", CanTakeover = live, OwnershipKnown = true, Status = live ? status : "" });
+                    ClaudeSessions.Owner source; bool live = open.TryGetValue(id, out source);
+                    found.Add(new SessionInfo { Id = id, Tool = "claude", Dir = dir.Key, Title = title, Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? source.Host : "", Origin = live ? source.Origin : "", CanTakeover = live && source.CanTakeover, OwnershipKnown = !live || source.CanTakeover || source.Host == "remote", Status = live ? source.Status : "", TakeoverReason = live ? source.Reason : "" });
                 }
             } catch { }
         }
@@ -296,10 +301,10 @@ public sealed class TerminalAgent {
                 bool phone = owner.Pid > 0 && CodexSessions.Descends(owner.Pid, terminals.Values.Select(t => t.Pty.Id), ownerParents);
                 if (dir == null) { note(folder, "codex", file.LastWriteTimeUtc, live); continue; }
                 int count; counts.TryGetValue(dir, out count);
-                if (count >= 15) continue;
-                counts[dir] = count + 1;
+                if (!live && count >= 15) continue;
+                if (!live) counts[dir] = count + 1;
                 string title; codexNames.TryGetValue(id, out title); title = Tidy(title);
-                found.Add(new SessionInfo { Id = id, Tool = "codex", Dir = dir, Title = title.Length > 0 ? title : "Codex 对话 " + file.CreationTime.ToString("MM-dd HH:mm"), Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? owner.Host : "", OwnershipKnown = owner.Known, CanTakeover = live && owner.CanTakeover && !phone, TakeoverReason = owner.Reason });
+                found.Add(new SessionInfo { Id = id, Tool = "codex", Dir = dir, Title = title.Length > 0 ? title : "Codex 对话 " + file.CreationTime.ToString("MM-dd HH:mm"), Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? owner.Host : "", Origin = live ? owner.Origin : "", OwnershipKnown = owner.Known, CanTakeover = live && owner.CanTakeover && !phone, TakeoverReason = owner.Reason });
             }
         } catch { }
         // Associate a phone terminal only with the verified writer process in its own process tree.
@@ -411,43 +416,70 @@ public sealed class TerminalAgent {
         SaveProjects(own);
         nextScan = DateTime.MinValue;
     }
-    // Ends the Claude Code program that has this conversation open in a window on this computer, so that only the
-    // phone's terminal writes to it. Programs started by a phone terminal are never touched.
-    void CloseOnComputer(string session) {
+    // End only the verified conversation writer before resuming the original session.
+    void ClaudeExclusive(string session, bool takeover) {
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var parents = Parents();
-        foreach (string file in Directory.GetFiles(Path.Combine(home, ".claude", "sessions"), "*.json")) {
-            int pid;
-            try {
-                var record = json.Deserialize<Dictionary<string, object>>(ReadPart(file, false, 64 * 1024));
-                if (Get(record, "sessionId") != session || !Int32.TryParse(Get(record, "pid"), out pid) || !parents.ContainsKey(pid)) continue;
-            } catch (IOException) { continue; } catch (ArgumentException) { continue; } catch (InvalidOperationException) { continue; }
-            int at = pid; bool ours = false;
-            for (int depth = 0; depth < 12 && !ours; depth++) {
-                ours = at == Process.GetCurrentProcess().Id || terminals.Values.Any(t => t.Pty.Id == at);
-                int parent; if (!parents.TryGetValue(at, out parent) || parent == at || parent == 0) break; at = parent;
+        string folder = Path.Combine(home, ".claude", "sessions");
+        if (!Directory.Exists(folder)) return;
+        foreach (string file in Directory.GetFiles(folder, "*.json")) {
+            var owner = ClaudeSessions.Inspect(file);
+            if (!owner.Live || owner.Session != session) continue;
+            var roots = terminals.Values.Select(t => t.Pty.Id).Concat(new[] { Process.GetCurrentProcess().Id });
+            if (!takeover || !owner.CanTakeover || CodexSessions.Descends(owner.Pid, roots, parents)) throw new InvalidOperationException(owner.Reason);
+            using (var process = Process.GetProcessById(owner.Pid)) {
+                var current = ClaudeSessions.Inspect(file);
+                if (!current.CanTakeover || current.Session != session || current.Pid != owner.Pid || current.Started != owner.Started || process.StartTime.ToUniversalTime().ToFileTimeUtc() != owner.Started) throw new InvalidOperationException("Claude Code 会话归属已变化，请刷新后重试");
+                process.Kill();
+                if (!process.WaitForExit(5000)) throw new InvalidOperationException("原 Claude Code 会话尚未结束，已取消接管");
             }
-            if (ours) continue;
-            Process process;
-            try { process = Process.GetProcessById(pid); } catch (ArgumentException) { continue; }
-            using (process) {
-                if (process.ProcessName.IndexOf("node", StringComparison.OrdinalIgnoreCase) < 0 && process.ProcessName.IndexOf("claude", StringComparison.OrdinalIgnoreCase) < 0) continue;
-                using (Process kill = Process.Start(new ProcessStartInfo("taskkill.exe", "/PID " + pid + " /T /F") { UseShellExecute = false, CreateNoWindow = true })) kill.WaitForExit(8000);
-                if (!process.WaitForExit(5000)) throw new InvalidOperationException("电脑上的窗口没有关掉，已取消接手");
-            }
-            Thread.Sleep(300);   // the conversation file is released before it is opened again
         }
     }
-    public static string Command(string tool, string launcher, string session, bool history, string mode, bool fork = false) {
+    public static string Command(string tool, string launcher, string session, bool history, string mode, bool fork = false, bool noDaemon = false, bool fresh = false) {
         if (tool != "claude" && tool != "codex" && tool != "shell") throw new ArgumentException("工具无效");
         if (launcher == null || launcher.IndexOfAny(new[] { '"', '%', '\r', '\n' }) >= 0) throw new ArgumentException("工具路径无效");
         if (!String.IsNullOrEmpty(session) && !Regex.IsMatch(session, @"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z")) throw new ArgumentException("历史会话编号无效");
+        string args = Arguments(tool, session, history, mode, fork, noDaemon, fresh);
+        return LaunchCommand(launcher, args);
+    }
+    public static string Arguments(string tool, string session, bool history, string mode, bool fork = false, bool noDaemon = false, bool fresh = false) {
         string args = "";
-        if (tool == "claude") args = (session.Length > 0 ? " --resume " + session : history ? " --resume" : "") + (mode == "read" ? " --permission-mode plan" : mode == "edit" ? " --permission-mode acceptEdits" : "");
-        if (tool == "codex") args = (session.Length > 0 ? (fork ? " fork " : " resume ") + session : history ? " resume --include-non-interactive" : "") + (mode == "read" ? " -s read-only" : mode == "edit" ? " -s workspace-write" : "");
+        if (tool == "claude") args = (session.Length > 0 ? (fresh ? " --session-id " : " --resume ") + session : history ? " --resume" : "") + (mode == "read" ? " --permission-mode plan" : mode == "edit" ? " --permission-mode acceptEdits" : "");
+        if (tool == "codex") args = (session.Length > 0 ? (fork ? " fork " : " resume ") + session : history ? " resume --include-non-interactive" : "") + (noDaemon ? " --no-daemon" : "") + (mode == "read" ? " -s read-only" : mode == "edit" ? " -s workspace-write" : "");
         if (tool == "shell") args = " -NoLogo -NoExit";
+        return args;
+    }
+    public static ProcessStartInfo ComputerProcess(ComputerTakeover takeover, string mode) {
+        if (takeover == null || String.IsNullOrEmpty(takeover.Launcher)) throw new InvalidOperationException("电脑上没有找到这个工具");
+        string args = Arguments(takeover.Tool, takeover.Session, false, mode, false, takeover.Tool == "codex", false);
+        var info = new ProcessStartInfo();
+        info.WorkingDirectory = takeover.Dir; info.UseShellExecute = false; info.CreateNoWindow = false;
+        if (takeover.Launcher.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)) {
+            info.FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+            info.Arguments = "/d /k \"\"" + takeover.Launcher + "\"" + args + "\"";
+        } else { info.FileName = takeover.Launcher; info.Arguments = args.TrimStart(); }
+        foreach (string key in new[] { "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT" }) info.EnvironmentVariables.Remove(key);
+        return info;
+    }
+    static string LaunchCommand(string launcher, string args) {
         if (launcher.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)) return "\"" + Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe") + "\" /d /s /c \"\"" + launcher + "\"" + args + "\"";
         return "\"" + launcher + "\"" + args;
+    }
+    readonly Dictionary<string, bool> standaloneTools = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+    bool SupportsStandalone(string launcher) {
+        bool supported;
+        if (standaloneTools.TryGetValue(launcher, out supported)) return supported;
+        supported = false;
+        try {
+            string command = LaunchCommand(launcher, " --help"); int end = command.IndexOf('"', 1);
+            using (var process = Process.Start(new ProcessStartInfo(command.Substring(1, end - 1), command.Substring(end + 1).Trim()) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true })) {
+                Task<string> output = process.StandardOutput.ReadToEndAsync(), errors = process.StandardError.ReadToEndAsync();
+                if (!process.WaitForExit(5000)) process.Kill();
+                else supported = process.ExitCode == 0 && output.Result.Contains("--no-daemon");
+            }
+        } catch { }
+        standaloneTools[launcher] = supported;
+        return supported;
     }
     public static List<Dictionary<string, object>> OutputBatch(IEnumerable<Dictionary<string, object>> chunks) {
         // ANSI escapes expand in JSON. Bound encoded bytes, not the number of characters.
@@ -464,12 +496,54 @@ public sealed class TerminalAgent {
     }
     // The address or the password changed: sign in again at once instead of after the usual pause.
     public void Reset() { nextLogin = DateTime.MinValue; client = null; }
-    /// The terminals that are running now, for the window on the computer: tool, project, status ("busy", "idle" or ""), start time.
+    /// Same session inventory as the phone: tool, project, status, time, title, origin, host.
     public List<string[]> Running() {
         try {
-            lock (gate) return terminals.Values.Where(t => t.Pty != null && !t.Pty.Closed)
-                .Select(t => new[] { t.Tool, t.Dir, t.Status ?? "", t.Started.ToString("o") }).ToList();
+            lock (work) {
+                var active = terminals.Values.Where(t => t.Pty != null && !t.Pty.Closed).ToArray();
+                var list = active.Select(t => new[] { t.Tool, t.Dir, t.Status ?? "", t.Started.ToString("o"), sessions.Where(s => s.Id == t.Session).Select(s => s.Title).FirstOrDefault() ?? "", "手机 Remote CLI", "phone", t.Id }).ToList();
+                // A writer lock is not evidence of a visible computer window. Only an
+                // independently owned CLI belongs in the desktop activity list; shared
+                // app-server and foreign/unknown locks remain available in the phone's
+                // locked-history section for fork/retry actions.
+                list.AddRange(sessions.Where(s => s.Live && s.Host == "cli" && !active.Any(t => t.Session == s.Id)).Select(s => new[] { s.Tool, s.Dir, s.Status, s.Created.ToString("o"), s.Title, s.Origin, s.Host }));
+                return list;
+            }
         } catch (InvalidOperationException) { return null; }      // the list changed while it was read: the caller keeps what it showed
+    }
+    public ComputerTakeover TakeoverForComputer(string terminalId) {
+        if (!Regex.IsMatch(terminalId ?? "", @"\A[a-f0-9]{32}\z")) throw new ArgumentException("终端编号无效");
+        lock (work) {
+            LiveTerminal live;
+            if (!terminals.TryGetValue(terminalId, out live) || live.Pty == null || live.Pty.Closed) throw new InvalidOperationException("手机终端已经结束，请刷新活动列表");
+            var prefs = Preferences();
+            var dirs = AllDirs(prefs);
+            if (!dirs.ContainsKey(live.Dir)) throw new InvalidOperationException("这个项目已经从电脑端移除");
+            if (live.Tool == "codex" && live.Session.Length == 0) { Scan(dirs); }
+            string session = live.Session;
+            if ((live.Tool == "claude" || live.Tool == "codex") && session.Length == 0) throw new InvalidOperationException("正在等待会话编号，请刷新活动后再接管");
+            if (live.Tool == "codex") {
+                var owner = CodexSessions.Inspect(session);
+                if (!owner.Live || owner.Pid <= 0 || !CodexSessions.Descends(owner.Pid, new[] { live.Pty.Id }, Parents())) throw new InvalidOperationException("无法确认这个 Codex 进程属于手机终端，已取消接管");
+            }
+            if (live.Tool == "claude") {
+                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "sessions");
+                var source = Directory.Exists(folder) ? Directory.GetFiles(folder, "*.json").Select(ClaudeSessions.Inspect).FirstOrDefault(s => s.Live && s.Session == session) : null;
+                if (source == null || !CodexSessions.Descends(source.Pid, new[] { live.Pty.Id }, Parents())) throw new InvalidOperationException("无法确认这个 Claude Code 进程属于手机终端，已取消接管");
+            }
+            if (live.Tool != "claude" && live.Tool != "codex") {
+                live.Pty.Dispose();
+                return new ComputerTakeover { Tool = live.Tool, Dir = live.Dir, Session = "", Launcher = FindTool(live.Tool), PhoneTerminal = true };
+            }
+            live.Pty.Dispose();
+            for (int n = 0; n < 60; n++) {
+                if (live.Tool == "codex" && !CodexSessions.Inspect(session).Live) break;
+                if (live.Tool == "claude" && !Directory.GetFiles(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "sessions"), "*.json").Select(ClaudeSessions.Inspect).Any(s => s.Live && s.Session == session)) break;
+                Thread.Sleep(50);
+            }
+            if (live.Tool == "codex" && CodexSessions.Inspect(session).Live) throw new InvalidOperationException("原 Codex 进程没有及时结束，已取消接管");
+            return new ComputerTakeover { Tool = live.Tool, Dir = live.Dir, Session = session, Launcher = FindTool(live.Tool), PhoneTerminal = true };
+        }
     }
     async Task<bool> Login(Dictionary<string, object> prefs) {
         if (DateTime.UtcNow < nextLogin) return false;
@@ -502,6 +576,7 @@ public sealed class TerminalAgent {
                 if (terminals.ContainsKey(terminal)) return;
                 if (terminals.Values.Count(t => !t.Pty.Closed) >= 8) throw new InvalidOperationException("最多同时运行 8 个终端");
                 string tool = Get(op, "tool"), dir = Get(op, "dir"), previous = Get(op, "previous"), session = Get(op, "session");
+                if (Get(op, "history") == "True" && session.Length == 0 && previous.Length == 0) throw new ArgumentException("请选择具体历史对话，或重新新建对话");
                 bool fork = Get(op, "fork") == "True";
                 if (fork && (tool != "codex" || session.Length == 0 || Get(op, "takeover") == "True")) throw new ArgumentException("副本选项无效");
                 var dirs = AllDirs(prefs);
@@ -510,20 +585,24 @@ public sealed class TerminalAgent {
                 if (launcher == null) throw new ArgumentException("电脑未安装这个工具");
                 if (session.Length > 0) {
                     if (!Scan(dirs).Any(s => s.Id == session && s.Tool == tool && s.Dir == dir)) throw new ArgumentException("电脑上没有找到这个对话");
-                    if (Get(op, "takeover") == "True" && tool == "claude") CloseOnComputer(session);
+                    if (tool == "claude") ClaudeExclusive(session, Get(op, "takeover") == "True");
                     if (tool == "codex" && !fork) {
                         var roots = terminals.Values.Select(t => t.Pty.Id).Concat(new[] { Process.GetCurrentProcess().Id }).ToArray();
                         if (Get(op, "takeover") == "True") CodexSessions.Takeover(session, roots, Parents());
                         var owner = CodexSessions.Inspect(session);
-                        if (!owner.Known || owner.Live) throw new InvalidOperationException("这个 Codex 对话仍在电脑上使用，请先结束电脑会话，或在手机新开副本");
+                        if (!owner.Known || owner.Live) throw new InvalidOperationException("原 Codex 对话仍被占用，请先在原应用结束并关闭它，再接管同一段历史；不会自动新建副本");
                     }
                 } else if (previous.Length > 0) {
                     if (!Regex.IsMatch(previous, @"\A[a-f0-9]{16,32}\z")) throw new ArgumentException("历史编号无效");
                     session = List(prefs, "RemoteSessions").Select(Convert.ToString).Where(s => s.StartsWith(previous + "|", StringComparison.Ordinal)).Select(s => s.Substring(previous.Length + 1)).FirstOrDefault() ?? "";
                     if (session.Length == 0) throw new ArgumentException("旧对话没有会话编号，请使用历史对话入口");
+                    if (tool == "claude") ClaudeExclusive(session, false);
+                    else if (tool == "codex") { var owner = CodexSessions.Inspect(session); if (!owner.Known || owner.Live) throw new InvalidOperationException("原对话仍被占用，请从项目中选择接管原对话"); }
                 }
+                bool fresh = tool == "claude" && session.Length == 0 && Get(op, "history") != "True";
+                if (fresh) session = Guid.NewGuid().ToString();
                 var live = new LiveTerminal { Id = terminal, Tool = tool, Dir = dir, Session = fork ? "" : session };
-                live.Pty = new PseudoTerminal(Command(tool, launcher, session, Get(op, "history") == "True", Get(prefs, "RemoteMaxMode"), fork), dirs[dir], 80, 24, text => {
+                live.Pty = new PseudoTerminal(Command(tool, launcher, session, Get(op, "history") == "True", Get(prefs, "RemoteMaxMode"), fork, tool == "codex" && SupportsStandalone(launcher), fresh), dirs[dir], 80, 24, text => {
                     lock (gate) live.Pending.Append(text);
                     Wake();
                 });
@@ -570,7 +649,7 @@ public sealed class TerminalAgent {
                 { "output", output }, { "acks", acknowledgments }
             };
             // The list of conversations is long: it goes out when it changed, and now and then in case the relay restarted.
-            var listed = sessions.Select(s => new { id = s.Id, tool = s.Tool, dir = s.Dir, title = s.Title, updated = s.Updated, live = s.Live, host = s.Host, status = s.Status, can_takeover = s.CanTakeover, ownership_known = s.OwnershipKnown, takeover_reason = s.TakeoverReason }).ToArray();
+            var listed = sessions.Select(s => new { id = s.Id, tool = s.Tool, dir = s.Dir, title = s.Title, updated = s.Updated, live = s.Live, host = s.Host, origin = s.Origin, status = s.Status, can_takeover = s.CanTakeover, ownership_known = s.OwnershipKnown, takeover_reason = s.TakeoverReason }).ToArray();
             listedText = json.Serialize(listed);
             listing = listedText != sentSessions || DateTime.UtcNow - sessionsSent > TimeSpan.FromSeconds(10);
             if (listing) payload["sessions"] = listed;

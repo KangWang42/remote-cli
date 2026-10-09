@@ -82,6 +82,7 @@ button.wide { width: 100%; margin-top: 8px; border: 1px dashed var(--line); }
 .pill.done { --c: var(--good); }
 .pill.idle { --c: var(--muted); }
 .pill.starting, .pill.pc { --c: var(--accent); }
+.pill.locked { --c: var(--muted); }
 .pill.ended { --c: var(--muted); background: transparent; padding-left: 0; }
 .pill.failed { --c: var(--bad); background: transparent; padding-left: 0; }
 @keyframes pulse { 50% { opacity: .35; } }
@@ -100,6 +101,13 @@ button.wide { width: 100%; margin-top: 8px; border: 1px dashed var(--line); }
 #launch p { grid-column: 1 / -1; color: var(--muted); font-size: .9rem; }
 #search { margin-bottom: 8px; min-height: 44px; }
 #empty { color: var(--muted); margin-top: 30px; text-align: center; }
+
+/* A writer lock keeps a history record available, but is not proof of a visible window. */
+.held-sessions { margin-top: 22px; }
+.held-sessions summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 2px; color: var(--muted); cursor: pointer; list-style-position: inside; }
+.held-sessions summary b { color: var(--ink); font-size: .92rem; }
+.held-sessions summary span { font-size: .8rem; text-align: right; }
+.held-sessions[open] summary { margin-bottom: 8px; }
 
 /* ---- sheet from the bottom, toast */
 dialog { width: 100%; max-width: 560px; margin: auto auto 0; padding: 0; border: 0; border-radius: 22px 22px 0 0; background: var(--panel); color: var(--ink); max-height: 86vh; }
