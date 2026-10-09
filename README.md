@@ -103,11 +103,10 @@ Linux 电脑不用下载安装包，见下面的[快速开始](#linux-电脑)。
 ### Linux 电脑
 
 ```bash
-git clone https://github.com/KangWang42/remote-cli
-bash remote-cli/agent-linux/install.sh --dir ~/projects/demo --url https://你的域名
+curl -fsSL https://raw.githubusercontent.com/KangWang42/remote-cli/main/agent-linux/install.sh | bash
 ```
 
-一条命令装好并启动，最后在终端里显示二维码，用手机扫它。不需要 root，需要 Python 3.9 及以上和 systemd。没有域名时可以改用 `--tunnel` 或 `--lan`，详见 [Linux 电脑端](docs/LINUX.md)。
+在要被手机使用的那台 Linux 上运行这一行，等它在终端里显示二维码，用手机 App 扫它。不需要域名、账号和 root：公网地址由 Cloudflare 的临时隧道提供，程序装在你自己的用户目录里。需要 Python 3.9 及以上和 systemd。项目文件夹可以连上后在手机里添加。有自己的域名、只在家里的网络使用、卸载和更新，见 [Linux 电脑端](docs/LINUX.md)。
 
 ## 手机上的样子
 
