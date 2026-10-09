@@ -98,17 +98,15 @@ if cfg.get("PairUrl") != sys.argv[2]:
 PY
 }
 
-# The address the running tunnel announced, waited for up to 45 seconds. Only this run of
-# the service is read: an address from before a restart no longer works.
+# The address the running tunnel announced, waited for up to 60 seconds. The tunnel writes
+# its own log file, emptied each time it starts, so an address from before a restart is
+# never shown and nothing depends on the journal being readable.
 tunnel_address() {
-    local found="" run
-    for _ in $(seq 45); do
-        run="$(systemctl --user show remote-cli-tunnel -p InvocationID --value 2>/dev/null || true)"
-        if [ -n "$run" ]; then
-            found="$(journalctl --user "_SYSTEMD_INVOCATION_ID=$run" --no-pager -o cat 2>/dev/null \
-                | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1 || true)"
-        fi
+    local found="" waited
+    for waited in $(seq 60); do
+        found="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$relay_state/tunnel.log" 2>/dev/null | tail -1 || true)"
         [ -n "$found" ] && break
+        [ "$waited" = 3 ] && say "正在等待公网地址，通常十秒以内…" >&2
         sleep 1
     done
     printf '%s' "$found"
@@ -118,7 +116,7 @@ pair() {
     [ -f "$share/agent.py" ] || fail "还没有安装。"
     if systemctl --user is-active --quiet remote-cli-tunnel 2>/dev/null; then
         local address; address="$(tunnel_address)"
-        [ -n "$address" ] || fail "公网通道还没有给出地址，请看：journalctl --user -u remote-cli-tunnel -n 30"
+        [ -n "$address" ] || fail "公网通道一分钟内没有给出地址（需要能访问 Cloudflare）。原因见：tail -n 30 $relay_state/tunnel.log；也可以改用 --lan 或 --url 重新运行。"
         set_pair_url "$address"
     fi
     python3 "$share/agent.py" --pair --data "$state"
@@ -300,26 +298,34 @@ RestartSec=3
 WantedBy=default.target
 EOF
     cp "$repo/agent-linux/remote-cli-agent.service" "$units/remote-cli-agent.service"
-    if [ "$mode" = "tunnel" ]; then
-        local program; program="$(tunnel_program)"
+    # An update keeps the way it was set up: with a tunnel, its service is written again
+    # and restarted only when it changed, because a restart gives the tunnel a new address.
+    local tunnel="" restart_tunnel=""
+    if [ "$mode" = "tunnel" ] || { [ "$mode" = "keep" ] && [ -f "$units/remote-cli-tunnel.service" ]; }; then
+        tunnel="yes"
+        local program wanted
+        program="$(tunnel_program)"
         # An empty settings file of our own: cloudflared otherwise reads ~/.cloudflared or
         # /etc/cloudflared, and a named tunnel configured there answers 404 for this one.
         : > "$relay_state/cloudflared.yml"
-        cat > "$units/remote-cli-tunnel.service" <<EOF
-[Unit]
+        wanted="[Unit]
 Description=remote-cli public address (Cloudflare quick tunnel to the relay)
 After=network-online.target remote-cli-relay.service
 Wants=network-online.target
 
 [Service]
-ExecStart=$program tunnel --config %h/.local/state/remote-cli-relay/cloudflared.yml --no-autoupdate --url http://127.0.0.1:$port
+ExecStartPre=/bin/sh -c ': > %h/.local/state/remote-cli-relay/tunnel.log'
+ExecStart=$program tunnel --config %h/.local/state/remote-cli-relay/cloudflared.yml --no-autoupdate --logfile %h/.local/state/remote-cli-relay/tunnel.log --url http://127.0.0.1:$port
 Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=default.target
-EOF
-    elif [ "$mode" != "keep" ]; then
+WantedBy=default.target"
+        if [ "$wanted" != "$(cat "$units/remote-cli-tunnel.service" 2>/dev/null || true)" ]; then
+            printf '%s\n' "$wanted" > "$units/remote-cli-tunnel.service"
+            restart_tunnel="yes"
+        fi
+    else
         systemctl --user disable --now remote-cli-tunnel >/dev/null 2>&1 || true
         rm -f "$units/remote-cli-tunnel.service"
     fi
@@ -327,9 +333,11 @@ EOF
     systemctl --user daemon-reload
     systemctl --user enable --quiet remote-cli-relay remote-cli-agent
     systemctl --user restart remote-cli-relay
-    if [ "$mode" = "tunnel" ]; then         # an update leaves a running tunnel alone: its address stays
+    if [ -n "$tunnel" ]; then
         systemctl --user enable --quiet remote-cli-tunnel
-        systemctl --user restart remote-cli-tunnel
+        if [ -n "$restart_tunnel" ] || ! systemctl --user is-active --quiet remote-cli-tunnel; then
+            systemctl --user restart remote-cli-tunnel
+        fi
     fi
     # the agent signs in at once when the relay already answers
     python3 - "$port" <<'PY' || true

@@ -34,12 +34,10 @@ import pty
 import re
 import secrets
 import select
-import shutil
 import signal
 import socket
 import stat
 import struct
-import subprocess
 import sys
 import termios
 import threading
@@ -1172,19 +1170,223 @@ def show_pairing(data):
     return 0
 
 
+QR_ECC = (None, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26)    # error correction bytes of one block, level M
+QR_BLOCKS = (None, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5)
+
+
+def qr_code(text):
+    """The QR code of a short text as rows of dark (True) and light modules, without the
+    quiet zone; None when the text is too long. Byte mode, error correction level M,
+    versions 1 to 10 (213 bytes): the same code agent-windows/QrCode.cs draws."""
+    data = text.encode("utf-8")
+
+    def raw_modules(version):
+        result = (16 * version + 128) * version + 64
+        if version >= 2:
+            align = version // 7 + 2
+            result -= (25 * align - 10) * align - 55
+            if version >= 7:
+                result -= 36
+        return result
+
+    def multiply(x, y):                 # in the field the code's error correction uses
+        z = 0
+        for i in range(7, -1, -1):
+            z = (z << 1) ^ ((z >> 7) * 0x11D)
+            z ^= ((y >> i) & 1) * x
+        return z & 0xFF
+
+    for version in range(1, 11):
+        capacity = raw_modules(version) // 8 - QR_ECC[version] * QR_BLOCKS[version]
+        count = 8 if version <= 9 else 16
+        if 4 + count + len(data) * 8 <= capacity * 8:
+            break
+    else:
+        return None
+
+    # data bits: mode, length, bytes, terminator, padding
+    bits = [0, 1, 0, 0] + [(len(data) >> i) & 1 for i in range(count - 1, -1, -1)]
+    for byte in data:
+        bits += [(byte >> i) & 1 for i in range(7, -1, -1)]
+    bits += [0] * min(4, capacity * 8 - len(bits))
+    bits += [0] * (-len(bits) % 8)
+    words = [int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8)]
+    pad = 0xEC
+    while len(words) < capacity:
+        words.append(pad)
+        pad ^= 0xEC ^ 0x11
+
+    # error correction blocks, interleaved
+    blocks, ecc, raw = QR_BLOCKS[version], QR_ECC[version], raw_modules(version) // 8
+    short_blocks, short_length = blocks - raw % blocks, raw // blocks
+    divisor, root = [0] * (ecc - 1) + [1], 1
+    for _ in range(ecc):
+        for j in range(ecc):
+            divisor[j] = multiply(divisor[j], root)
+            if j + 1 < ecc:
+                divisor[j] ^= divisor[j + 1]
+        root = multiply(root, 2)
+    parts, at = [], 0
+    for i in range(blocks):
+        length = short_length - ecc + (0 if i < short_blocks else 1)
+        part = words[at:at + length]
+        at += length
+        rest = [0] * ecc
+        for byte in part:
+            factor = byte ^ rest[0]
+            rest = rest[1:] + [0]
+            rest = [r ^ multiply(d, factor) for r, d in zip(rest, divisor)]
+        parts.append((part, rest))
+    stream = []
+    for i in range(short_length - ecc + 1):
+        stream += [part[i] for part, _ in parts if i < len(part)]
+    for i in range(ecc):
+        stream += [rest[i] for _, rest in parts]
+
+    # function patterns
+    size = version * 4 + 17
+    dark = [[False] * size for _ in range(size)]
+    locked = [[False] * size for _ in range(size)]
+
+    def put(x, y, value):
+        dark[y][x] = bool(value)
+        locked[y][x] = True
+
+    for i in range(size):
+        put(6, i, i % 2 == 0)
+        put(i, 6, i % 2 == 0)
+    for cx, cy in ((3, 3), (size - 4, 3), (3, size - 4)):
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                if 0 <= cx + dx < size and 0 <= cy + dy < size:
+                    put(cx + dx, cy + dy, max(abs(dx), abs(dy)) not in (2, 4))
+    if version > 1:
+        number = version // 7 + 2
+        step = (version * 4 + number * 2 + 1) // (number * 2 - 2) * 2
+        places = [6] + [size - 7 - step * i for i in range(number - 2, -1, -1)]
+        for i, px in enumerate(places):
+            for j, py in enumerate(places):
+                if (i, j) in ((0, 0), (0, number - 1), (number - 1, 0)):
+                    continue
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        put(px + dx, py + dy, max(abs(dx), abs(dy)) != 1)
+
+    def put_format(mask):
+        rem = mask                      # level M has format bits 00
+        for _ in range(10):
+            rem = (rem << 1) ^ ((rem >> 9) * 0x537)
+        value = (mask << 10 | rem) ^ 0x5412
+        bit = lambda i: (value >> i) & 1
+        for i in range(6):
+            put(8, i, bit(i))
+        put(8, 7, bit(6))
+        put(8, 8, bit(7))
+        put(7, 8, bit(8))
+        for i in range(9, 15):
+            put(14 - i, 8, bit(i))
+        for i in range(8):
+            put(size - 1 - i, 8, bit(i))
+        for i in range(8, 15):
+            put(8, size - 15 + i, bit(i))
+        put(8, size - 8, True)
+
+    put_format(0)                       # reserves the format area; the real mask is written below
+    if version >= 7:
+        rem = version
+        for _ in range(12):
+            rem = (rem << 1) ^ ((rem >> 11) * 0x1F25)
+        value = version << 12 | rem
+        for i in range(18):
+            a, b = size - 11 + i % 3, i // 3
+            put(a, b, (value >> i) & 1)
+            put(b, a, (value >> i) & 1)
+
+    # data modules in the zigzag order
+    index, right = 0, size - 1
+    while right >= 1:
+        if right == 6:
+            right = 5
+        for vert in range(size):
+            for j in range(2):
+                x = right - j
+                y = size - 1 - vert if (right + 1) & 2 == 0 else vert
+                if not locked[y][x] and index < len(stream) * 8:
+                    dark[y][x] = bool((stream[index >> 3] >> (7 - (index & 7))) & 1)
+                    index += 1
+        right -= 2
+
+    masks = (lambda x, y: (x + y) % 2 == 0, lambda x, y: y % 2 == 0, lambda x, y: x % 3 == 0,
+             lambda x, y: (x + y) % 3 == 0, lambda x, y: (x // 3 + y // 2) % 2 == 0,
+             lambda x, y: x * y % 2 + x * y % 3 == 0, lambda x, y: (x * y % 2 + x * y % 3) % 2 == 0,
+             lambda x, y: ((x + y) % 2 + x * y % 3) % 2 == 0)
+
+    def apply(mask):                    # applying the same mask again removes it
+        for y in range(size):
+            for x in range(size):
+                if not locked[y][x] and masks[mask](x, y):
+                    dark[y][x] = not dark[y][x]
+
+    def penalty():
+        """Runs of one colour, finder-like sequences, 2x2 blocks and the balance of dark
+        and light: the lower the easier to scan."""
+        result, columns = 0, [list(column) for column in zip(*dark)]
+        finder = [True, False, True, True, True, False, True, False, False, False, False]
+        for line in dark + columns:
+            run = 1
+            for i in range(1, size):
+                if line[i] == line[i - 1]:
+                    run += 1
+                    result += 3 if run == 5 else 1 if run > 5 else 0
+                else:
+                    run = 1
+            for begin in range(size - 10):
+                piece = line[begin:begin + 11]
+                result += 40 * ((piece == finder) + (piece == finder[::-1]))
+        for y in range(size - 1):
+            for x in range(size - 1):
+                if dark[y][x] == dark[y][x + 1] == dark[y + 1][x] == dark[y + 1][x + 1]:
+                    result += 3
+        total = sum(map(sum, dark))
+        return result + 10 * (abs(total * 20 - size * size * 10) // (size * size))
+
+    best, lowest = 0, None
+    for mask in range(8):
+        apply(mask)
+        put_format(mask)
+        score = penalty()
+        if lowest is None or score < lowest:
+            best, lowest = mask, score
+        apply(mask)
+    apply(best)
+    put_format(best)
+    return dark
+
+
+def qr_text(code, margin=3):
+    """A code drawn with half-height blocks, two rows of modules to a line of text, black on
+    white whatever colours the terminal has."""
+    size = len(code) + 2 * margin
+    module = lambda x, y: 0 <= y - margin < len(code) and 0 <= x - margin < len(code) and code[y - margin][x - margin]
+    lines = []
+    for y in range(0, size, 2):
+        line = "".join(" \u2584\u2580\u2588"[2 * module(x, y) + module(x, y + 1)] for x in range(size))
+        lines.append("\x1b[30;47m" + line + "\x1b[0m")
+    return "\n".join(lines) + "\n"
+
+
 def print_pairing(server, password, name):
-    """The same code the Windows program shows as a picture, printed for the console."""
-    payload = "remotecli://connect?u=%s&p=%s&n=%s" % (
-        quote(server, safe=""), quote(password, safe=""), quote(name, safe=""))
+    """The same code the Windows program shows as a picture, drawn in the console."""
+    payload = "remotecli://connect?u=%s&p=%s" % (quote(server, safe=""), quote(password, safe=""))
+    code = qr_code(payload + "&n=" + quote(name, safe="")) or qr_code(payload)    # a long name is left out
     print("\n配对：手机 App 点“扫码添加电脑”，扫下面的二维码，或手动输入地址与密码。", file=sys.stderr)
     print("  地址：%s\n  名称：%s\n  密码：%s\n" % (server, name, password), file=sys.stderr)
-    qr = shutil.which("qrencode")
-    if qr:
-        for kind in ("ANSIUTF8", "UTF8", "ANSI"):
-            result = subprocess.run([qr, "-t", kind, payload], capture_output=True)
-            if result.returncode == 0 and result.stdout:
-                sys.stderr.write(result.stdout.decode("utf-8", "replace"))
-                break
+    if code:
+        sys.stderr.write(qr_text(code))
+        print("\n二维码显示不全时把终端窗口拉大或缩小字体；扫不了就在 App 里选“手动输入地址”。", file=sys.stderr)
+    else:
+        print("地址太长，画不成二维码，请在 App 里选“手动输入地址”。", file=sys.stderr)
+    sys.stderr.flush()
 
 
 def set_password(folder):

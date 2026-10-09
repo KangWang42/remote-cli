@@ -260,6 +260,30 @@ class Pure(unittest.TestCase):
         self.assertIsNotNone(sessions.known(named, "claude", "项目"))
         self.assertIsNone(sessions.known(named, "codex", "项目"))
 
+    def test_qr_code(self):
+        text = "remotecli://connect?u=https%3A%2F%2Fa-b-c-d.trycloudflare.com&p=3AasQ_tDwOpmumz1aqxb6znL&n=ubuntu"
+        code = agent.qr_code(text)
+        size = len(code)
+        self.assertEqual((size - 17) % 4, 0)
+        self.assertTrue(all(len(row) == size for row in code))
+        ring = [[True] * 7, [True] + [False] * 5 + [True]] + [[True, False, True, True, True, False, True]] * 3 \
+            + [[True] + [False] * 5 + [True], [True] * 7]
+        for top, left in ((0, 0), (0, size - 7), (size - 7, 0)):       # the three corner marks
+            self.assertEqual([row[left:left + 7] for row in code[top:top + 7]], ring)
+        self.assertEqual(agent.qr_code(text), code)
+        self.assertNotEqual(agent.qr_code(text + "x"), code)
+        self.assertIsNone(agent.qr_code("x" * 214))
+        drawn = agent.qr_text(code).rstrip("\n").split("\n")
+        self.assertEqual(len(drawn), (size + 6 + 1) // 2)
+        try:                                # read back where OpenCV is at hand
+            import cv2
+            import numpy
+        except ImportError:
+            return
+        wide = [[False] * (size + 8)] * 4 + [[False] * 4 + row + [False] * 4 for row in code] + [[False] * (size + 8)] * 4
+        image = numpy.array([[0 if cell else 255 for cell in row] for row in wide], dtype=numpy.uint8).repeat(8, 0).repeat(8, 1)
+        self.assertEqual(cv2.QRCodeDetector().detectAndDecode(image)[0], text)
+
     def test_read_password_not_generated(self):
         self.assertEqual(agent.read_password(tempfile.mkdtemp()), "")
         data = tempfile.mkdtemp()

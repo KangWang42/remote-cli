@@ -20,7 +20,7 @@
 #
 # The pairing address and password never reach the journal. Show them in a console:
 #   python3 ~/.local/share/remote-cli-agent/agent.py --pair
-# (install the qrencode package to also get a scannable QR)
+# The QR is drawn by the agent itself; no other program is needed.
 
 [Unit]
 Description=remote-cli agent (terminals of this machine for the phone)
