@@ -713,6 +713,15 @@ def main():
     if argv and argv[0] == "--set-password":
         return set_password(argv[1] if len(argv) > 1 else data)
     os.makedirs(data, mode=0o700, exist_ok=True)
+    # One agent per data directory (the Windows agent's mutex): a second instance would
+    # report with its own id and the relay would keep closing the first one's terminals.
+    # The Rust agent takes the same lock, so the two implementations guard each other.
+    lock = open(os.path.join(data, "agent.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        say("此数据目录已有 agent 在运行（agent.lock 被占用），退出")
+        return 3
     password = read_password(data)
     if not password:
         say("缺少中转密码：运行 python3 agent.py --set-password %s 并输入中转的密码，"

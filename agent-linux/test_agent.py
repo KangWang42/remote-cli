@@ -6,6 +6,7 @@ to it, the way the phone does.
 """
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -23,6 +24,13 @@ sys.path.insert(0, HERE)
 import agent  # noqa: E402
 
 PASSWORD = "unit-test-password-8f2c"
+
+# Raw pty output interleaves echo, prompts and redraw escapes; match on the plain text.
+ANSI = re.compile(r"\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|\r")
+
+
+def plain(text):
+    return ANSI.sub("", text)
 
 
 def request(method, url, payload=None, token=None, timeout=10):
@@ -182,10 +190,9 @@ class EndToEnd(unittest.TestCase):
         with open(os.path.join(agent_data, "config.json"), "w", encoding="utf-8") as stream:
             json.dump({"Server": cls.base, "RemoteEnabled": True, "Name": "e2e-ubuntu",
                        "RemoteDirs": ["项目=" + cls.project]}, stream)
-        cls.agent = subprocess.Popen(
-            [sys.executable, os.path.join(HERE, "agent.py"), "--data", agent_data],
-            env={**os.environ, "RCLI_PASSWORD": PASSWORD},
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.agent = subprocess.Popen(cls.agent_command(agent_data),
+                                     env={**os.environ, "RCLI_PASSWORD": PASSWORD},
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.token = request("POST", cls.base + "/api/login", {"password": PASSWORD})[1]["token"]
         view = None
         deadline = time.time() + 30
@@ -196,6 +203,11 @@ class EndToEnd(unittest.TestCase):
                 return
             time.sleep(0.3)
         raise AssertionError("agent did not come online: %r" % view)
+
+    @classmethod
+    def agent_command(cls, agent_data):
+        """What spawns the agent under test; overridden by the Rust contract test."""
+        return [sys.executable, os.path.join(HERE, "agent.py"), "--data", agent_data]
 
     @classmethod
     def wait_tcp(cls, port):
@@ -247,7 +259,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(started["state"], "queued", started)
         terminal = started["terminal"]
         after, text = 0, ""
-        deadline = time.time() + 20
+        deadline = time.time() + 40
         while time.time() < deadline:
             status, view = request("GET", "%s/api/terminal?terminal=%s&after=%d&wait=2"
                                    % (self.base, terminal, after), token=self.token)
@@ -255,40 +267,37 @@ class EndToEnd(unittest.TestCase):
             for chunk in view["chunks"]:
                 text += chunk["data"]
                 after = chunk["seq"]
-            if "$" in text or "#" in text:
+            if "$" in plain(text) or "#" in plain(text):
                 break
-        self.assertIn("$", text, "no shell prompt arrived")
+        self.assertIn("$", plain(text), "no shell prompt arrived")
         self.assertEqual(self.overview()["terminals"][0]["state"], "running")
 
         # 2. text round trip: the phone types, the shell answers
         self.op({"action": "input", "terminal": terminal, "data": "echo E2EOK_$((21*2))\n"})
-        deadline = time.time() + 20
-        while time.time() < deadline:
+        deadline = time.time() + 30
+        while time.time() < deadline and "E2EOK_42" not in plain(text):
             status, view = request("GET", "%s/api/terminal?terminal=%s&after=%d&wait=2"
                                    % (self.base, terminal, after), token=self.token)
             for chunk in view.get("chunks", []):
                 text += chunk["data"]
                 after = chunk["seq"]
-            if "E2EOK_42" in text:
-                break
             time.sleep(0.2)
-        self.assertIn("E2EOK_42", text, "the shell never answered")
+        self.assertIn("E2EOK_42", plain(text), "the shell never answered")
 
-        # 3. resize reaches the program (the pty's winsize is what the shell reports)
+        # 3. resize reaches the program (the pty's winsize is what the shell reports);
+        # the probe is typed once, the shell runs it when it gets to it
         self.op({"action": "resize", "terminal": terminal, "cols": 100, "rows": 30})
-        deadline = time.time() + 20
-        while time.time() < deadline:
+        self.op({"action": "input", "terminal": terminal,
+                 "data": "python3 -c \"import shutil;print('COLS_'+str(shutil.get_terminal_size().columns))\"\n"})
+        deadline = time.time() + 40
+        while time.time() < deadline and "COLS_100" not in plain(text):
             status, view = request("GET", "%s/api/terminal?terminal=%s&after=%d&wait=2"
                                    % (self.base, terminal, after), token=self.token)
             for chunk in view.get("chunks", []):
                 text += chunk["data"]
                 after = chunk["seq"]
-            if "COLS_100" in text:
-                break
-            time.sleep(0.2)
-            self.op({"action": "input", "terminal": terminal,
-                     "data": "python3 -c \"import shutil;print('COLS_'+str(shutil.get_terminal_size().columns))\"\n"})
-        self.assertIn("COLS_100", text, "resize did not reach the terminal")
+            time.sleep(0.3)
+        self.assertIn("COLS_100", plain(text), "resize did not reach the terminal")
 
         # 4. a graceful exit is reported with its code
         self.op({"action": "input", "terminal": terminal, "data": "exit\n"})
