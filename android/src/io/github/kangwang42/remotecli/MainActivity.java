@@ -347,6 +347,8 @@ public final class MainActivity extends Activity {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return !request.getUrl().toString().startsWith(origin + "/");       // the pages of this computer only
             }
+            @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) { if (url.startsWith(origin + "/")) view.evaluateJavascript(lookScript(url.startsWith(origin + "/terminal/"), false), null); }
+            @Override public void onPageFinished(WebView view, String url) { if (url.startsWith(origin + "/")) view.evaluateJavascript(lookScript(url.startsWith(origin + "/terminal/"), true), null); }
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request.isForMainFrame()) reconnect(view, origin);
             }
@@ -415,6 +417,22 @@ public final class MainActivity extends Activity {
         });
     }
 
+    /**
+     * Writes the app's look into the page's own storage. Pages of a computer that has not been updated know nothing of
+     * pref() and read only that storage; this keeps them in the app's look too. When such a page has already drawn
+     * itself in another skin, it is loaded once more.
+     */
+    private String lookScript(boolean terminal, boolean drawn) {
+        String own = prefs.getString("look-termskin", ""), skin = terminal && !own.isEmpty() ? own : prefs.getString("look-skin", "paper");
+        StringBuilder script = new StringBuilder("(function(){try{var s=localStorage,was=s.getItem('rcli-skin')||'night';");
+        for (String key : new String[]{"skin", "text", "font", "spacing", "renderer"}) {
+            String value = "skin".equals(key) ? skin : prefs.getString("look-" + key, "");
+            if (value.matches("[a-z0-9]{1,16}")) script.append("s.setItem('rcli-").append(key).append("','").append(value).append("');");
+        }
+        // A page that asks the app (window.RemoteCliNative.pref) has drawn the right skin whatever its storage held.
+        if (drawn) script.append("if(was!=='").append(skin).append("'&&!(window.RemoteCliNative&&RemoteCliNative.pref)&&!location.hash)location.reload();");
+        return script.append("}catch(e){}})()").toString();
+    }
     private static final java.util.List<String> LOOK = java.util.Arrays.asList("skin", "termskin", "text", "font", "spacing", "renderer");
     private final class Bridge {
         /** The system's speech recognizer; what was said goes into the page's message box. */
