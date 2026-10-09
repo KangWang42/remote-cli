@@ -503,6 +503,117 @@ public sealed class TerminalAgent {
         catch (NotSupportedException) { throw new ArgumentException("路径无效"); }
         catch (IOException) { throw new ArgumentException("读取失败，文件可能正被占用"); }
     }
+    // ---- Word and PowerPoint files as they look. Their layout is theirs alone: the program that made them writes a
+    // PDF, which the phone shows page by page. The first question starts the work and is answered "pending"; the
+    // phone asks again until the PDF is there, so no terminal waits behind a document. The PDF is kept beside the
+    // settings, named after the file's place, size and date, and thrown away after a day.
+    readonly Dictionary<string, Task> rendering = new Dictionary<string, Task>();
+    readonly bool canRender = CanRender;
+    static readonly string[] Rendered = { ".docx", ".doc", ".pptx", ".ppt" };
+    static Type Office(bool slides) {
+        foreach (string id in slides ? new[] { "PowerPoint.Application", "KWPP.Application" } : new[] { "Word.Application", "KWPS.Application" }) {
+            try { Type type = Type.GetTypeFromProgID(id); if (type != null) return type; } catch (Exception) { }
+        }
+        return null;
+    }
+    static string LibreOffice() {
+        foreach (string root in new[] { Environment.GetEnvironmentVariable("ProgramFiles"), Environment.GetEnvironmentVariable("ProgramFiles(x86)") }) {
+            if (String.IsNullOrEmpty(root)) continue;
+            string file = Path.Combine(root, "LibreOffice", "program", "soffice.exe");
+            if (File.Exists(file)) return file;
+        }
+        return null;
+    }
+    public static bool CanRender { get { return Office(false) != null || Office(true) != null || LibreOffice() != null; } }
+    // LibreOffice writes "<name>.pdf" into a folder of its choosing; it is given one of its own and the file moved out.
+    static void LibreToPdf(string program, string file, string pdf) {
+        string folder = pdf + ".dir";
+        Directory.CreateDirectory(folder);
+        try {
+            var start = new ProcessStartInfo(program, "--headless --norestore --convert-to pdf --outdir \"" + folder + "\" \"" + file + "\"") { UseShellExecute = false, CreateNoWindow = true };
+            using (var process = Process.Start(start)) {
+                if (!process.WaitForExit(120000)) { try { process.Kill(); } catch (Exception) { } throw new TimeoutException("转换超过两分钟，已放弃"); }
+            }
+            string made = Directory.GetFiles(folder, "*.pdf").FirstOrDefault();
+            if (made == null) throw new ArgumentException("这个文件没有转换成功，可能有密码保护或已损坏");
+            if (File.Exists(pdf)) File.Delete(pdf);
+            File.Move(made, pdf);
+        } finally { try { Directory.Delete(folder, true); } catch (Exception) { } }
+    }
+    Dictionary<string, object> Render(string root, string relative, long offset) {
+        string full = Path.GetFullPath(Path.GetFullPath(root).TrimEnd('\\') + "\\" + (relative ?? "").Replace('/', '\\').Trim('\\'));
+        Files(root, relative, "file_read", 0);          // the same refusals as for reading it: outside the project, a link that leads out
+        if (Array.IndexOf(Rendered, Path.GetExtension(full).ToLowerInvariant()) < 0) throw new ArgumentException("这种文件没有原样预览");
+        var info = new FileInfo(full);
+        if (info.Length > 150L * 1024 * 1024) throw new ArgumentException("文件太大，不做原样预览");
+        string name;
+        using (var sha = SHA1.Create()) name = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(full.ToLowerInvariant() + "|" + info.Length + "|" + info.LastWriteTimeUtc.Ticks))).Replace("-", "").ToLowerInvariant();
+        string folder = Path.Combine(dataDir, "render"), pdf = Path.Combine(folder, name + ".pdf");
+        Task work;
+        lock (rendering) {
+            if (rendering.TryGetValue(pdf, out work) && work.IsCompleted) {
+                rendering.Remove(pdf);
+                if (work.IsFaulted) throw new ArgumentException(work.Exception.InnerException is ArgumentException || work.Exception.InnerException is TimeoutException ? work.Exception.InnerException.Message : "这个文件没有转换成功，可能有密码保护或已损坏");
+                work = null;
+            }
+            if (work == null && !File.Exists(pdf)) {
+                Directory.CreateDirectory(folder);
+                foreach (string old in Directory.GetFiles(folder)) { try { if (DateTime.UtcNow - File.GetLastWriteTimeUtc(old) > TimeSpan.FromDays(1)) File.Delete(old); } catch (Exception) { } }
+                rendering[pdf] = work = Task.Run(() => OfficeToPdf(full, pdf));
+            }
+        }
+        if (work != null) return new Dictionary<string, object> { { "pending", true } };
+        var piece = Files(folder, name + ".pdf", "file_read", offset);
+        piece["path"] = (relative ?? "").Replace('\\', '/').Trim('/');
+        return piece;
+    }
+    static object Call(object target, string name, params object[] args) { return target.GetType().InvokeMember(name, System.Reflection.BindingFlags.InvokeMethod, null, target, args); }
+    static object Read(object target, string name) { return target.GetType().InvokeMember(name, System.Reflection.BindingFlags.GetProperty, null, target, null); }
+    static void Write(object target, string name, object value) { target.GetType().InvokeMember(name, System.Reflection.BindingFlags.SetProperty, null, target, new[] { value }); }
+    // Runs the conversion on a thread of its own kind (Office wants one), and gives up after two minutes.
+    public static void OfficeToPdf(string file, string pdf) {
+        string ext = Path.GetExtension(file).ToLowerInvariant(); bool slides = ext == ".pptx" || ext == ".ppt";
+        Type type = Office(slides);
+        if (type == null) {
+            string libre = LibreOffice();
+            if (libre == null) throw new ArgumentException(slides ? "电脑上没有安装 PowerPoint、WPS 演示或 LibreOffice，不能原样预览" : "电脑上没有安装 Word、WPS 文字或 LibreOffice，不能原样预览");
+            LibreToPdf(libre, file, pdf);
+            return;
+        }
+        string part = pdf + ".part"; Exception failure = null;
+        var thread = new Thread(() => {
+            try {
+                if (slides) {
+                    // PowerPoint is one program for everybody: when the person has it open, theirs is used and left running.
+                    bool mine = Process.GetProcessesByName("POWERPNT").Length == 0 && Process.GetProcessesByName("wpp").Length == 0;
+                    object app = Activator.CreateInstance(type);
+                    try {
+                        object all = Read(app, "Presentations"), shown = Call(all, "Open", file, -1, 0, 0);       // read only, not as a new file, without a window
+                        try { Call(shown, "SaveAs", part, 32); } finally { Call(shown, "Close"); }
+                        if (mine && Convert.ToInt32(Read(all, "Count")) == 0) Call(app, "Quit");
+                    } finally { Marshal.FinalReleaseComObject(app); }
+                } else {
+                    object app = Activator.CreateInstance(type);
+                    try {
+                        Write(app, "Visible", false); Write(app, "DisplayAlerts", 0);
+                        try { Write(app, "AutomationSecurity", 3); } catch (Exception) { }      // macros stay off
+                        object all = Read(app, "Documents");
+                        // A password that cannot be right, so that a protected file is refused instead of asked about.
+                        object shown = Call(all, "Open", file, false, true, false, "\u0001");
+                        try { Call(shown, "ExportAsFixedFormat", part, 17); } finally { Call(shown, "Close", 0); }
+                        if (Convert.ToInt32(Read(all, "Count")) == 0) Call(app, "Quit", 0);
+                    } finally { Marshal.FinalReleaseComObject(app); }
+                }
+            } catch (Exception error) { failure = error; }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.IsBackground = true; thread.Start();
+        if (!thread.Join(120000)) throw new TimeoutException("转换超过两分钟，已放弃。文件可能有密码保护，或电脑上的 Office 正在等你回答一个对话框");
+        // PowerPoint adds ".pdf" to a name that does not end in it.
+        if (failure == null && !File.Exists(part) && File.Exists(part + ".pdf")) File.Move(part + ".pdf", part);
+        if (failure != null || !File.Exists(part)) { try { File.Delete(part); } catch (Exception) { } throw new InvalidOperationException("convert", failure); }
+        if (File.Exists(pdf)) File.Delete(pdf);
+        File.Move(part, pdf);
+    }
     // The last things said in a saved conversation, oldest first, for the phone to look at before anything is done to
     // the program that has it open: what the person asked, what the tool answered, and the name of each thing it did.
     // What the tools put into a conversation for themselves (reminders, command output, results) is left out.
@@ -758,7 +869,7 @@ public sealed class TerminalAgent {
         if (completed.ContainsKey(id)) { reported.Remove(id); return; }
         string error = ""; Dictionary<string, object> result = null;
         try {
-            bool project = action == "project_add" || action == "project_remove" || action == "project_rename", file = action == "file_list" || action == "file_read", update = action == "update", peek = action == "session_read";
+            bool project = action == "project_add" || action == "project_remove" || action == "project_rename", file = action == "file_list" || action == "file_read" || action == "file_render", update = action == "update", peek = action == "session_read";
             if (!Regex.IsMatch(id, @"\A[a-f0-9]{16,32}\z") || (!project && !file && !update && !peek && !Regex.IsMatch(terminal, @"\A[a-f0-9]{32}\z"))) throw new ArgumentException("操作编号无效");
             double at; if (!Double.TryParse(Get(op, "at"), out at) || Math.Abs((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds - at) > 150) throw new ArgumentException("操作已过期");
             if (Get(prefs, "RemoteEnabled") != "True") throw new InvalidOperationException("电脑远控已关闭");
@@ -768,7 +879,8 @@ public sealed class TerminalAgent {
             else if (file) {
                 string root;
                 if (!AllDirs(prefs).TryGetValue(Get(op, "dir"), out root)) throw new ArgumentException("目录未获允许");
-                result = Files(root, Get(op, "path"), action, op.ContainsKey("offset") ? Convert.ToInt64(op["offset"]) : 0);
+                long offset = op.ContainsKey("offset") ? Convert.ToInt64(op["offset"]) : 0;
+                result = action == "file_render" ? Render(root, Get(op, "path"), offset) : Files(root, Get(op, "path"), action, offset);
             }
             else if (action == "start") {
                 if (terminals.ContainsKey(terminal)) return;
@@ -852,7 +964,7 @@ public sealed class TerminalAgent {
             }).ToArray();
             var payload = new Dictionary<string, object> {
                 { "info", new { instance = instance, enabled = enabled, workspaces = allowed.Keys.ToArray(), tools = tools, version = Version, newer = Newer, shell = "PowerShell",
-                    features = new[] { "codex-fork", "codex-takeover", "terminal-exit", "files", "peek" }.Concat(UpdateRequested != null ? new[] { "update" } : new string[0]).ToArray(),
+                    features = new[] { "codex-fork", "codex-takeover", "terminal-exit", "files", "peek" }.Concat(canRender ? new[] { "render" } : new string[0]).Concat(UpdateRequested != null ? new[] { "update" } : new string[0]).ToArray(),
                     projects = settings.Select(d => new { name = d.Key, path = d.Value, @fixed = true, exists = true })
                         .Concat(OwnProjects().Where(p => !settings.ContainsKey(p.Key)).Select(p => new { name = p.Key, path = p.Value, @fixed = false, exists = allowed.ContainsKey(p.Key) })).ToArray(),
                     candidates = candidates.ToArray() } },

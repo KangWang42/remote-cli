@@ -140,3 +140,11 @@
 .picture img { max-width: 100%; height: auto; border-radius: 6px; box-shadow: 0 4px 18px rgba(0, 0, 0, .14); cursor: zoom-in; }
 .picture.actual { place-items: start; }
 .picture.actual img { max-width: none; cursor: zoom-out; }
+
+/* Word pages and PowerPoint slides as they were made */
+.looks { overflow-x: auto; }
+.word-looks .docx-wrapper { background: transparent !important; padding: 10px 8px 24px !important; align-items: flex-start !important; width: max-content; min-width: 100%; box-sizing: border-box; }
+.word-looks .docx-wrapper > section.docx { margin-bottom: 14px !important; box-shadow: 0 1px 6px rgba(0, 0, 0, .28) !important; color: #000; }
+.word-looks.actual { cursor: zoom-out; }
+.slide-looks .pptx-preview-wrapper { height: auto !important; overflow: visible !important; background: transparent !important; }
+.slide-looks .pptx-preview-wrapper > * { margin-bottom: 10px; box-shadow: 0 1px 6px rgba(0, 0, 0, .28); }

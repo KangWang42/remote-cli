@@ -86,6 +86,72 @@
     for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
     return bytes;
   }
+  // A Word or PowerPoint file as it looks: the computer has the program that made it write a PDF. The first
+  // question starts that work; the answer is "pending" until the PDF is there, and then it comes in pieces.
+  const LOOKS = ['docx', 'doc', 'pptx', 'ppt'];
+  let features = null;
+  async function canRender() {
+    if (!features) {
+      try { features = ((await (await fetch('/api/terminal', { credentials: 'same-origin' })).json()).device || {}).features || []; } catch (error) { features = []; }
+    }
+    return features.includes('render');
+  }
+  async function rendered(path, mine) {
+    let piece, waited = 0;
+    for (;;) {
+      piece = await ask('file_render', path, 0);
+      if (!piece.pending) break;
+      if (mine !== run) throw new Error('left');
+      if ((waited += 1500) > 150000) throw new Error('电脑转换得太久，已放弃');
+      $('progress').hidden = false; $('progress-bar').style.width = '0%';
+      $('progress-text').textContent = '电脑正在把它转成原样预览…';
+      await new Promise(done => setTimeout(done, 1500));
+    }
+    const whole = new Uint8Array(piece.size);
+    let at = 0;
+    for (;;) {
+      const part = bytesOf(piece.data);
+      whole.set(part.subarray(0, Math.min(part.length, whole.length - at)), at);
+      at += part.length;
+      if (piece.end || !part.length || at >= whole.length) break;
+      if (mine !== run) throw new Error('left');
+      $('progress').hidden = false;
+      $('progress-text').textContent = '正在读取 ' + K.size(at) + ' / ' + K.size(piece.size);
+      $('progress-bar').style.width = Math.round(100 * at / piece.size) + '%';
+      piece = await ask('file_render', path, at);
+    }
+    $('progress').hidden = true;
+    return whole;
+  }
+  // A Word file laid out as its pages, and a PowerPoint file as its slides, by this page itself. A page of paper is
+  // wider than a phone: it is shown whole, scaled to the width there is, and a tap changes to its real size.
+  function fitted(box, pick, sheet) {
+    const fit = () => {
+      const inner = box.querySelector(pick), page = box.querySelector(sheet);
+      if (!inner || !page || !box.clientWidth) return;
+      inner.style.zoom = '';
+      const wide = page.offsetWidth + 16;           // the page as it was made, with a little air beside it
+      inner.style.zoom = box.classList.contains('actual') || wide <= box.clientWidth ? '' : String(box.clientWidth / wide);
+    };
+    new ResizeObserver(fit).observe(box);
+    box.addEventListener('click', () => { box.classList.toggle('actual'); fit(); });
+    return box;
+  }
+  async function wordLooks(bytes) {
+    await need('jszip.min.js');           // the second looks for the first when it is loaded
+    await need('docx-preview.min.js');
+    const box = el('div', { className: 'looks word-looks' });
+    await docx.renderAsync(bytes, box, null, { inWrapper: true, breakPages: true, useBase64URL: true, renderHeaders: true, renderFooters: true, renderFootnotes: true });
+    return fitted(box, '.docx-wrapper', 'section.docx');
+  }
+  async function slideLooks(bytes) {
+    await need('pptx-preview.umd.js');
+    const box = el('div', { className: 'looks slide-looks' });
+    const width = Math.max(320, Math.min(document.documentElement.clientWidth, 960));
+    const viewer = pptxPreview.init(box, { width, height: Math.round(width * 9 / 16), mode: 'list' });
+    await viewer.preview(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    return box;
+  }
   /** The whole file, piece by piece. Refuses one larger than `limit`; `first` is a piece that was fetched already. */
   async function read(path, limit, mine, first) {
     let piece = first || await ask('file_read', path, 0);
@@ -379,6 +445,33 @@
       if (!view && K.readable(bytesOf(first.data))) { view = 'code'; language = 'plaintext'; }
       if (!view) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '这种文件不能在这里预览。')); }
       const limit = kind.limit || 3e6;
+      // Word and PowerPoint keep their look. This page lays the newer formats out itself, pages and slides as they
+      // were made, so no program is needed on the computer. Where the computer has Word, PowerPoint or WPS, the
+      // program writes a PDF and that is shown first: it is exact, and the only way for the older formats.
+      if (LOOKS.includes(kind.ext)) {
+        const modern = kind.ext === 'docx' || kind.ext === 'pptx';
+        let exact = null, why = '';
+        if (first.size <= 150e6 && await canRender()) {
+          try { exact = await rendered(path, mine); } catch (error) { if (error.message === 'left') throw error; why = error.message; $('progress').hidden = true; }
+        } else if (!modern) why = '旧格式的文件需要电脑上装有 Word、PowerPoint 或 WPS 才能预览。';
+        if (mine !== run) return;
+        if (!exact && !modern) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, why || '这种文件不能在这里预览。')); }
+        if (!exact && first.size > limit) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '文件有 ' + K.size(first.size) + '，超过了预览的上限 ' + K.size(limit) + '。')); }
+        let whole = null;
+        const bytes = async () => { if (!whole) { whole = (await read(path, limit, mine, first)).bytes; current.bytes = whole; } return whole; };
+        const list = [];
+        if (exact) list.push({ label: '原样', draw: () => pdf(exact, mine) });
+        if (modern && first.size <= limit) {
+          // Word pages come out as they were made. Slides are a likeness: where a slide takes its sizes and bullets
+          // from the deck's master, this page does not follow all of it, and says so in the name.
+          list.push({ label: kind.ext === 'docx' ? '版式' : '版式（近似）', draw: async () => kind.ext === 'docx' ? wordLooks(await bytes()) : slideLooks(await bytes()) });
+          list.push({ label: '文字', draw: async () => kind.ext === 'docx' ? word(await bytes()) : slides(await bytes()) });
+        }
+        await tabs(list, 0);
+        $('loading').hidden = true;
+        if (why && modern) toast('电脑没有转出原样预览：' + why);
+        return;
+      }
       if (first.size > limit) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '文件有 ' + K.size(first.size) + '，超过了预览的上限 ' + K.size(limit) + '。')); }
       const got = await read(path, limit, mine, first);
       if (mine !== run) return;

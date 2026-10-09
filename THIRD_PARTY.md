@@ -10,6 +10,9 @@
 | marked | 12.0.2 | MIT | `web/files/vendor/marked.min.js` |
 | DOMPurify | 3.1.6 | MPL-2.0 OR Apache-2.0 | `web/files/vendor/purify.min.js` |
 | mammoth.js | 1.8.0 | BSD-2-Clause | `web/files/vendor/mammoth.browser.min.js` |
+| docx-preview | 0.4.1 | Apache-2.0 | `web/files/vendor/docx-preview.min.js` |
+| JSZip | 3.10.2 | MIT OR GPL-3.0-or-later（按 MIT 使用） | `web/files/vendor/jszip.min.js` |
+| pptx-preview | 1.0.7 | ISC（其 package.json 的声明；内含 echarts、lodash、jszip、uuid、tslib） | `web/files/vendor/pptx-preview.umd.js` |
 | SheetJS Community Edition (`xlsx`) | 0.20.3 | Apache-2.0 | `web/files/vendor/xlsx.full.min.js` |
 | PDF.js (`pdfjs-dist`) | 3.11.174 | Apache-2.0 | `web/files/vendor/pdf.min.js`, `pdf.worker.min.js`, `cmaps/` |
 | ZXing core | 3.5.3 | Apache-2.0 | inside the Android app only; reads the QR code |

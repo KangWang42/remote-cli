@@ -213,7 +213,8 @@ def main():
             if call("/api/terminal")["device"]["workspaces"]:
                 break
             time.sleep(0.5)
-        assert "files" in call("/api/terminal")["device"]["features"]
+        features = call("/api/terminal")["device"]["features"]
+        assert "files" in features
 
         top = files("file_list")
         names = {e["name"]: e for e in top["entries"]}
@@ -305,8 +306,37 @@ def main():
                          "unknown": "!!document.querySelector('.unknown')"}
                 shot(base + "/?project=cohort-study", "project.png", "!document.getElementById('project').hidden")
                 shot(base + "/files/?dir=cohort-study", "folder.png", "document.querySelectorAll('#entries li').length > 5")
+                def tab(label, ready, name, seconds=40):
+                    """Chooses another way of showing the file that is open, waits for it and saves a picture."""
+                    del said[:]
+                    ask("Runtime.evaluate", expression="Array.from(document.querySelectorAll('#tabs button')).find(b => b.textContent === %s).click()" % json.dumps(label))
+                    deadline = time.time() + seconds
+                    while time.time() < deadline:
+                        time.sleep(0.4)
+                        if ask("Runtime.evaluate", expression=ready, returnByValue=True).get("result", {}).get("value") is True:
+                            break
+                    else:
+                        (out / ("failed-" + name)).write_bytes(base64.b64decode(ask("Page.captureScreenshot", format="png")["data"]))      # what the page shows instead
+                        raise AssertionError("%s did not finish: %s" % (name, said[:3]))
+                    time.sleep(1.2)
+                    (out / name).write_bytes(base64.b64decode(ask("Page.captureScreenshot", format="png")["data"]))
+                    assert not said, (name, said[:3])
+
+                exact = "render" in features
+                report["exact_look"] = exact
                 for kind, path in sorted(made.items()):
-                    shot(view(path), kind + ".png", drawn[kind])
+                    if kind not in ("word", "slides"):
+                        shot(view(path), kind + ".png", drawn[kind])
+                        continue
+                    # Word and PowerPoint: as the program on the computer writes them out where there is one, then as
+                    # this page lays them out itself, then as text.
+                    laid = "document.querySelectorAll('.word-looks section.docx').length > 0" if kind == "word" else "document.querySelectorAll('.slide-looks .pptx-preview-wrapper > *').length >= 2"
+                    if exact:
+                        shot(view(path), kind + "-exact.png", drawn["pdf"], seconds=120)
+                        tab("版式" if kind == "word" else "版式（近似）", laid, kind + ".png")
+                    else:
+                        shot(view(path), kind + ".png", laid, seconds=60)
+                    tab("文字", drawn[kind], kind + "-text.png")
                 # Saving inside the app: the page hands the file to the phone piece by piece. A stand-in for the app
                 # collects the pieces; together they must be the file.
                 stand_in = ask("Page.addScriptToEvaluateOnNewDocument", source="window.RemoteCliNative = { got: [], saveStart(n) { this.name = n; this.got = []; return ''; }, "

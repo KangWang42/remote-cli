@@ -13,7 +13,7 @@
   // Files without an ending that are text all the same.
   const NAMED = { dockerfile: 'dockerfile', makefile: 'makefile', license: 'plaintext', readme: 'plaintext', notice: 'plaintext', authors: 'plaintext', changelog: 'plaintext',
     '.gitignore': 'plaintext', '.gitattributes': 'plaintext', '.editorconfig': 'ini', '.npmrc': 'ini', '.env': 'ini', '.rprofile': 'r', '.rhistory': 'r', '.bashrc': 'bash', '.zshrc': 'bash' };
-  const VIEW = { md: 'markdown', markdown: 'markdown', mdx: 'markdown', docx: 'word', xlsx: 'sheet', xlsm: 'sheet', xls: 'sheet', ods: 'sheet', csv: 'sheet', tsv: 'sheet', pptx: 'slides', pdf: 'pdf',
+  const VIEW = { md: 'markdown', markdown: 'markdown', mdx: 'markdown', docx: 'word', doc: 'word', ppt: 'slides', xlsx: 'sheet', xlsm: 'sheet', xls: 'sheet', ods: 'sheet', csv: 'sheet', tsv: 'sheet', pptx: 'slides', pdf: 'pdf',
     png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', bmp: 'image', ico: 'image', svg: 'image', avif: 'image' };
   const TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon', svg: 'image/svg+xml', avif: 'image/avif', pdf: 'application/pdf' };
   // The largest file that is fetched for each way of showing it; text is read by a person, the others are drawn.

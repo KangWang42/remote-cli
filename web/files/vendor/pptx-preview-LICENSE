@@ -1,0 +1,7 @@
+pptx-preview 1.0.7
+https://www.npmjs.com/package/pptx-preview
+
+Its package.json declares the licence "ISC". The package as published carries no licence text of its own.
+The file pptx-preview.umd.js is the package's own build and has these components built into it, as its
+package.json lists them: echarts (Apache-2.0), lodash (MIT), jszip (MIT OR GPL-3.0-or-later), uuid (MIT),
+tslib (0BSD).

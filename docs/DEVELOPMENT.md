@@ -54,7 +54,7 @@ python tests\tunnel_check.py --local                      # 直连回显延迟
 python tests\tunnel_check.py <cloudflared.exe> --protocol http2  # 公网回显延迟
 python tests\tunnel_keep_check.py <cloudflared.exe>       # 程序结束后再启动，公网地址不变
 python tests\smooth_check.py                           # 历史很长时按键回显和连续输出的间隔
-python tests\files_check.py [chrome.exe <输出文件夹>]    # 查看文件：列目录、读文件、不出项目文件夹；带浏览器时给每种查看器截图
+python tests\files_check.py [chrome.exe <输出文件夹>]    # 查看文件：列目录、读文件、不出项目文件夹；带浏览器时给每种查看器截图；Word 和 PowerPoint 的原样、版式、文字三种看法各截一张
 python tests\restart_check.py                          # 电脑端和中转重启后，终端在原编号下接回
 chrome --headless=new --window-size=1480,520 --screenshot=skins.png tests\skin_code_check.html   # 各外观下代码、diff 和 16 色的显示
 python tests\setup_check.py dist\RemoteCli-Setup-x.y.z.exe      # 安装程序，沙盒方式，不碰已有安装

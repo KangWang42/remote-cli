@@ -542,9 +542,10 @@ def command(path, payload, now=None):
         return {k: op[k] for k in ("id", "terminal", "state", "error")}
 
 
-FILE_ACTIONS = ("file_list", "file_read")
+FILE_ACTIONS = ("file_list", "file_read", "file_render")
 FILE_SECONDS = 25
-ANSWERED = FILE_ACTIONS + ("session_read",)     # operations whose acknowledgment carries an answer
+ANSWERED = FILE_ACTIONS + ("session_read",)
+RENDERED = (".docx", ".doc", ".pptx", ".ppt")      # shown as they look: the computer has them written out as a PDF     # operations whose acknowledgment carries an answer
 
 
 def files(path, payload, now=None, wait=FILE_SECONDS):
@@ -571,6 +572,8 @@ def files(path, payload, now=None, wait=FILE_SECONDS):
             raise RemoteError("电脑未连接或远控已关闭，请等待电脑上线后重试")
         if "files" not in _device.get("features", []):
             raise RemoteError("电脑端版本不支持查看文件，请更新电脑端")
+        if action == "file_render" and ("render" not in _device.get("features", []) or not where.lower().endswith(RENDERED)):
+            raise RemoteError("这台电脑不能把这个文件转成原样预览")
         if folder not in _device["workspaces"]:
             raise RemoteError("没有这个项目")
         return _held({"id": op_id, "action": action, "dir": folder, "path": where, "offset": payload.get("offset", 0)}, now, wait)
@@ -668,7 +671,7 @@ def agent(path, payload, now=None):
                 and isinstance(s.get("dir"), str) and isinstance(s.get("title"), str) and s["title"].strip() and type(s.get("updated")) is int]
         _device.update(seen=now, instance=instance, enabled=info.get("enabled") is True,
                        version=str(info.get("version") or "")[:20], newer=str(info.get("newer") or "")[:20], shell=_shell(info.get("shell")),
-                       features=[x for x in info.get("features", []) if x in ("codex-fork", "codex-takeover", "terminal-exit", "files", "update", "peek")],
+                       features=[x for x in info.get("features", []) if x in ("codex-fork", "codex-takeover", "terminal-exit", "files", "update", "peek", "render")],
                        tools=[x for x in info.get("tools", []) if x in ("claude", "codex", "shell")],
                        workspaces=[x for x in info.get("workspaces", []) if isinstance(x, str) and 0 < len(x) <= 60],
                        projects=_folders(info.get("projects"), 60), candidates=_folders(info.get("candidates"), 12))
