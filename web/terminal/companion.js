@@ -7,6 +7,7 @@
   const PHASE = { confirm: ['等你确认', 0], done: ['已完成', 1], busy: ['正在执行', 2], starting: ['正在启动', 3], idle: ['等待输入', 4] };
   const load = () => { try { return JSON.parse(localStorage.getItem('rcli-seen') || '{}') || {}; } catch (error) { return {}; } };
   const save = map => { try { localStorage.setItem('rcli-seen', JSON.stringify(map)); } catch (error) { /* private window */ } };
+  const native = window.RemoteCliNative || null;
   let data = null, timer = 0, dismissed = '';
 
   function phaseOf(t, seen) {
@@ -68,6 +69,7 @@
           const mine = (data.terminals || []).find(t => t.id === id), seen = load();
           if (mine && mine.phase_at && seen[id] !== mine.phase_at) {
             seen[id] = mine.phase_at;
+            if (native && native.seen) native.seen(id, String(mine.phase_at));      // the app's workbench keeps the same record
             const alive = new Set((data.terminals || []).map(t => t.id));
             Object.keys(seen).forEach(key => { if (!alive.has(key)) delete seen[key]; });
             save(seen);

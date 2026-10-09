@@ -49,6 +49,22 @@ public final class AggregateSessionsCheck {
         boolean refused = false;
         try { AggregateSessions.terminalPath("../?p=secret"); } catch (IllegalArgumentException expected) { refused = true; }
         require(refused, "Terminal route must reject malformed identifiers");
+        AggregateSessions.Entry finished = new AggregateSessions.Entry(true, TERMINAL, "项目", "", "claude", "running", "idle", "", false, "", "", "", true, 42L);
+        java.util.Map<String, Long> looked = new java.util.HashMap<>();
+        require("done".equals(finished.kind(looked)), "Finished work must stay marked until it has been looked at");
+        looked.put(TERMINAL, 41L);
+        require("done".equals(finished.kind(looked)), "A newer phase change must be marked again");
+        looked.put(TERMINAL, 42L);
+        require("idle".equals(finished.kind(looked)), "Work that was looked at must fall back to waiting");
+        require(AggregateSessions.rank("confirm") < AggregateSessions.rank("done") && AggregateSessions.rank("done") < AggregateSessions.rank("busy")
+            && AggregateSessions.rank("idle") < AggregateSessions.rank("pc-busy"), "Attention order must match the pages");
+        int[] counts = AggregateSessions.counts(groups, null);
+        require(counts[0] == 1 && counts[1] == 0 && counts[2] == 2 && counts[3] == 3, "Counts must cover confirm, busy with starting, and all open tasks");
+        List<AggregateSessions.Project> one = AggregateSessions.projects(Collections.singletonList("项目"), Collections.singletonList(finished));
+        looked.clear();
+        String unseen = AggregateSessions.signature(one, looked);
+        looked.put(TERMINAL, 42L);
+        require(!unseen.equals(AggregateSessions.signature(one, looked)), "Looking at finished work must redraw its row");
         System.out.println("Aggregate checks passed: computer isolation, grouping, lock states, deduplication, sorting, stable refresh and exact terminal route.");
     }
 }

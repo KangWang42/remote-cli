@@ -9,6 +9,9 @@
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
   const ui = () => window.TerminalUI;
   const home = () => { location.replace('../'); };      // the list is one step back, not one more page
+  // Opened from the app's workbench, the back arrow leads there again rather than to this computer's list.
+  const fromBench = new URLSearchParams(location.search).get('from') === 'bench';
+  const leave = () => { if (fromBench && native && native.home) native.home(); else home(); };
   // Quick tunnels buffer SSE; a held JSON response is delivered without that delay.
   let after = 0, terminal = null, loaded = false, streamed = !location.hostname.endsWith('.trycloudflare.com'), failures = 0, reader = null, run = 0, fetching = false, gone = false;
   let socketMode = typeof WebSocket === 'function', socket = null, socketTimer = null;
@@ -173,14 +176,17 @@
   }
 
   // ---- menu
-  function sheet(title, choices) {
+  // fill adds what belongs between the title and the choices: a line of text, or a box to type in.
+  function sheet(title, choices, fill) {
     let dialog = document.getElementById('rcli-menu');
-    if (!dialog) { dialog = document.createElement('dialog'); dialog.id = 'rcli-menu'; document.body.append(dialog); }
+    if (!dialog) { dialog = document.createElement('dialog'); dialog.id = 'rcli-menu'; document.body.append(dialog); dialog.onclick = event => { if (event.target === dialog) dialog.close(); }; }
     dialog.textContent = '';
     const heading = document.createElement('h2'); heading.textContent = title; dialog.append(heading);
-    choices.forEach(([label, act, current]) => {
+    if (fill) fill(dialog);
+    choices.forEach(([label, act, current, kind]) => {
       const button = document.createElement('button');
       button.type = 'button'; button.textContent = label;
+      if (kind) button.className = kind;
       if (current) button.setAttribute('aria-current', 'true');
       button.onclick = () => { dialog.close(); act(); };
       dialog.append(button);
@@ -207,13 +213,23 @@
     if (closed && terminal.tool !== 'shell') choices.push([terminal.session ? '继续这个对话' : '重新新建对话', again]);
     choices.push(['更换外观', () => sheet('终端外观', ui().skins().map(s => [s.name, () => { store.set('skin', s.key); ui().setSkin(s.key); }, s.current]))]);
     choices.push(['行距', () => sheet('行距', ui().spacings().map(s => [s.name, () => { store.set('spacing', s.key); ui().setSpacing(s.key); }, s.current]))]);
-    choices.push(['重命名', async () => {
-      const title = (prompt('终端名称', terminal.title) || '').trim();
-      if (title) { const { status, body } = await post({ action: 'rename', id: newId(), terminal: id, title }); if (status !== 200) ui().error(body.error || '没有保存'); }
+    // Questions are asked on the same sheet: the system's own dialogs look foreign, and not every app shows them.
+    choices.push(['重命名', () => {
+      const box = document.createElement('input');
+      box.value = terminal.title; box.maxLength = 60; box.spellcheck = false; box.setAttribute('aria-label', '终端名称');
+      sheet('终端名称', [['保存', async () => {
+        const title = box.value.trim();
+        if (!title) return;
+        try { const { status, body } = await post({ action: 'rename', id: newId(), terminal: id, title }); if (status !== 200) ui().error(body.error || '没有保存'); }
+        catch (error) { ui().error('没有保存，请重试'); }
+      }, false, 'solid']], dialog => dialog.append(box));
+      box.focus(); box.select();
     }]);
     choices.push(['复制终端画面', async () => { try { await navigator.clipboard.writeText(ui().screenText()); } catch (error) { ui().error('浏览器不允许复制，请长按选择文字'); } }]);
     choices.push([dom ? '画面卡顿时：改用显卡绘制' : '画面空白或花屏时：改用兼容绘制', () => { store.set('renderer', dom ? 'webgl' : 'dom'); location.reload(); }]);
-    if (!closed) choices.push(['结束终端', () => { if (confirm('结束这个终端？正在运行的任务会被中断，对话保存在电脑上。')) enqueue({ action: 'close' }); }]);
+    if (!closed) choices.push(['结束终端', () => sheet('结束这个终端？', [['结束终端', () => enqueue({ action: 'close' }), false, 'danger']], dialog => {
+      const text = document.createElement('p'); text.textContent = '正在运行的任务会被中断。对话保存在电脑上，可以从历史对话继续。'; dialog.append(text);
+    }), false, 'danger']);
     sheet('终端选项', choices);
   }
 
@@ -233,7 +249,7 @@
   window.ProjectTerminal = {
     ready() { loaded = true; if (!/^[a-f0-9]{16,32}$/.test(id)) return home(); read(); },
     rendered(cursor) { if (socketMode || streamed) return; after = Number(cursor) || after; setTimeout(read, 0); },
-    close: home,
+    close: leave,
     voice,
     skin: () => store.get('skin', 'night'),
     renderer: () => store.get('renderer', 'webgl'),

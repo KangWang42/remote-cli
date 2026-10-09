@@ -7,44 +7,75 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** One computer's project inventory. Kept independent of Android views for regression checks. */
 final class AggregateSessions {
     static final class Entry {
-        final boolean terminal, live;
+        final boolean terminal, live, done;
+        final long at;
         final String id, project, title, tool, state, phase, status, host, attached, session;
         Entry(boolean terminal, String id, String project, String title, String tool, String state,
               String phase, String status, boolean live, String host, String attached, String session) {
+            this(terminal, id, project, title, tool, state, phase, status, live, host, attached, session, false, 0);
+        }
+        /** done: the terminal finished a piece of work before it went idle; at: when its phase last changed. */
+        Entry(boolean terminal, String id, String project, String title, String tool, String state,
+              String phase, String status, boolean live, String host, String attached, String session, boolean done, long at) {
             this.terminal = terminal; this.id = id; this.project = project; this.title = title;
             this.tool = tool; this.state = state; this.phase = phase; this.status = status;
             this.live = live; this.host = host; this.attached = attached; this.session = session;
+            this.done = done; this.at = at;
         }
         boolean running() {
             return terminal ? "running".equals(state) || "starting".equals(state) : live && "cli".equals(host);
         }
-        String label() {
+        /**
+         * A phone terminal is confirm, done, busy, starting, idle or ended; a saved conversation is pc-busy, pc-idle,
+         * locked, remote, unknown or history. seen maps a terminal to the phase change the user has already looked at:
+         * finished work is "done" until then, as in the pages.
+         */
+        String kind(Map<String, Long> seen) {
             if (!terminal) {
-                if (!live) return "历史对话";
-                if ("shared".equals(host)) return "后台锁定";
-                if ("remote".equals(host)) return "其它远程终端";
-                if (!"cli".equals(host)) return "归属待确认";
-                return "busy".equals(status) ? "电脑正在执行" : "电脑等待输入";
+                if (!live) return "history";
+                if ("shared".equals(host)) return "locked";
+                if ("remote".equals(host)) return "remote";
+                if (!"cli".equals(host)) return "unknown";
+                return "busy".equals(status) ? "pc-busy" : "pc-idle";
             }
-            if ("starting".equals(state)) return "正在启动";
-            if (!running()) return "已结束";
+            if ("starting".equals(state)) return "starting";
+            if (!running()) return "ended";
             String value = phase.isEmpty() ? ("busy".equals(status) ? "busy" : "idle") : phase;
-            if ("confirm".equals(value)) return "等你确认";
-            if ("busy".equals(value)) return "正在执行";
-            if ("done".equals(value)) return "已完成";
-            return "等待输入";
+            if ("confirm".equals(value) || "busy".equals(value) || "done".equals(value) || "starting".equals(value)) return value;
+            Long looked = seen == null ? null : seen.get(id);
+            return done && (looked == null || looked != at) ? "done" : "idle";
         }
-        int rank() {
-            String value = label();
-            return "等你确认".equals(value) ? 0 : "正在执行".equals(value) || "电脑正在执行".equals(value) ? 1 : 2;
-        }
+        String label() { return AggregateSessions.label(kind(null)); }
+        int rank() { return AggregateSessions.rank(kind(null)); }
         String toolName() { return "claude".equals(tool) ? "Claude Code" : "codex".equals(tool) ? "Codex" : "PowerShell"; }
         String shownTitle() { return title.isEmpty() ? toolName() : title; }
+    }
+    static String label(String kind) {
+        switch (kind) {
+            case "confirm": return "等你确认";
+            case "done": return "已完成";
+            case "busy": return "正在执行";
+            case "starting": return "正在启动";
+            case "idle": return "等待输入";
+            case "ended": return "已结束";
+            case "pc-busy": return "电脑正在执行";
+            case "pc-idle": return "电脑等待输入";
+            case "locked": return "后台锁定";
+            case "remote": return "其它远程终端";
+            case "unknown": return "归属待确认";
+            default: return "历史对话";
+        }
+    }
+    /** What needs the user comes first, in the order the pages use. */
+    static int rank(String kind) {
+        int at = Arrays.asList("confirm", "done", "busy", "starting", "idle", "pc-busy", "pc-idle").indexOf(kind);
+        return at < 0 ? 9 : at;
     }
     static final class Project {
         final String name;
@@ -67,11 +98,24 @@ final class AggregateSessions {
         for (Project group : groups.values()) Collections.sort(group.active, Comparator.comparingInt(Entry::rank));
         return new ArrayList<>(groups.values());
     }
+    /** How many running tasks are confirm, done, busy (starting included) and open in all. */
+    static int[] counts(List<Project> projects, Map<String, Long> seen) {
+        int[] counts = new int[4];
+        for (Project project : projects) for (Entry entry : project.active) {
+            String kind = entry.kind(seen);
+            if ("confirm".equals(kind)) counts[0]++;
+            else if ("done".equals(kind)) counts[1]++;
+            else if ("busy".equals(kind) || "starting".equals(kind) || "pc-busy".equals(kind)) counts[2]++;
+            counts[3]++;
+        }
+        return counts;
+    }
     static String terminalPath(String id) {
         if (id == null || !id.matches("[a-f0-9]{32}")) throw new IllegalArgumentException("终端编号无效");
         return "/terminal/?id=" + id;
     }
-    static String signature(List<Project> projects) {
+    static String signature(List<Project> projects) { return signature(projects, null); }
+    static String signature(List<Project> projects, Map<String, Long> seen) {
         StringBuilder key = new StringBuilder();
         for (Project project : projects) {
             add(key, project.name);
@@ -79,7 +123,7 @@ final class AggregateSessions {
                 key.append(entries.size()).append(':');
                 for (Entry entry : entries) {
                     add(key, entry.id); add(key, entry.shownTitle()); add(key, entry.tool);
-                    add(key, entry.label()); add(key, entry.host);
+                    add(key, label(entry.kind(seen))); add(key, entry.host);
                 }
             }
         }

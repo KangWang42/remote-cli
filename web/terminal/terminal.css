@@ -76,6 +76,11 @@ dialog.sheet p { margin: 0 4px 10px; color: var(--muted); font-size: 13.5px; lin
 #rcli-menu button:active, dialog.sheet button:active { background: var(--line); }
 #rcli-menu button[aria-current="true"] { border-color: var(--accent); color: var(--accent); }
 #rcli-menu button.cancel, dialog.sheet button.cancel { background: transparent; border-color: transparent; color: var(--muted); justify-content: center; }
+#rcli-menu p { margin: 0 4px 6px; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+#rcli-menu input { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--ink); font: inherit; font-size: 16px; }
+#rcli-menu input:focus { border-color: var(--accent); outline: none; }
+#rcli-menu button.solid { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; justify-content: center; }
+#rcli-menu button.danger { color: var(--bad, #f7768e); }
 dialog.sheet .row > span:first-child { min-width: 0; display: grid; gap: 2px; }
 dialog.sheet .row b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 dialog.sheet .row small { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

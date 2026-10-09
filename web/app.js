@@ -116,7 +116,7 @@
     const ready = data && data.device.online && data.device.enabled;
     const choices = [];
     if (ready) choices.push({ label: '添加项目', sub: '把电脑上的一个文件夹加进来', value: 'add' });
-    if (native) choices.push({ label: '换一台电脑', sub: '回到电脑列表，这台电脑保留在列表里', value: 'switch' });
+    if (native) choices.push({ label: '回到工作台', sub: '查看所有电脑和进行中的任务，或换一台电脑', value: 'switch' });
     if (native && native.update) choices.push({ label: '检查 App 更新', sub: '当前版本 ' + (native.version ? native.version() : ''), value: 'update' });
     choices.push({ label: '退出登录', sub: '下次需要重新扫码或输入密码', value: 'out', kind: 'danger' });
     const choice = await ask('更多', '', choices);
@@ -263,7 +263,10 @@
     const mine = terminals.filter(running).map(t => Object.assign({ rank: PHASE[phaseOf(t)][1], at: t.phase_at || t.created }, t));
     const live = sessions.filter(s => sessionActivity(s) === 'active');
     const background = sessions.filter(s => sessionActivity(s) === 'locked');
-    $('overview').hidden = !!project; $('project').hidden = !project; $('back').hidden = !project;
+    $('overview').hidden = !!project; $('project').hidden = !project;
+    // In the app the arrow on the first page leads to the workbench, where every computer is listed.
+    $('back').hidden = !project && !(native && native.home);
+    $('back').setAttribute('aria-label', project ? '返回全部项目' : '返回工作台');
     $('heading').textContent = project || 'Remote CLI';
     const waiting = mine.filter(t => phaseOf(t) === 'confirm').length, done = mine.filter(t => phaseOf(t) === 'done').length, working = mine.filter(t => phaseOf(t) === 'busy').length;
     $('device-text').textContent = !ready ? (device.online ? '已暂停访问' : '电脑离线')
@@ -334,7 +337,12 @@
   // ---- moving between the overview and one project; the phone's back key goes back to the overview
   function enter(name) { project = name; shown = 12; $('search').value = ''; history.pushState({ project: name }, ''); scrollTo(0, 0); draw(); }
   window.addEventListener('popstate', event => { project = event.state && event.state.project || ''; if (data) draw(); });
-  $('back').addEventListener('click', () => history.back());
+  // A project opened by a link (the workbench does that) has no overview behind it in the history.
+  $('back').addEventListener('click', () => {
+    if (project && history.state && history.state.project) return history.back();
+    if (native && native.home) return native.home();
+    project = ''; history.replaceState(null, '', location.pathname); draw();
+  });
   $('search').addEventListener('input', () => { shown = 12; draw(); });
   $('more-history').addEventListener('click', () => { shown += 30; draw(); });
 
