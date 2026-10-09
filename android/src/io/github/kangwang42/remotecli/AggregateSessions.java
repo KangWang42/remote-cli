@@ -16,6 +16,7 @@ final class AggregateSessions {
         final boolean terminal, live, done;
         final long at;
         final String id, project, title, tool, state, phase, status, host, attached, session;
+        String said = "";       // one line of what a running terminal last said; changes often and is left out of signatures
         Entry(boolean terminal, String id, String project, String title, String tool, String state,
               String phase, String status, boolean live, String host, String attached, String session) {
             this(terminal, id, project, title, tool, state, phase, status, live, host, attached, session, false, 0);

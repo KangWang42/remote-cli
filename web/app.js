@@ -228,8 +228,11 @@
     const phase = phaseOf(t), meta = el('span', { className: 'meta' }, pill(phase, PHASE[phase][0]));
     if (withProject) meta.append(el('span', { className: 'chip', textContent: t.dir }));
     meta.append(el('span', { textContent: TOOLS[t.tool] + (t.phase_at ? ' · ' + ago(t.phase_at) : '') }));
+    // What the program last said. It changes far more often than the card, so peeks() writes it without a rebuild.
+    const peek = el('span', { className: 'peek', hidden: true });
+    peek.dataset.peek = t.id;
     const card = el('li', { className: 'card ' + phase }, el('button', { type: 'button', className: 'open', onclick: () => open(t.id) },
-      el('span', { className: 'tool ' + t.tool, html: ICON[t.tool] }), el('span', { className: 'text' }, el('b', { textContent: t.title }), meta)));
+      el('span', { className: 'tool ' + t.tool, html: ICON[t.tool] }), el('span', { className: 'text' }, el('b', { textContent: t.title }), meta, peek)));
     if (running(t)) card.append(el('button', { type: 'button', className: 'side', ariaLabel: '结束这个终端', html: ICON.stop, onclick: () => endTerminal(t) }));
     return card;
   }
@@ -263,6 +266,15 @@
     list.replaceChildren(...cards);
   }
   const stamp = minutes => Math.floor(Date.now() / (minutes * 60000));
+  function peeks() {
+    const said = {};
+    (data.terminals || []).forEach(t => { if (running(t)) said[t.id] = t.said || ''; });
+    document.querySelectorAll('[data-peek]').forEach(node => {
+      const text = said[node.dataset.peek] || '';
+      if (node.textContent !== text) node.textContent = text;
+      if (node.hidden !== !text) node.hidden = !text;
+    });
+  }
 
   function draw() {
     const device = data.device, ready = usable(), names = device.workspaces || [];
@@ -364,7 +376,7 @@
   async function refresh() {
     clearTimeout(timer);
     try {
-      data = await api('/api/terminal'); draw();
+      data = await api('/api/terminal'); draw(); peeks();
       if (take) {
         const wanted = (data.sessions || []).find(s => s.id === take && !s.terminal);
         take = ''; history.replaceState(history.state, '', location.pathname + (project ? '?project=' + encodeURIComponent(project) : ''));

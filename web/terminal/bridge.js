@@ -5,14 +5,15 @@
   const id = new URLSearchParams(location.search).get('id') || '';
   const native = window.RemoteCliNative || null;
   // Inside the app the look is the app's own, the same for every computer; a browser keeps it per address.
-  const LOOK = ['skin', 'font', 'spacing', 'renderer'];
+  // The terminal may have a skin of its own there ("termskin"); without one it follows the app's.
+  const LOOK = { skin: 'termskin', font: 'font', spacing: 'spacing', renderer: 'renderer' };
   const store = {
     get(key, fallback) {
-      if (native && native.pref && LOOK.includes(key)) { const chosen = native.pref(key); if (chosen) return chosen; }
+      if (native && native.pref && LOOK[key]) { const chosen = native.pref(LOOK[key]) || (key === 'skin' ? native.pref('skin') : ''); if (chosen) return chosen; }
       try { return localStorage.getItem('rcli-' + key) || fallback; } catch (error) { return fallback; }
     },
     set(key, value) {
-      if (native && native.setPref && LOOK.includes(key)) native.setPref(key, value);
+      if (native && native.setPref && LOOK[key]) native.setPref(LOOK[key], value);
       try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ }
     } };
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
@@ -220,7 +221,12 @@
     if (!terminal) return;
     const closed = terminal.state === 'closed', dom = store.get('renderer', 'webgl') === 'dom', choices = [];
     if (closed && terminal.tool !== 'shell') choices.push([terminal.session ? '继续这个对话' : '重新新建对话', again]);
-    choices.push(['更换外观', () => sheet('终端外观', ui().skins().map(s => [s.name, () => { store.set('skin', s.key); ui().setSkin(s.key); }, s.current]))]);
+    choices.push(['更换外观', () => {
+      const follows = !!(native && native.pref && native.setPref) && !native.pref('termskin');
+      const looks = ui().skins().map(s => [s.name, () => { store.set('skin', s.key); ui().setSkin(s.key); }, s.current && !follows]);
+      if (native && native.pref && native.setPref) looks.unshift(['跟随 App 外观', () => { native.setPref('termskin', 'app'); ui().setSkin(store.get('skin', 'paper')); }, follows]);
+      sheet('终端外观', looks);
+    }]);
     choices.push(['行距', () => sheet('行距', ui().spacings().map(s => [s.name, () => { store.set('spacing', s.key); ui().setSpacing(s.key); }, s.current]))]);
     // Questions are asked on the same sheet: the system's own dialogs look foreign, and not every app shows them.
     choices.push(['重命名', () => {

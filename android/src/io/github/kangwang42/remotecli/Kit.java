@@ -31,7 +31,17 @@ final class Kit {
         {0xfbfbfc, 0xf0f1f4, 0xe4e6eb, 0xd5d8df, 0x2b2f3a, 0x666b78, 0x2f6fe4, 0xffffff, 0x3d8a3a, 0xa36a00, 0xc93c37},
         {0xfaf4ed, 0xf4ede4, 0xebe1d5, 0xddd3c6, 0x4a4566, 0x7a7089, 0x286983, 0xffffff, 0x3b7d5c, 0xb9781a, 0xb4506a}
     };
-    private static final String[] NAMES = {"night", "slate", "pine", "dusk", "paper", "dawn"};
+    static final String[] NAMES = {"night", "slate", "pine", "dusk", "paper", "dawn"};
+    static final String[] TITLES = {"夜航", "墨岩", "松林", "暮紫", "纸白 · 明亮", "晨光 · 明亮"};
+    /** The background of the skin with this name; an unknown name gives the default. */
+    static int shade(String name) {
+        for (int i = 0; i < NAMES.length; i++) if (NAMES[i].equals(name)) return 0xff000000 | SKINS[i][0];
+        return PAPER;
+    }
+    static String title(String name) {
+        for (int i = 0; i < NAMES.length; i++) if (NAMES[i].equals(name)) return TITLES[i];
+        return TITLES[4];
+    }
     /** The name the pages give the skin with this background, or nothing for another colour. */
     static String name(int background) {
         for (int i = 0; i < SKINS.length; i++) if (SKINS[i][0] == (background & 0xffffff)) return NAMES[i];

@@ -50,6 +50,7 @@ final class Workbench {
     private LinearLayout attention;
     private TextView summary;
     private String attentionMark;
+    private final Map<String, TextView> peeks = new HashMap<>();       // address, line break, terminal -> the line it last said
 
     Workbench(MainActivity activity, Kit kit) { this.activity = activity; this.kit = kit; }
 
@@ -102,6 +103,7 @@ final class Workbench {
         summary = kit.line(list.length() == 0 ? "在手机上使用电脑里的终端" : "正在连接…", 13, kit.MUTED, false);
         titles.addView(summary);
         head.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
+        head.addView(kit.iconButton(R.drawable.ic_look, "外观", activity::look));
         if (list.length() > 0) head.addView(kit.iconButton(R.drawable.ic_plus, "添加电脑", this::addComputer));
         page.addView(head);
         if (!problem.isEmpty()) {
@@ -258,11 +260,13 @@ final class Workbench {
                 JSONObject entry = source.optJSONObject(i);
                 if (entry == null) continue;
                 if (terminal) alive.add(entry.optString("id"));
-                entries.add(new AggregateSessions.Entry(terminal, entry.optString("id"), entry.optString("dir"),
+                AggregateSessions.Entry made = new AggregateSessions.Entry(terminal, entry.optString("id"), entry.optString("dir"),
                     entry.optString("title"), entry.optString("tool"), entry.optString("state"),
                     entry.optString("phase"), entry.optString("status"), entry.optBoolean("live"),
                     entry.optString("host"), entry.optString("terminal"), entry.optString("session"),
-                    entry.optBoolean("done"), entry.optLong("phase_at")));
+                    entry.optBoolean("done"), entry.optLong("phase_at"));
+                made.said = entry.optString("said");
+                entries.add(made);
             }
         }
         prune(url, alive);
@@ -317,8 +321,18 @@ final class Workbench {
         }
         Collections.sort(tasks, (a, b) -> AggregateSessions.rank(a.kind) != AggregateSessions.rank(b.kind) ? AggregateSessions.rank(a.kind) - AggregateSessions.rank(b.kind) : Long.compare(b.entry.at, a.entry.at));
         for (Task task : tasks) mark.append(task.url).append('\n').append(task.entry.id).append('\n').append(task.kind).append('\n').append(task.entry.shownTitle()).append('\n').append(task.computer).append('\n');
-        if (mark.toString().equals(attentionMark)) return;
+        if (mark.toString().equals(attentionMark)) {
+            // the cards stay; only what each task last said is written anew
+            for (Task task : tasks) {
+                TextView peek = peeks.get(task.url + '\n' + task.entry.id);
+                if (peek == null) continue;
+                if (!task.entry.said.contentEquals(peek.getText())) peek.setText(task.entry.said);
+                peek.setVisibility(task.entry.said.isEmpty() ? View.GONE : View.VISIBLE);
+            }
+            return;
+        }
         attentionMark = mark.toString();
+        peeks.clear();
         attention.removeAllViews();
         if (tasks.isEmpty()) return;
         List<String> parts = new ArrayList<>();
@@ -346,6 +360,13 @@ final class Workbench {
         where.setPadding(kit.dp(8), 0, 0, 0);
         meta.addView(where, new LinearLayout.LayoutParams(0, -2, 1));
         texts.addView(meta, kit.below(4));
+        if (entry.terminal) {
+            TextView peek = kit.text(entry.said, 12.5f, kit.MUTED);
+            peek.setMaxLines(2); peek.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            peek.setVisibility(entry.said.isEmpty() ? View.GONE : View.VISIBLE);
+            texts.addView(peek, kit.below(5));
+            peeks.put(task.url + '\n' + entry.id, peek);
+        }
         card.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
         kit.press(card, () -> {
             if (!entry.terminal) { activity.openSession(task.url, entry.project, entry.id); return; }

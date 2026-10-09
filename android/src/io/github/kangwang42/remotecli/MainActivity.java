@@ -52,10 +52,29 @@ public final class MainActivity extends Activity {
         View decor = getWindow().getDecorView();
         decor.setSystemUiVisibility(light ? decor.getSystemUiVisibility() | flags : decor.getSystemUiVisibility() & ~flags);
         root.setBackgroundColor(shade);
-        if (shade != prefs.getInt("shade", 0)) prefs.edit().putInt("shade", shade).putBoolean("light", light).apply();
     }
-    /** The app's own screens follow the skin last chosen in the pages. */
-    private void repaint() { kit.palette(prefs.contains("shade") ? prefs.getInt("shade", 0) : Kit.PAPER); }
+    /** The app's own screens use the app's skin, whatever the page shown last looked like. */
+    private void repaint() { kit.palette(Kit.shade(prefs.getString("look-skin", "paper"))); }
+    /** The look: one skin for the app (workbench and lists), and for the terminal either the same or one of its own. */
+    void look() {
+        final String app = prefs.getString("look-skin", "paper"), terminal = prefs.getString("look-termskin", "");
+        kit.sheet("外观", "对所有电脑生效。", new String[]{"App 外观", "终端外观"},
+            new String[]{"工作台和列表 · 当前：" + Kit.title(app), "当前：" + (terminal.isEmpty() ? "跟随 App" : Kit.title(terminal))}, -1, which -> {
+            final boolean own = which == 1;
+            int extra = own ? 1 : 0;
+            String[] labels = new String[Kit.NAMES.length + extra], notes = new String[labels.length];
+            if (own) { labels[0] = "跟随 App 外观"; notes[0] = terminal.isEmpty() ? "当前使用" : null; }
+            for (int i = 0; i < Kit.NAMES.length; i++) {
+                labels[i + extra] = Kit.TITLES[i];
+                notes[i + extra] = Kit.NAMES[i].equals(own ? terminal : app) ? "当前使用" : null;
+            }
+            kit.sheet(own ? "终端外观" : "App 外观", own ? "只用于终端画面。" : "用于工作台和每台电脑的列表；终端跟随时也用它。", labels, notes, -1, picked -> {
+                if (own && picked == 0) prefs.edit().remove("look-termskin").apply();
+                else prefs.edit().putString(own ? "look-termskin" : "look-skin", Kit.NAMES[picked - extra]).apply();
+                home("");
+            });
+        });
+    }
 
     SharedPreferences prefs;
     TextView message;
@@ -109,6 +128,11 @@ public final class MainActivity extends Activity {
                 if (!"home".equals(screen) || message == null) android.widget.Toast.makeText(MainActivity.this, text, android.widget.Toast.LENGTH_LONG).show(); else { message.setTextColor(kit.MUTED); message.setText(text); }
             }
         });
+        // Earlier versions took the skin from the page shown last; that one becomes the app's.
+        if (!prefs.contains("look-skin")) {
+            String seen = prefs.contains("shade") ? Kit.name(prefs.getInt("shade", 0)) : "";
+            prefs.edit().putString("look-skin", seen.isEmpty() ? "paper" : seen).apply();
+        }
         kit = new Kit(this);
         bench = new Workbench(this, kit);
         repaint();
@@ -391,7 +415,7 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private static final java.util.List<String> LOOK = java.util.Arrays.asList("skin", "text", "font", "spacing", "renderer");
+    private static final java.util.List<String> LOOK = java.util.Arrays.asList("skin", "termskin", "text", "font", "spacing", "renderer");
     private final class Bridge {
         /** The system's speech recognizer; what was said goes into the page's message box. */
         @JavascriptInterface public void voice() { runOnUiThread(MainActivity.this::dictate); }
@@ -405,17 +429,17 @@ public final class MainActivity extends Activity {
         @JavascriptInterface public void update() { runOnUiThread(() -> { android.widget.Toast.makeText(MainActivity.this, "正在检查新版本…", android.widget.Toast.LENGTH_SHORT).show(); updater.check(true); }); }
         @JavascriptInterface public String version() { return versionName(); }
         /**
-         * The look chosen in the pages (skin, text size, terminal font, line spacing, drawing) is kept by the app, so
-         * that it is the same on every computer. Until one is chosen here, the skin is the one last shown.
+         * The look (skin, the terminal's own skin, text size, terminal font, line spacing, drawing) is kept by the app,
+         * so that it is the same on every computer.
          */
         @JavascriptInterface public String pref(String key) {
-            if (!LOOK.contains(key)) return "";
-            String value = prefs.getString("look-" + key, "");
-            return value.isEmpty() && "skin".equals(key) && prefs.contains("shade") ? Kit.name(prefs.getInt("shade", 0)) : value;
+            return LOOK.contains(key) ? prefs.getString("look-" + key, "") : "";
         }
         @JavascriptInterface public void setPref(String key, String value) {
             if (value == null || !LOOK.contains(key) || !value.matches("[a-z0-9]{1,16}")) return;
-            prefs.edit().putString("look-" + key, value).apply();
+            // "app" gives the terminal's own skin up again
+            if ("termskin".equals(key) && "app".equals(value)) prefs.edit().remove("look-termskin").apply();
+            else prefs.edit().putString("look-" + key, value).apply();
         }
         /** Back to the workbench. disconnect is the name older pages call. */
         @JavascriptInterface public void home() { runOnUiThread(() -> MainActivity.this.home("")); }

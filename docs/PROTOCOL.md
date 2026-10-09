@@ -57,6 +57,8 @@ Each terminal also says what it is doing:
 | `idle` | it waits for the next message; `done: true` when it worked before that |
 | `ended`, `failed` | it has ended; `failed` with an exit code other than 0 |
 
+`said` is one line of what a running terminal's program last said or did, read from the screen the relay keeps for it; it is empty for a terminal that is not running and is only part of the list of all terminals.
+
 `phase_at` is when the phase last changed (milliseconds since 1970). A viewer can keep the `phase_at` it last showed for a terminal to tell "finished, not looked at yet" from "waiting".
 
 ### Output

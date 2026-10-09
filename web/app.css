@@ -62,6 +62,7 @@ button.wide { width: 100%; margin-top: 8px; border: 1px dashed var(--line); }
 .card b { font-weight: 600; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: .8rem; line-height: 1.3; min-width: 0; }
 .card .meta span { white-space: nowrap; }
+.card .peek { color: var(--muted); font-size: .8rem; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .card .chev { color: var(--muted); opacity: .6; flex: none; }
 .card.add { border-style: dashed; background: transparent; }
 .card.add button.open { justify-content: center; color: var(--muted); min-height: 56px; }

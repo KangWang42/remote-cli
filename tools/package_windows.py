@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.6.3"
+VERSION = "0.6.4"
 PYTHON = ("3.12.10", "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3")   # version, SHA-256 of the embeddable zip
 # Parts of the embeddable Python the relay never loads.
 UNUSED = ("_msi.pyd", "_sqlite3.pyd", "sqlite3.dll", "_elementtree.pyd", "pyexpat.pyd", "_wmi.pyd", "_zoneinfo.pyd", "winsound.pyd",
@@ -39,7 +39,7 @@ def main():
     dist.mkdir(exist_ok=True)
     subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "agent-windows" / "build.ps1"), "-OutDir", str(stage)], check=True)
     (stage / "relay").mkdir()
-    for name in ("server.py", "relay.py", "websocket.py"):
+    for name in ("server.py", "relay.py", "screen.py", "websocket.py"):
         shutil.copy2(ROOT / "relay" / name, stage / "relay" / name)
     shutil.copytree(ROOT / "web", stage / "web")
     with zipfile.ZipFile(python_zip()) as archive:

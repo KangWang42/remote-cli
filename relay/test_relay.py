@@ -392,5 +392,38 @@ class TerminalRelayTests(unittest.TestCase):
         tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 3}]}, now=1050)
         self.assertEqual(phase(1050)["phase"], "failed")
 
+    def test_overview_tells_what_a_running_terminal_last_said(self):
+        self.start()
+        live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running", "cols": 40, "rows": 8}]}
+        said = lambda now: tr.overview(self.path, now=now)["terminals"][0]["said"]
+        self.assertEqual(said(1004), "")
+        # a message that wraps, the frame of the prompt under it, and a status line that is drawn over and over
+        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 1, "data":
+            "\x1b[2J\x1b[1;1H\u25cf \x1b[1mold answer\x1b[0m\r\n\r\n\u25cf Updated the README and\r\n  ran the tests\r\n\r\n" + "\u2500" * 40 + "\r\n> \r\n  ? for shortcuts"}]), now=1005)
+        self.assertEqual(said(1006), "Updated the README and ran the tests")
+        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 2, "data": "\x1b[3;1H\x1b[2K\u25cf \u4e2d\u6587\u6d88\u606f\x1b[4;1H\x1b[2K"}]), now=1007)
+        self.assertEqual(said(1008), "\u4e2d\u6587\u6d88\u606f")
+        # after a restart of the relay the screen is drawn again from the output that was kept
+        tr._screens.clear()
+        self.assertEqual(said(1009), "\u4e2d\u6587\u6d88\u606f")
+        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 0}]}, now=1010)
+        self.assertEqual(said(1011), "")
+
+    def test_screen_follows_cursor_erasing_scrolling_and_wide_characters(self):
+        from screen import Screen
+        view = Screen(10, 3)
+        view.feed("one\r\ntwo\r\nthree\r\nfour")
+        self.assertEqual(view.lines(), ["two", "three", "four"])
+        view.feed("\x1b[1;1H\x1b[Kab\x1b[3G\u4e2d\u6587\x1b[2;3H\x1b[1K")
+        self.assertEqual(view.lines(), ["ab\u4e2d\u6587", "   ee", "four"])
+        view.feed("\x1b[?1049h\x1b[Hmenu\x1b[?1049l")
+        self.assertEqual(view.lines()[2], "four")
+        view.feed("\x1b[3;1H\x1b")            # a sequence cut in two by the end of a piece
+        view.feed("[2Kdone")
+        self.assertEqual(view.lines()[2], "done")
+        view.resize(4, 2)
+        self.assertEqual(view.lines(), ["   e", "done"])
+
+
 if __name__ == "__main__":
     unittest.main()

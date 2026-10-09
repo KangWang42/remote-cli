@@ -12,6 +12,8 @@ import threading
 import time
 import uuid
 
+import screen as _screen
+
 
 
 class RemoteError(ValueError):
@@ -147,6 +149,36 @@ def _track(term, now):
     return True
 
 
+_screens = {}       # terminal -> (instance, Screen): rebuilt from the kept output when it is missing
+
+
+def _said(term):
+    """One line of what a terminal's program last said or did, for the lists. The screen is brought up to date only
+    when someone looks, so a terminal nobody watches costs nothing."""
+    output = term.get("output") or []
+    if not output:
+        return ""
+    kept = _screens.get(term["id"])
+    if not kept or kept[0] != term.get("instance") or kept[1].seq > term["seq"] or kept[1].seq < output[0]["seq"] - 1:
+        kept = _screens[term["id"]] = (term.get("instance"), _screen.Screen(term.get("cols", 80), term.get("rows", 24)))
+        size, start = 0, len(output)
+        while start > 0 and size < 200_000:         # the last screens are enough to draw the present one
+            start -= 1
+            size += len(output[start]["data"])
+        kept[1].seq = output[start]["seq"] - 1
+    view = kept[1]
+    view.resize(term.get("cols", 80), term.get("rows", 24))
+    if view.seq < term["seq"]:
+        start = len(output)
+        while start > 0 and output[start - 1]["seq"] > view.seq:
+            start -= 1
+        for chunk in output[start:]:
+            view.feed(chunk["data"])
+        view.seq = term["seq"]
+        view.text = view.said()
+    return view.text
+
+
 def _public(term):
     shown = {k: v for k, v in term.items() if k not in ("output", "instance", "size", "out_at", "touched", "calm_until")}
     # Until the owner names a terminal, it carries the name of the conversation it has open.
@@ -251,8 +283,10 @@ def _overview(path, terminal, after, now):
         state = _state(path)
         if not terminal:
             attached = {t.get("session"): t["id"] for t in state["threads"].values() if t["state"] in ("starting", "running")}
+            for gone in [key for key in _screens if key not in state["threads"]]:
+                del _screens[gone]
             return {"device": _view(now), "terminals": sorted(
-                [_public(t) for t in state["threads"].values()], key=lambda t: -t["created"]),
+                [dict(_public(t), said=_said(t) if t["state"] == "running" else "") for t in state["threads"].values()], key=lambda t: -t["created"]),
                 "sessions": [_public_session(s, attached.get(s["id"], "")) for s in _sessions]}
         term = state["threads"].get(terminal)
         if not term:
