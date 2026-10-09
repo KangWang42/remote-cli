@@ -65,6 +65,14 @@ public final class AggregateSessionsCheck {
         String unseen = AggregateSessions.signature(one, looked);
         looked.put(TERMINAL, 42L);
         require(!unseen.equals(AggregateSessions.signature(one, looked)), "Looking at finished work must redraw its row");
+        // Saved conversations: the one used last comes first, and each says how long ago that was.
+        AggregateSessions.Entry older = saved("项目", "older", "", false, ""), newer = saved("项目", "newer", "", false, "");
+        older.used = 1_000_000L; newer.used = 9_000_000L;
+        List<AggregateSessions.Project> used = AggregateSessions.projects(Collections.singletonList("项目"), Arrays.asList(older, newer));
+        require("newer".equals(used.get(0).history.get(0).id), "The conversation used last must come first");
+        long now = 1_700_000_000_000L;
+        require(AggregateSessions.ago(0, now).isEmpty() && "刚刚".equals(AggregateSessions.ago(now - 30_000, now)) && "5 分钟前".equals(AggregateSessions.ago(now - 300_000, now))
+            && "3 小时前".equals(AggregateSessions.ago(now - 3 * 3600_000L, now)) && "2 天前".equals(AggregateSessions.ago(now - 2 * 86400_000L, now)), "Last use must read as on the pages");
         System.out.println("Aggregate checks passed: computer isolation, grouping, lock states, deduplication, sorting, stable refresh and exact terminal route.");
     }
 }

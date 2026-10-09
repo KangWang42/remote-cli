@@ -311,6 +311,7 @@ node tests\session_state_check.js                         # 运行中的会话�
 python tests\android_aggregate_check.py --jdk <JDK 目录>  # 工作台的分组、排序、已完成标记和刷新判定
 python tests\android_update_check.py                      # App 更新器关闭安装流的顺序
 python tests\native_owner_check.py                        # 临时进程验证归属，不操作真实 Codex 会话
+python tests\session_copies_check.py                      # 同一段对话只列一次，用虚构的对话文件
 python tests\tunnel_check.py --local                      # 直连回显延迟
 python tests\tunnel_check.py <cloudflared.exe> --protocol http2  # 公网回显延迟
 python tests\tunnel_keep_check.py <cloudflared.exe>       # 程序结束后再启动，公网地址不变

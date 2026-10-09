@@ -136,8 +136,8 @@ public sealed class TerminalAgent {
         public string Tool, Dir, Session, Launcher;
         public bool PhoneTerminal;
     }
-    public sealed class SessionInfo { public string Id, Tool, Dir, Title, Status = "", Host = "", Origin = ""; public long Updated; public DateTime Created; public bool Live, CanTakeover, OwnershipKnown; public string TakeoverReason = ""; }
-    sealed class TitleCache { public long Stamp, Length; public string Title; }
+    public sealed class SessionInfo { public string Id, Tool, Dir, Title, Status = "", Host = "", Origin = ""; public long Updated; public DateTime Created; public bool Live, CanTakeover, OwnershipKnown; public string TakeoverReason = "", Same = ""; }
+    sealed class TitleCache { public long Stamp, Length; public string Title, Same; }
     readonly Dictionary<string, TitleCache> titles = new Dictionary<string, TitleCache>();
     readonly CodexSessions codexSessions = new CodexSessions();
     readonly Dictionary<string, string> codexFolders = new Dictionary<string, string>();
@@ -196,25 +196,35 @@ public sealed class TerminalAgent {
         return title;
     }
     // The name the tool itself shows for a conversation; without one, what the owner last asked.
-    public static string ClaudeTitleOf(string path) {
+    public static string ClaudeTitleOf(string path) { string same; return ClaudeTitleOf(path, out same); }
+    // same tells copies of one conversation apart from others: Claude Code writes a branch or a second run of the
+    // same request as a file of its own. It is the name where the conversation has one, else what it began with;
+    // the last request alone ("continue") is shared by conversations that have nothing to do with each other.
+    public static string ClaudeTitleOf(string path, out string same) {
         string tail = ReadPart(path, true, 256 * 1024);
         string title = JsonText(tail, @"""customTitle"":", true);
         if (title.Length == 0) title = JsonText(tail, @"""aiTitle"":", true);
-        if (title.Length == 0) title = JsonText(tail, @"""lastPrompt"":", true);
-        if (title.Length == 0) {
-            string head = ReadPart(path, false, 768 * 1024);
-            title = JsonText(head, @"""role"":""user"",""content"":", false);
-            if (title.Length == 0) title = JsonText(head, @"""operation"":""enqueue"",[^\n]{0,200}?""content"":", false);
-        }
-        return Tidy(title);
+        same = Tidy(title);
+        if (title.Length > 0) return same;
+        title = JsonText(tail, @"""lastPrompt"":", true);
+        string head = ReadPart(path, false, 768 * 1024);
+        string began = JsonText(head, @"""role"":""user"",""content"":", false);
+        if (began.Length == 0) began = JsonText(head, @"""operation"":""enqueue"",[^\n]{0,200}?""content"":", false);
+        same = began.Length > 0 ? "began " + Tidy(began) : "";
+        return Tidy(title.Length > 0 ? title : began);
     }
-    string ClaudeTitle(FileInfo file) {
-        TitleCache cached;
-        if (titles.TryGetValue(file.FullName, out cached) && cached.Stamp == file.LastWriteTimeUtc.Ticks && cached.Length == file.Length) return cached.Title;
+    string ClaudeTitle(FileInfo file, out string same) {
+        TitleCache cached; same = "";
+        if (titles.TryGetValue(file.FullName, out cached) && cached.Stamp == file.LastWriteTimeUtc.Ticks && cached.Length == file.Length) { same = cached.Same; return cached.Title; }
         string title;
-        try { title = ClaudeTitleOf(file.FullName); } catch (IOException) { return cached != null ? cached.Title : ""; } catch (UnauthorizedAccessException) { return ""; }
-        titles[file.FullName] = new TitleCache { Stamp = file.LastWriteTimeUtc.Ticks, Length = file.Length, Title = title };
+        try { title = ClaudeTitleOf(file.FullName, out same); } catch (IOException) { if (cached != null) same = cached.Same; return cached != null ? cached.Title : ""; } catch (UnauthorizedAccessException) { return ""; }
+        titles[file.FullName] = new TitleCache { Stamp = file.LastWriteTimeUtc.Ticks, Length = file.Length, Title = title, Same = same };
         return title;
+    }
+    // One conversation is listed once: of its copies, those a program has open, else the one used last.
+    public static List<SessionInfo> Single(IEnumerable<SessionInfo> found) {
+        return found.GroupBy(s => s.Same.Length > 0 ? s.Tool + "\n" + s.Dir + "\n" + s.Same : s.Id)
+            .SelectMany(copies => copies.Any(s => s.Live) ? copies.Where(s => s.Live) : copies.OrderByDescending(s => s.Updated).Take(1)).ToList();
     }
     public static string ProjectFolder(string path) { return Regex.Replace(path, "[^a-zA-Z0-9]", "-"); }
     static bool SamePath(string a, string b) { return String.Equals(a.TrimEnd('\\', '/'), b.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase); }
@@ -263,10 +273,10 @@ public sealed class TerminalAgent {
                 var recent = folder.GetFiles("*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).ToArray();
                 var recentNames = new HashSet<string>(recent.Take(15).Select(f => f.Name));
                 foreach (FileInfo file in recent.Where(f => recentNames.Contains(f.Name) || open.ContainsKey(Path.GetFileNameWithoutExtension(f.Name)))) {
-                    string id = Path.GetFileNameWithoutExtension(file.Name), title;
-                    if (!Regex.IsMatch(id, Uuid) || (title = ClaudeTitle(file)).Length == 0) continue;
+                    string id = Path.GetFileNameWithoutExtension(file.Name), title, same;
+                    if (!Regex.IsMatch(id, Uuid) || (title = ClaudeTitle(file, out same)).Length == 0) continue;
                     ClaudeSessions.Owner source; bool live = open.TryGetValue(id, out source);
-                    found.Add(new SessionInfo { Id = id, Tool = "claude", Dir = dir.Key, Title = title, Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? source.Host : "", Origin = live ? source.Origin : "", CanTakeover = live && source.CanTakeover, OwnershipKnown = !live || source.CanTakeover || source.Host == "remote", Status = live ? source.Status : "", TakeoverReason = live ? source.Reason : "" });
+                    found.Add(new SessionInfo { Id = id, Tool = "claude", Dir = dir.Key, Title = title, Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? source.Host : "", Origin = live ? source.Origin : "", CanTakeover = live && source.CanTakeover, OwnershipKnown = !live || source.CanTakeover || source.Host == "remote", Status = live ? source.Status : "", TakeoverReason = live ? source.Reason : "", Same = same });
                 }
             } catch { }
         }
@@ -299,7 +309,13 @@ public sealed class TerminalAgent {
             if (root.Exists) foreach (FileInfo file in root.GetFiles("rollout-*.jsonl", SearchOption.AllDirectories).OrderByDescending(f => f.LastWriteTimeUtc).Take(150)) {
                 string name = Path.GetFileNameWithoutExtension(file.Name), id = name.Length > 36 ? name.Substring(name.Length - 36) : "", folder;
                 if (!Regex.IsMatch(id, Uuid)) continue;
-                if (!codexFolders.TryGetValue(file.FullName, out folder)) { try { folder = JsonText(ReadPart(file.FullName, false, 16 * 1024), @"""cwd"":", false); } catch (IOException) { continue; } codexFolders[file.FullName] = folder; }
+                if (!codexFolders.TryGetValue(file.FullName, out folder)) {
+                    string head;
+                    try { head = ReadPart(file.FullName, false, 16 * 1024); } catch (IOException) { continue; }
+                    // A helper that a conversation started for itself is part of that conversation, not one to continue.
+                    codexFolders[file.FullName] = folder = Regex.IsMatch(head, @"""parent_thread_id""\s*:\s*""") ? "" : JsonText(head, @"""cwd"":", false);
+                }
+                if (folder.Length == 0) continue;
                 string dir = dirs.Where(d => SamePath(d.Value, folder)).Select(d => d.Key).FirstOrDefault();
                 var owner = codexSessions.Get(id);
                 bool live = owner.Live;
@@ -309,7 +325,7 @@ public sealed class TerminalAgent {
                 if (!live && count >= 15) continue;
                 if (!live) counts[dir] = count + 1;
                 string title; codexNames.TryGetValue(id, out title); title = Tidy(title);
-                found.Add(new SessionInfo { Id = id, Tool = "codex", Dir = dir, Title = title.Length > 0 ? title : "Codex 对话 " + file.CreationTime.ToString("MM-dd HH:mm"), Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? owner.Host : "", Origin = live ? owner.Origin : "", OwnershipKnown = owner.Known, CanTakeover = live && owner.CanTakeover && !phone, TakeoverReason = owner.Reason });
+                found.Add(new SessionInfo { Id = id, Tool = "codex", Dir = dir, Title = title.Length > 0 ? title : "Codex 对话 " + file.CreationTime.ToString("MM-dd HH:mm"), Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? owner.Host : "", Origin = live ? owner.Origin : "", OwnershipKnown = owner.Known, CanTakeover = live && owner.CanTakeover && !phone, TakeoverReason = owner.Reason, Same = title });
             }
         } catch { }
         // Associate a phone terminal only with the verified writer process in its own process tree.
@@ -319,7 +335,7 @@ public sealed class TerminalAgent {
                 && codexSessions.Get(s.Id).Pid > 0 && CodexSessions.Descends(codexSessions.Get(s.Id).Pid, new[] { t.Pty.Id }, codexParents)).ToArray();
             if (mine.Length == 1) t.Session = mine[0].Id;
         }
-        sessions = found.OrderByDescending(s => s.Updated).Take(200).ToList();
+        sessions = Single(found).OrderByDescending(s => s.Updated).Take(200).ToList();
         candidates = seen.Values.Where(c => { try { return Directory.Exists((string)c["path"]); } catch { return false; } })
             .OrderByDescending(c => (bool)c["live"]).ThenByDescending(c => (long)c["updated"]).Take(12).ToList();
         if (claudeFolders.Count > 500) claudeFolders.Clear();
@@ -642,7 +658,7 @@ public sealed class TerminalAgent {
                 if (!enabled) { sessions = new List<SessionInfo>(); candidates = new List<Dictionary<string, object>>(); }
                 else if (Interlocked.CompareExchange(ref scanning, 1, 0) == 0) {
                     var running = terminals.Values.ToArray();
-                    Task.Run(() => { try { Scan(allowed, running); } catch { } finally { scanning = 0; Wake(); } });
+                    var reading = Task.Run(() => { try { Scan(allowed, running); } catch { } finally { scanning = 0; Wake(); } });
                 }
             }
             if (DateTime.UtcNow - toolsAt > TimeSpan.FromSeconds(30)) { tools = new[] { "claude", "codex", "shell" }.Where(t => FindTool(t) != null).ToArray(); toolsAt = DateTime.UtcNow; }

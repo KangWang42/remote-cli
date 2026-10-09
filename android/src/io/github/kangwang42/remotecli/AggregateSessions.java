@@ -17,6 +17,7 @@ final class AggregateSessions {
         final long at;
         final String id, project, title, tool, state, phase, status, host, attached, session;
         String said = "";       // one line of what a running terminal last said; changes often and is left out of signatures
+        long used;              // when a saved conversation was last used, in milliseconds; 0 when not known
         Entry(boolean terminal, String id, String project, String title, String tool, String state,
               String phase, String status, boolean live, String host, String attached, String session) {
             this(terminal, id, project, title, tool, state, phase, status, live, host, attached, session, false, 0);
@@ -78,6 +79,12 @@ final class AggregateSessions {
         int at = Arrays.asList("confirm", "done", "busy", "starting", "idle", "pc-busy", "pc-idle").indexOf(kind);
         return at < 0 ? 9 : at;
     }
+    /** How long ago, in the words the pages use; nothing for a time that is not known. */
+    static String ago(long then, long now) {
+        if (then <= 0) return "";
+        long seconds = Math.max(0, (now - then) / 1000);
+        return seconds < 90 ? "刚刚" : seconds < 3600 ? Math.round(seconds / 60.0) + " 分钟前" : seconds < 86400 ? Math.round(seconds / 3600.0) + " 小时前" : Math.round(seconds / 86400.0) + " 天前";
+    }
     static final class Project {
         final String name;
         final List<Entry> active = new ArrayList<>(), history = new ArrayList<>();
@@ -96,7 +103,10 @@ final class AggregateSessions {
             Project group = groups.get(entry.project);
             if (entry.running()) group.active.add(entry); else group.history.add(entry);
         }
-        for (Project group : groups.values()) Collections.sort(group.active, Comparator.comparingInt(Entry::rank));
+        for (Project group : groups.values()) {
+            Collections.sort(group.active, Comparator.comparingInt(Entry::rank));
+            Collections.sort(group.history, (a, b) -> Long.compare(b.used, a.used));       // stable: without times the order stays as sent
+        }
         return new ArrayList<>(groups.values());
     }
     /** How many running tasks are confirm, done, busy (starting included) and open in all. */
@@ -125,6 +135,7 @@ final class AggregateSessions {
                 for (Entry entry : entries) {
                     add(key, entry.id); add(key, entry.shownTitle()); add(key, entry.tool);
                     add(key, label(entry.kind(seen))); add(key, entry.host);
+                    if (entries == project.history) add(key, ago(entry.used, System.currentTimeMillis()));
                 }
             }
         }

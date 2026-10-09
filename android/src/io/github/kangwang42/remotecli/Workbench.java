@@ -266,6 +266,7 @@ final class Workbench {
                     entry.optString("host"), entry.optString("terminal"), entry.optString("session"),
                     entry.optBoolean("done"), entry.optLong("phase_at"));
                 made.said = entry.optString("said");
+                if (!terminal) made.used = entry.optLong("updated");
                 entries.add(made);
             }
         }
@@ -510,7 +511,8 @@ final class Workbench {
         TextView title = kit.line(entry.shownTitle(), 14.5f, "history".equals(kind) ? kit.MUTED : kit.INK, false);
         title.setPadding(kit.dp(10), 0, kit.dp(8), 0);
         row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        if ("history".equals(kind)) row.addView(kit.text("继续", 12.5f, kit.MUTED));
+        String used = AggregateSessions.ago(entry.used, System.currentTimeMillis());
+        if ("history".equals(kind)) row.addView(kit.text(used.isEmpty() ? "继续" : used, 12.5f, kit.MUTED));
         else row.addView(kit.pill(AggregateSessions.label(kind), color(kind)));
         kit.press(row, () -> {
             if (!entry.terminal) { activity.openSession(url, entry.project, entry.id); return; }

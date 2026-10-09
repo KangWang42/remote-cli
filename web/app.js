@@ -355,7 +355,8 @@
     $('history-count').textContent = wanted ? found.length + ' / ' + all.length + ' 段' : all.length + ' 段';
     fill($('p-history').querySelector('ul'), found.slice(0, shown).map(s => sessionCard(s, false)), JSON.stringify([found.slice(0, shown).map(s => [s.id, s.title]), stamp(5), ready]));
     $('more-history').hidden = found.length <= shown;
-    const ended = terminals.filter(t => t.dir === project && !running(t)).sort((a, b) => b.created - a.created).slice(0, 5);
+    // An ended terminal whose conversation is listed above would show that conversation a second time.
+    const ended = terminals.filter(t => t.dir === project && !running(t) && !(t.session && here.some(s => s.id === t.session))).sort((a, b) => b.created - a.created).slice(0, 5);
     $('p-ended').hidden = !ended.length;
     fill($('p-ended').querySelector('ul'), ended.map(t => terminalCard(t, false)), JSON.stringify(ended.map(t => [t.id, t.phase, t.title])));
     $('empty').hidden = own.length + here.length + ended.length > 0;
