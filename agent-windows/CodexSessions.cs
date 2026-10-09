@@ -17,6 +17,7 @@ public sealed class CodexSessions {
         public bool Known, Live, CanTakeover;
         public int Pid;
         public long Started;
+        public string Host = "unknown";
         public string Reason = "正在确认电脑会话的归属，请稍后刷新";
     }
     [StructLayout(LayoutKind.Sequential)] struct UniqueProcess { public uint pid; public System.Runtime.InteropServices.ComTypes.FILETIME started; }
@@ -52,7 +53,7 @@ public sealed class CodexSessions {
     }
     public static Owner Inspect(string id) {
         string path = LockPath(id); bool? held = Held(path);
-        if (held == false) return new Owner { Known = true, Reason = "" };
+        if (held == false) return new Owner { Known = true, Host = "", Reason = "" };
         if (held == null) return new Owner { Reason = "无法核实写入锁，请在电脑结束会话后重试，或在手机新开副本" };
         var result = new Owner { Known = true, Live = true, Reason = "无法确认独立 CLI 的归属，可在手机新开副本" };
         uint session;
@@ -74,14 +75,42 @@ public sealed class CodexSessions {
                 using (var rows = search.Get()) foreach (ManagementObject row in rows) using (row) command = Convert.ToString(row["CommandLine"]);
                 if (String.IsNullOrWhiteSpace(command)) return result;
                 if (Regex.IsMatch(command, @"(?:^|\s)(?:app-server|mcp-server)(?:\s|$)", RegexOptions.IgnoreCase)) {
-                    result.Reason = "此对话由桌面应用或编辑器共享后台管理；请先在电脑结束对话，或在手机新开副本";
+                    result.Host = "shared";
+                    result.Reason = "此对话的写入锁由桌面应用或编辑器后台保留，不代表窗口正在打开它；可在手机新开副本";
                     return result;
                 }
+                if (RemoteAncestor(process.Id)) {
+                    result.Host = "remote";
+                    result.Reason = "此对话在另一个远程终端后台运行，电脑上可能没有窗口；请在原远程终端继续或结束，也可在这里新开副本";
+                    return result;
+                }
+                result.Host = "cli";
                 result.CanTakeover = true; result.Reason = "接手会结束电脑上的这个 CLI 会话，正在执行的任务可能中断";
             }
         } catch { /* Unknown ownership cannot authorize process termination. */ }
         finally { RmEndSession(session); }
         return result;
+    }
+    // Other installed terminal hosts must not look like a standalone computer CLI, or be terminated here.
+    static bool RemoteAncestor(int pid) {
+        var seen = new HashSet<int>();
+        for (int depth = 0; depth < 16 && pid > 0 && seen.Add(pid); depth++) {
+            int parent = 0;
+            using (var search = new ManagementObjectSearcher("SELECT ParentProcessId FROM Win32_Process WHERE ProcessId=" + pid))
+            using (var rows = search.Get()) foreach (ManagementObject row in rows) using (row) parent = Convert.ToInt32(row["ParentProcessId"]);
+            if (parent <= 0 || parent == pid) break;
+            try {
+                using (var child = Process.GetProcessById(pid)) using (var ancestor = Process.GetProcessById(parent)) {
+                    // A reused parent PID is not evidence of ancestry.
+                    if (ancestor.StartTime.ToUniversalTime() > child.StartTime.ToUniversalTime()) break;
+                    string name = ancestor.ProcessName;
+                    if (String.Equals(name, "RemoteCli", StringComparison.OrdinalIgnoreCase) || String.Equals(name, "RemoteCliAgent", StringComparison.OrdinalIgnoreCase) || String.Equals(name, "TerminalAgent", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            } catch (ArgumentException) { break; }
+            catch (System.ComponentModel.Win32Exception) { break; }
+            pid = parent;
+        }
+        return false;
     }
     public void Refresh() {
         lock (gate) { if (refreshing || DateTime.UtcNow < next) return; refreshing = true; next = DateTime.UtcNow.AddSeconds(5); }

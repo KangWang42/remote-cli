@@ -45,6 +45,16 @@ class TerminalRelayTests(unittest.TestCase):
         with self.assertRaises(RemoteError):
             tr.command(self.path, dict(op, id="e" * 32, fork=1), now=1004)
 
+    def test_session_host_is_forwarded_without_claiming_a_visible_window(self):
+        for host, expected in [("cli", "cli"), ("shared", "shared"), ("remote", "remote"), ("unknown", "unknown"), (None, ""), (["cli"], "")]:
+            session = {"id": "12345678-1234-1234-1234-123456789abc", "tool": "codex", "dir": "demo",
+                       "title": "后台保留的旧对话", "updated": 5000, "live": True, "host": host, "can_takeover": False}
+            tr.agent(self.path, {"info": self.info, "sessions": [session]}, now=1001)
+            actual = tr.overview(self.path, now=1002)["sessions"][0]
+            self.assertEqual(actual["host"], expected)
+            self.assertTrue(actual["live"])
+            self.assertFalse(actual["can_takeover"])
+
     def test_nonzero_terminal_exit_is_persisted_with_output(self):
         self.start()
         tr.agent(self.path, {"info": self.info,

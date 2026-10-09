@@ -19,6 +19,10 @@ public static class CodexOwnerCheck {
     }
     public static int Main(string[] args) {
         if (args.Length == 2) {
+            if (args[0] == "remote-host") {
+                using (var writer = Process.Start(new ProcessStartInfo(Path.Combine(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "codex.exe"), "hold " + args[1]) { UseShellExecute = false, CreateNoWindow = true })) writer.WaitForExit();
+                return 0;
+            }
             string path = CodexSessions.LockPath(args[1]); Directory.CreateDirectory(Path.GetDirectoryName(path));
             using (var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete)) {
                 stream.Lock(0, Int64.MaxValue);
@@ -39,7 +43,7 @@ public static class CodexOwnerCheck {
             Require(idle.Known && !idle.Live && !idle.CanTakeover, "Stale lock was considered live");
             string id = Guid.NewGuid().ToString(); var cli = Fixture("hold", id); children.Add(cli);
             var live = CodexSessions.Inspect(id);
-            Require(live.Known && live.Live && live.Pid == cli.Id && live.CanTakeover, "Independent writer ownership failed");
+            Require(live.Known && live.Live && live.Pid == cli.Id && live.CanTakeover && live.Host == "cli", "Independent writer ownership failed: pid=" + live.Pid + " host=" + live.Host + " reason=" + live.Reason);
             var parents = new Dictionary<int, int> { { cli.Id, Process.GetCurrentProcess().Id } };
             bool refused = false;
             try { CodexSessions.Takeover(id, new[] { Process.GetCurrentProcess().Id }, parents); } catch (InvalidOperationException) { refused = true; }
@@ -48,12 +52,23 @@ public static class CodexOwnerCheck {
             Require(cli.WaitForExit(3000) && !CodexSessions.Inspect(id).Live, "Takeover did not release the exact writer");
             string sharedId = Guid.NewGuid().ToString(); var shared = Fixture("app-server", sharedId); children.Add(shared);
             var backend = CodexSessions.Inspect(sharedId);
-            Require(backend.Live && backend.Pid == shared.Id && !backend.CanTakeover, "Shared backend was offered for termination");
+            Require(backend.Live && backend.Pid == shared.Id && !backend.CanTakeover && backend.Host == "shared", "Shared backend was offered for termination or classified as a window");
             refused = false;
             try { CodexSessions.Takeover(sharedId, new int[0], new Dictionary<int, int>()); } catch (InvalidOperationException) { refused = true; }
             Require(refused && !shared.HasExited, "Shared backend was terminated");
-            Console.WriteLine("Native checks passed: stale file, writer ownership, protected descendant, exact takeover, shared backend.");
+            string remoteId = Guid.NewGuid().ToString();
+            var host = Process.Start(new ProcessStartInfo(Path.Combine(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "RemoteCliAgent.exe"), "remote-host " + remoteId) { UseShellExecute = false, CreateNoWindow = true }); children.Add(host);
+            for (int n = 0; n < 100 && !File.Exists(Path.Combine(CodexSessions.Home, remoteId + ".ready")); n++) Thread.Sleep(50);
+            var remote = CodexSessions.Inspect(remoteId); children.Add(Process.GetProcessById(remote.Pid));
+            Require(remote.Live && remote.Host == "remote" && !remote.CanTakeover, "Other remote terminal was classified as a computer CLI");
+            refused = false;
+            try { CodexSessions.Takeover(remoteId, new int[0], new Dictionary<int, int>()); } catch (InvalidOperationException) { refused = true; }
+            Require(refused && !host.HasExited, "Other remote terminal was terminated");
+            Console.WriteLine("Native checks passed: stale lock, standalone CLI, protected descendant, exact takeover, shared backend, other remote host.");
             return 0;
+        } catch (Exception error) {
+            Console.Error.WriteLine(error.GetType().Name + ": " + error.Message);
+            return 1;
         } finally {
             foreach (var child in children) { try { if (!child.HasExited) { child.Kill(); child.WaitForExit(3000); } } finally { child.Dispose(); } }
             Environment.SetEnvironmentVariable("CODEX_HOME", previous);

@@ -378,6 +378,7 @@ def agent(path, payload, now=None):
             _sessions[:] = [
                 {"id": s["id"], "tool": s["tool"], "dir": s["dir"], "title": s["title"].strip()[:80], "updated": s["updated"],
                  "live": s.get("live") is True, "status": s.get("status") if s.get("status") in ("idle", "busy") else "",
+                 "host": s.get("host") if s.get("host") in ("cli", "shared", "remote", "unknown") else "",
                  "can_takeover": s.get("can_takeover") is True, "ownership_known": s.get("ownership_known") is True,
                  "takeover_reason": str(s.get("takeover_reason") or "")[:200]}
                 for s in payload["sessions"][:80]

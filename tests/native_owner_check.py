@@ -1,5 +1,6 @@
 """Compile and test ownership using only disposable fake codex processes."""
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,4 +14,5 @@ with tempfile.TemporaryDirectory(prefix='remote-cli-native-') as folder:
                     '/reference:System.Security.dll','/main:CodexOwnerCheck','/out:'+str(exe),
                     str(ROOT/'agent-windows/CodexSessions.cs'),str(ROOT/'agent-windows/RemoteCliAgent.cs'),
                     str(ROOT/'tests/CodexOwnerCheck.cs')],check=True)
-    subprocess.run([str(exe)],check=True,timeout=40)
+    shutil.copy2(exe, Path(folder)/'RemoteCliAgent.exe')
+    subprocess.run([str(exe)],check=True,timeout=60)

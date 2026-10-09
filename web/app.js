@@ -222,10 +222,16 @@
     if (running(t)) card.append(el('button', { type: 'button', className: 'side', ariaLabel: '结束这个终端', html: ICON.stop, onclick: () => endTerminal(t) }));
     return card;
   }
-  // A conversation saved on the computer; `live` ones are open in a program there.
+  // A writer lock means the conversation is held, not that a computer window is showing it.
+  function sessionHost(s) {
+    if (s.host) return s.host;
+    // Older agents did not report host; never infer a visible window from a lock.
+    return s.tool === 'codex' ? 'unknown' : 'cli';
+  }
+  const hostLabel = { cli: '电脑 CLI 运行中', shared: '共享后台保留', remote: '其它远程终端运行中', unknown: '会话仍被占用' };
   function sessionCard(s, withProject) {
     const meta = el('span', { className: 'meta' });
-    if (s.live) meta.append(pill(s.status === 'busy' ? 'busy' : 'pc', s.status === 'busy' ? '电脑上执行中' : '电脑上打开着'));
+    if (s.live) meta.append(pill(s.status === 'busy' ? 'busy' : 'pc', hostLabel[sessionHost(s)] || hostLabel.unknown));
     if (withProject) meta.append(el('span', { className: 'chip', textContent: s.dir }));
     meta.append(el('span', { textContent: TOOLS[s.tool] + ' · ' + ago(s.updated) }));
     return el('li', { className: 'card' }, el('button', { type: 'button', className: 'open', onclick: () => { if (!usable()) return toast('电脑离线，暂时打不开'); if (s.live) takeOver(s); else start(s.tool, s.dir, s.id, false); } },
@@ -250,7 +256,8 @@
     if (project && !names.includes(project)) { project = ''; }
     const terminals = data.terminals || [], sessions = (data.sessions || []).filter(s => !s.terminal);
     const mine = terminals.filter(running).map(t => Object.assign({ rank: PHASE[phaseOf(t)][1], at: t.phase_at || t.created }, t));
-    const live = sessions.filter(s => s.live);
+    const live = sessions.filter(s => s.live && sessionHost(s) === 'cli');
+    const background = sessions.filter(s => s.live && sessionHost(s) !== 'cli');
     $('overview').hidden = !!project; $('project').hidden = !project; $('back').hidden = !project;
     $('heading').textContent = project || 'Remote CLI';
     const waiting = mine.filter(t => phaseOf(t) === 'confirm').length, done = mine.filter(t => phaseOf(t) === 'done').length, working = mine.filter(t => phaseOf(t) === 'busy').length;
@@ -261,10 +268,12 @@
       const order = mine.slice().sort((a, b) => a.rank - b.rank || b.at - a.at);
       const cards = order.map(t => terminalCard(t, true)).concat(live.sort((a, b) => b.updated - a.updated).map(s => sessionCard(s, true)));
       $('active').hidden = !cards.length;
-      fill($('active-list'), cards, JSON.stringify([order.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), live.map(s => [s.id, s.status, s.title]), stamp(1), ready]));
+      fill($('active-list'), cards, JSON.stringify([order.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), live.map(s => [s.id, s.status, s.title, s.host]), stamp(1), ready]));
+      $('background').hidden = !background.length;
+      fill($('background-list'), background.map(s => sessionCard(s, true)), JSON.stringify([background.map(s => [s.id, s.status, s.title, s.host]), stamp(1), ready]));
       const parts = [];
       if (waiting) parts.push(waiting + ' 个等你确认'); if (done) parts.push(done + ' 个已完成'); if (working) parts.push(working + ' 个在执行');
-      $('active-summary').textContent = parts.join(' · ') || (cards.length + ' 个打开着');
+      $('active-summary').textContent = parts.join(' · ') || (cards.length + ' 个终端在运行');
       const list = names.map(name => {
         const folder = (device.projects || []).find(p => p.name === name) || {};
         const own = mine.filter(t => t.dir === name), count = sessions.filter(s => s.dir === name).length;
@@ -297,9 +306,11 @@
     const own = mine.filter(t => t.dir === project).sort((a, b) => a.rank - b.rank || b.at - a.at);
     $('p-active').hidden = !own.length;
     fill($('p-active').querySelector('ul'), own.map(t => terminalCard(t, false)), JSON.stringify([own.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), stamp(1)]));
-    const here = sessions.filter(s => s.dir === project), open2 = here.filter(s => s.live);
+    const here = sessions.filter(s => s.dir === project), open2 = here.filter(s => s.live && sessionHost(s) === 'cli'), held = here.filter(s => s.live && sessionHost(s) !== 'cli');
     $('p-live').hidden = !open2.length;
-    fill($('p-live').querySelector('ul'), open2.map(s => sessionCard(s, false)), JSON.stringify([open2.map(s => [s.id, s.status, s.title]), stamp(1)]));
+    fill($('p-live').querySelector('ul'), open2.map(s => sessionCard(s, false)), JSON.stringify([open2.map(s => [s.id, s.status, s.title, s.host]), stamp(1)]));
+    $('p-background').hidden = !held.length;
+    fill($('p-background').querySelector('ul'), held.map(s => sessionCard(s, false)), JSON.stringify([held.map(s => [s.id, s.status, s.title, s.host]), stamp(1)]));
     const all = here.filter(s => !s.live).sort((a, b) => b.updated - a.updated), wanted = $('search').value.trim().toLowerCase();
     const found = wanted ? all.filter(s => s.title.toLowerCase().includes(wanted)) : all;
     $('p-history').hidden = !all.length;

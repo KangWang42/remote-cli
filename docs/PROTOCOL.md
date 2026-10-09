@@ -61,6 +61,8 @@ Each terminal also says what it is doing:
 
 ### Output
 
+Session records carry optional `host`: `cli` is a verified standalone CLI, `shared` is a Codex desktop/editor backend retaining the writer lock, `remote` is a CLI under another terminal host, and `unknown` means the lock is held without verified ownership. `live` only describes a held writer/session; it does not prove that a visible window displays the conversation. Shared/unknown/other-remote sessions appear separately from active CLI terminals. An absent `host` on old agents must not be interpreted as a visible Codex window. Takeover rechecks ownership and refuses other terminal hosts as well as shared backends.
+
 - `GET /api/terminal/ws?terminal=<id>&after=<seq>`: preferred WebSocket transport. Upgrade with
   version 13, a valid `Sec-WebSocket-Key`, the login cookie (or bearer token), and an `Origin` matching
   the relay. Output messages have `t: "out"` plus the same fields below. A state message arrives

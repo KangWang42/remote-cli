@@ -132,7 +132,7 @@ public sealed class TerminalAgent {
         public StringBuilder Pending = new StringBuilder();   // read from the program, not yet numbered
         public List<Dictionary<string, object>> Output = new List<Dictionary<string, object>>();
     }
-    public sealed class SessionInfo { public string Id, Tool, Dir, Title, Status = ""; public long Updated; public DateTime Created; public bool Live, CanTakeover, OwnershipKnown; public string TakeoverReason = ""; }
+    public sealed class SessionInfo { public string Id, Tool, Dir, Title, Status = "", Host = ""; public long Updated; public DateTime Created; public bool Live, CanTakeover, OwnershipKnown; public string TakeoverReason = ""; }
     sealed class TitleCache { public long Stamp, Length; public string Title; }
     readonly Dictionary<string, TitleCache> titles = new Dictionary<string, TitleCache>();
     readonly CodexSessions codexSessions = new CodexSessions();
@@ -256,7 +256,7 @@ public sealed class TerminalAgent {
                     string id = Path.GetFileNameWithoutExtension(file.Name), title;
                     if (!Regex.IsMatch(id, Uuid) || (title = ClaudeTitle(file)).Length == 0) continue;
                     string status; bool live = open.TryGetValue(id, out status);
-                    found.Add(new SessionInfo { Id = id, Tool = "claude", Dir = dir.Key, Title = title, Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, CanTakeover = live, OwnershipKnown = true, Status = live ? status : "" });
+                    found.Add(new SessionInfo { Id = id, Tool = "claude", Dir = dir.Key, Title = title, Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? "cli" : "", CanTakeover = live, OwnershipKnown = true, Status = live ? status : "" });
                 }
             } catch { }
         }
@@ -299,7 +299,7 @@ public sealed class TerminalAgent {
                 if (count >= 15) continue;
                 counts[dir] = count + 1;
                 string title; codexNames.TryGetValue(id, out title); title = Tidy(title);
-                found.Add(new SessionInfo { Id = id, Tool = "codex", Dir = dir, Title = title.Length > 0 ? title : "Codex 对话 " + file.CreationTime.ToString("MM-dd HH:mm"), Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, OwnershipKnown = owner.Known, CanTakeover = live && owner.CanTakeover && !phone, TakeoverReason = owner.Reason });
+                found.Add(new SessionInfo { Id = id, Tool = "codex", Dir = dir, Title = title.Length > 0 ? title : "Codex 对话 " + file.CreationTime.ToString("MM-dd HH:mm"), Updated = Milliseconds(file.LastWriteTimeUtc), Created = file.CreationTimeUtc, Live = live, Host = live ? owner.Host : "", OwnershipKnown = owner.Known, CanTakeover = live && owner.CanTakeover && !phone, TakeoverReason = owner.Reason });
             }
         } catch { }
         // Associate a phone terminal only with the verified writer process in its own process tree.
@@ -570,7 +570,7 @@ public sealed class TerminalAgent {
                 { "output", output }, { "acks", acknowledgments }
             };
             // The list of conversations is long: it goes out when it changed, and now and then in case the relay restarted.
-            var listed = sessions.Select(s => new { id = s.Id, tool = s.Tool, dir = s.Dir, title = s.Title, updated = s.Updated, live = s.Live, status = s.Status, can_takeover = s.CanTakeover, ownership_known = s.OwnershipKnown, takeover_reason = s.TakeoverReason }).ToArray();
+            var listed = sessions.Select(s => new { id = s.Id, tool = s.Tool, dir = s.Dir, title = s.Title, updated = s.Updated, live = s.Live, host = s.Host, status = s.Status, can_takeover = s.CanTakeover, ownership_known = s.OwnershipKnown, takeover_reason = s.TakeoverReason }).ToArray();
             listedText = json.Serialize(listed);
             listing = listedText != sentSessions || DateTime.UtcNow - sessionsSent > TimeSpan.FromSeconds(10);
             if (listing) payload["sessions"] = listed;
