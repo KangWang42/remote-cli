@@ -1,0 +1,36 @@
+# remote-cli agent for Linux — systemd (user-level) deployment
+#
+# The agent runs terminals as YOU, in your project folders, so it runs as a user
+# service — the same per-user model as the Windows agent.
+#
+# Install (as your own user, no root needed):
+#   mkdir -p ~/.local/share/remote-cli-agent
+#   cp agent.py ~/.local/share/remote-cli-agent/
+#   echo '<relay password>' | python3 ~/.local/share/remote-cli-agent/agent.py --set-password
+#   editor ~/.local/share/remote-cli-agent/config.json
+#     {"Server": "https://relay.example.com", "RemoteEnabled": true,
+#      "Name": "ubuntu-server", "RemoteDirs": ["演示=/home/you/演示"]}
+#   mkdir -p ~/.config/systemd/user
+#   cp remote-cli-agent.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now remote-cli-agent
+#
+# Headless servers keep the service alive without a login session:
+#   sudo loginctl enable-linger $USER
+#
+# The pairing address and password are printed once on first connect:
+#   journalctl --user -u remote-cli-agent -n 30
+# (install the qrencode package to also get a scannable QR in the journal)
+
+[Unit]
+Description=remote-cli agent (terminals of this machine for the phone)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/share/remote-cli-agent/agent.py --data %h/.local/state/remote-cli-agent
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
