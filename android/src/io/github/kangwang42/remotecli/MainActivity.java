@@ -88,6 +88,11 @@ public final class MainActivity extends Activity {
     private boolean foreground, checkingConnection;
     private String currentOrigin = "";
     private ConnectionHealth connectionHealth = new ConnectionHealth();
+    private static final class ComputerSnapshot {
+        final JSONObject computer, data;
+        final String error;
+        ComputerSnapshot(JSONObject computer, JSONObject data, String error) { this.computer = computer; this.data = data; this.error = error; }
+    }
 
     // ---- the computers this phone knows: [{"name": ..., "url": ...}]
     private JSONArray computers() {
@@ -267,6 +272,7 @@ public final class MainActivity extends Activity {
         } else {
             column.addView(bold("我的电脑", 13.5f, MUTED), below(26));
             for (int i = 0; i < list.length(); i++) column.addView(computerCard(list.optJSONObject(i), i), below(i == 0 ? 10 : 10));
+            if (list.length() > 1) column.addView(button("聚合查看所有项目和对话", 1, this::aggregate), below(18));
         }
         column.addView(button(problem.contains("重新扫码") ? "重新扫码连接电脑" : "扫码添加电脑", 0, this::scan), below(24));
         column.addView(button("手动输入地址", 1, () -> add("")), below(10));
@@ -376,6 +382,105 @@ public final class MainActivity extends Activity {
         ticker.postDelayed(look, 6000);
     }
 
+    /** Fetches one computer's list for the all-computers view. It never changes the selected WebView. */
+    private JSONObject terminalData(String url) throws Exception {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(url + "/api/terminal").openConnection();
+            connection.setConnectTimeout(4000); connection.setReadTimeout(8000); connection.setUseCaches(false);
+            String cookie = CookieManager.getInstance().getCookie(url);
+            if (cookie != null) connection.setRequestProperty("Cookie", cookie);
+            int code = connection.getResponseCode();
+            if (code == 401) return new JSONObject().put("_error", "需要重新扫码登录");
+            if (code != 200) return new JSONObject().put("_error", "电脑没有响应（" + code + "）");
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (InputStream input = connection.getInputStream()) {
+                byte[] part = new byte[16384]; int n;
+                while ((n = input.read(part)) > 0) {
+                    if (bytes.size() + n > 4000000) throw new Exception("返回内容过大");
+                    bytes.write(part, 0, n);
+                }
+            }
+            return new JSONObject(bytes.toString("UTF-8"));
+        } finally { if (connection != null) connection.disconnect(); }
+    }
+
+    /** Shows one comfortable, read-only list before the user enters a specific computer. */
+    private void aggregate() {
+        final JSONArray list = computers();
+        if (list.length() < 2) return;
+        LinearLayout loading = column(34);
+        loading.addView(button("返回我的电脑", 2, () -> home("")));
+        loading.addView(bold("全部项目和对话", 23, INK), below(18));
+        loading.addView(text("正在读取每台电脑的项目和终端…", 14, MUTED), below(6));
+        show(loading, "aggregate");
+        net.execute(() -> {
+            ArrayList<ComputerSnapshot> snapshots = new ArrayList<>();
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject computer = list.optJSONObject(i); if (computer == null) continue;
+                String url = computer.optString("url"), error = ""; JSONObject data = null;
+                try { data = terminalData(url); if (data.has("_error")) { error = data.optString("_error"); data = null; } }
+                catch (Exception unreachable) { error = "连不上，可能没开机或地址已变化"; }
+                snapshots.add(new ComputerSnapshot(computer, data, error));
+            }
+            runOnUiThread(() -> { if ("aggregate".equals(screen)) aggregateView(snapshots); });
+        });
+    }
+
+    private void aggregateView(ArrayList<ComputerSnapshot> snapshots) {
+        LinearLayout column = column(34);
+        column.addView(button("返回我的电脑", 2, () -> home("")));
+        column.addView(bold("全部项目和对话", 23, INK), below(18));
+        column.addView(text("按电脑分组显示；点项目即可进入对应电脑继续使用。", 14, MUTED), below(6));
+        for (ComputerSnapshot snapshot : snapshots) column.addView(aggregateComputer(snapshot), below(16));
+        column.addView(button("刷新", 1, this::aggregate), below(2));
+        show(column, "aggregate");
+    }
+
+    private View aggregateComputer(ComputerSnapshot snapshot) {
+        JSONObject computer = snapshot.computer;
+        String url = computer.optString("url"), name = computer.optString("name");
+        LinearLayout card = column(14); card.setPadding(dp(16), dp(16), dp(16), dp(16)); card.setBackground(shape(PANEL, LINE, 20));
+        card.addView(bold(name.isEmpty() ? host(url) : name, 17, INK));
+        card.addView(text(host(url), 12.5f, MUTED), below(2));
+        if (snapshot.data == null) { card.addView(text(snapshot.error, 14, BAD), below(12)); return card; }
+        JSONObject device = snapshot.data.optJSONObject("device");
+        if (device == null || !device.optBoolean("online")) { card.addView(text("电脑端程序没有在运行", 14, MUTED), below(12)); return card; }
+        if (!device.optBoolean("enabled")) { card.addView(text("电脑端暂停了手机访问", 14, MUTED), below(12)); return card; }
+        JSONArray projects = device.optJSONArray("projects"), terminals = snapshot.data.optJSONArray("terminals"), sessions = snapshot.data.optJSONArray("sessions");
+        ArrayList<String> names = new ArrayList<>();
+        for (int i = 0; projects != null && i < projects.length(); i++) { String project = projects.optJSONObject(i) == null ? "" : projects.optJSONObject(i).optString("name"); if (!project.isEmpty()) names.add(project); }
+        for (int i = 0; sessions != null && i < sessions.length(); i++) { JSONObject session = sessions.optJSONObject(i); String project = session == null ? "" : session.optString("dir"); if (!project.isEmpty() && !names.contains(project)) names.add(project); }
+        for (String project : names) {
+            int open = 0, saved = 0;
+            for (int i = 0; terminals != null && i < terminals.length(); i++) { JSONObject terminal = terminals.optJSONObject(i); if (terminal != null && project.equals(terminal.optString("dir")) && ("running".equals(terminal.optString("state")) || "starting".equals(terminal.optString("state")))) open++; }
+            for (int i = 0; sessions != null && i < sessions.length(); i++) { JSONObject session = sessions.optJSONObject(i); if (session != null && project.equals(session.optString("dir"))) saved++; }
+            LinearLayout projectCard = column(8); projectCard.setPadding(dp(12), dp(10), dp(12), dp(10)); projectCard.setBackground(shape(RAISED, 0, 14));
+            projectCard.addView(bold(project, 15, INK));
+            projectCard.addView(text((open > 0 ? open + " 个终端" : "没有运行中的终端") + (saved > 0 ? " · " + saved + " 段对话" : ""), 12.5f, MUTED), below(1));
+            for (int i = 0; terminals != null && i < terminals.length(); i++) {
+                JSONObject terminal = terminals.optJSONObject(i);
+                if (terminal == null || !project.equals(terminal.optString("dir")) || !("running".equals(terminal.optString("state")) || "starting".equals(terminal.optString("state")))) continue;
+                String title = terminal.optString("title"); if (title.isEmpty()) title = terminal.optString("tool");
+                String phase = terminal.optString("phase", "busy".equals(terminal.optString("status")) ? "正在执行" : "等待输入");
+                projectCard.addView(text("终端 · " + title + " · " + phase, 13, INK), below(6));
+            }
+            int shown = 0;
+            for (int i = 0; sessions != null && i < sessions.length() && shown < 30; i++) {
+                JSONObject session = sessions.optJSONObject(i); if (session == null || !project.equals(session.optString("dir"))) continue;
+                String title = session.optString("title"); if (title.isEmpty()) title = session.optString("tool");
+                String state = session.optBoolean("live") ? ("busy".equals(session.optString("status")) ? "运行中" : "已占用") : "历史";
+                projectCard.addView(text("对话 · " + title + " · " + state, 13, MUTED), below(5)); shown++;
+            }
+            if (saved > shown) projectCard.addView(text("还有 " + (saved - shown) + " 段对话，进入项目查看", 12.5f, MUTED), below(5));
+            final String target = project;
+            press(projectCard, () -> open(url, "", target));
+            card.addView(projectCard, below(10));
+        }
+        if (names.isEmpty()) card.addView(text("还没有项目或保存的对话", 14, MUTED), below(12));
+        return card;
+    }
+
     private String versionName() { try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception unknown) { return ""; } }
 
     // ---- adding a computer by typing
@@ -451,6 +556,9 @@ public final class MainActivity extends Activity {
 
     /** Shows the pages of the computer at this address; a password signs in first. */
     private void open(String address, String password) {
+        open(address, password, "");
+    }
+    private void open(String address, String password, String project) {
         ticker.removeCallbacks(look);
         ticker.removeCallbacks(watch);
         currentOrigin = address;
@@ -484,7 +592,9 @@ public final class MainActivity extends Activity {
             }
         });
         root.addView(web, new FrameLayout.LayoutParams(-1, -1));
-        web.loadUrl(address + "/" + (password.isEmpty() ? "" : "#p=" + Uri.encode(password)));
+        String target = address + "/" + (project.isEmpty() ? "" : "?project=" + Uri.encode(project));
+        if (!password.isEmpty()) target += "#p=" + Uri.encode(password);
+        web.loadUrl(target);
         if (foreground) ticker.post(watch);
     }
 
@@ -576,6 +686,7 @@ public final class MainActivity extends Activity {
     @Override public void onBackPressed() {
         if (scanner != null) { endScan(); home(""); return; }
         if ("add".equals(screen)) { home(""); return; }
+        if ("aggregate".equals(screen)) { home(""); return; }
         if (web != null && web.canGoBack()) { web.goBack(); return; }
         // From a computer's first page, back leads to the list when there is more than one to choose from.
         if (web != null && computers().length() > 1) { home(""); return; }
