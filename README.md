@@ -289,7 +289,7 @@ App 有三层：**工作台**（所有电脑）→ **一台电脑**（它的项�
 | 目录 | 内容 |
 | --- | --- |
 | `agent-windows/` | 电脑端：`RemoteCliApp.cs`（窗口、托盘、连接方式）、`RemoteCliAgent.cs`（终端与对话扫描）、`QrCode.cs`、`Setup.cs`（安装程序）。C#，用 Windows 自带的编译器构建 |
-| `agent-linux/` | Linux 电脑端：`agent.py`（终端、对话扫描、查看文件），一个文件，只用 Python 标准库；`remote-cli-agent.service` 是 systemd 用户服务 |
+| `agent-linux/` | Linux 电脑端：`agent.py`（终端、对话扫描、查看文件），一个文件，只用 Python 标准库；`install.sh` 一条命令装好中转和电脑端；`remote-cli-agent.service` 是 systemd 用户服务 |
 | `relay/` | 中转：`server.py`（登录与 HTTP）、`relay.py`（终端状态与输出的转发）。只用 Python 标准库 |
 | `android/` | 安卓 App：`MainActivity`（各界面之间的跳转、扫码回调、语音识别）、`Workbench`（工作台）、`Kit`（配色和界面部件）、`AggregateSessions`（任务分组与排序，不依赖 Android，可单独检查） |
 | `web/` | App 里一台电脑的列表页和终端页（xterm.js），由中转提供、嵌在 App 内显示；随电脑端一起更新 |
@@ -317,43 +317,46 @@ RCLI_PASSWORD='一个足够长的密码' python3 relay/server.py --host 127.0.0.
 
 ## Linux 电脑端
 
-Linux 上没有带窗口的程序，电脑端是一个 Python 文件，作为你自己这个用户的后台服务运行。它不自带中转和公网通道：先按上一节在一台手机访问得到的机器上部署中转（可以就是这台 Linux），再让电脑端连过去。需要 Python 3.9 及以上，没有其他依赖。
+Linux 上没有带窗口的程序。电脑端是一个 Python 文件，和中转一起作为你自己这个用户的后台服务运行，不需要 root，也不往系统目录里装东西。需要 Python 3.9 及以上和 systemd，没有其他依赖。
 
 ```bash
-git clone https://github.com/KangWang42/remote-cli && cd remote-cli/agent-linux
-mkdir -p ~/.local/share/remote-cli-agent ~/.local/state/remote-cli-agent ~/.config/systemd/user
-cp agent.py ~/.local/share/remote-cli-agent/
-cp remote-cli-agent.service ~/.config/systemd/user/
-
-# 中转的密码，从标准输入读入，保存为只有自己可读的文件
-echo '中转的密码' | python3 ~/.local/share/remote-cli-agent/agent.py --set-password
+git clone https://github.com/KangWang42/remote-cli
+bash remote-cli/agent-linux/install.sh --dir ~/projects/demo --url https://relay.example.com
 ```
 
-在 `~/.local/state/remote-cli-agent/config.json` 里写上中转地址和允许手机使用的项目文件夹：
+这一条命令会：把程序放到 `~/.local/share/remote-cli-agent`，生成一个密码，把中转和电脑端注册成两个用户服务并启动，最后在终端里显示地址、密码和二维码。手机 App 点“扫码添加电脑”扫它即可。`--dir` 是允许手机使用的项目文件夹，可以写多次，也可以写成 `路径=名称`。
 
-```json
-{"Server": "https://relay.example.com", "RemoteEnabled": true, "Name": "ubuntu-server",
- "RemoteDirs": ["演示=/home/you/演示"]}
+手机怎样连到这台电脑，三选一：
+
+| 参数 | 适合 | 说明 |
+| --- | --- | --- |
+| `--url https://你的域名` | 有域名的服务器 | 中转只监听本机，你用 nginx、Caddy 等把域名反向代理到 `127.0.0.1:8722`（nginx 需要的几行见上一节） |
+| `--tunnel` | 没有域名，想从外面访问 | 用 Cloudflare 的临时公网通道，需要先装好 `cloudflared`。通道每次重启地址都会变，变了以后运行 `install.sh pair` 重新扫码 |
+| `--lan` | 家里的网络或 VPN | 手机直接用 `http://这台电脑的地址:8722`。没有加密，不要用在公网上 |
+
+都不写时：装有 `cloudflared` 用 `--tunnel`，否则用 `--lan`。端口用 `--port` 改，手机上显示的名称用 `--name` 改。
+
+```bash
+bash remote-cli/agent-linux/install.sh pair              # 再显示一次地址、密码和二维码
+bash remote-cli/agent-linux/install.sh status            # 服务是否在运行，电脑是否在线
+bash remote-cli/agent-linux/install.sh uninstall         # 停止并移除；加 --purge 连设置和密码一起删除
 ```
+
+更新：`git pull` 后再运行一次 `install.sh`，密码、项目和设置都会保留。地址和密码只在终端里显示，不写进服务日志；运行情况看 `journalctl --user -u remote-cli-agent`。
+
+设置在 `~/.local/state/remote-cli-agent/config.json`，改动随时生效，不用重启服务：
 
 | 设置 | 含义 |
 | --- | --- |
-| `Server` | 中转的地址 |
+| `Server` | 电脑端连接的中转地址。用安装脚本时是本机的 `http://127.0.0.1:8722` |
+| `PairUrl` | 手机连接中转用的地址，和 `Server` 不同时才需要 |
 | `RemoteEnabled` | `true` 才接受手机的操作；改成 `false` 会结束所有手机终端 |
 | `Name` | 手机上显示的电脑名称，不写用主机名 |
 | `RemoteDirs` | 项目文件夹，写成 `名称=完整路径`。终端只能在这些文件夹里启动；手机上添加的项目另存在同一目录的 `terminal-projects.json` |
 | `Shell` | 普通终端用的 shell，不写用 `$SHELL` |
 | `RemoteMaxMode` | 从手机启动 Claude Code、Codex 时的权限上限：`read` 只读，`edit` 可改文件，不写用它们自己的默认 |
 
-改动随时生效，不用重启服务。然后启动，并在终端里显示配对二维码给手机扫：
-
-```bash
-systemctl --user daemon-reload && systemctl --user enable --now remote-cli-agent
-sudo loginctl enable-linger $USER      # 没有人登录时也保持运行
-python3 ~/.local/share/remote-cli-agent/agent.py --pair    # 地址、密码和二维码；二维码需要装有 qrencode
-```
-
-地址和密码只在终端里显示，不写进服务日志。运行情况看 `journalctl --user -u remote-cli-agent`。
+中转在别的机器上时不用安装脚本：把 `agent.py` 和 `remote-cli-agent.service` 按服务文件开头的说明放好，`Server` 填那台中转的地址即可。
 
 和 Windows 电脑端相比：
 
@@ -407,7 +410,7 @@ java -cp .cache\zxing-core-3.5.3.jar tests\QrDecodeCheck.java <二维码.png> <�
 
 ## 已知限制
 
-- 带窗口、自带中转和公网通道的电脑端只有 Windows。Linux 有后台服务形式的电脑端（见“Linux 电脑端”），需要自己部署中转；它在 Ubuntu 24.04、Python 3.12 上测试过，Claude Code 和 Codex 的启动与对话列表是用替身程序和按真实格式编写的对话文件测试的，没有在装有这两个工具的 Linux 上实际使用过。macOS 的电脑端还没有写；接口在 `docs/PROTOCOL.md`。
+- 带窗口、自带中转和公网通道的电脑端只有 Windows。Linux 有后台服务形式的电脑端（见“Linux 电脑端”），用安装脚本连同中转一起装好；它在 Ubuntu 24.04、Python 3.12 上测试过，`--tunnel` 方式没有测试过，Claude Code 和 Codex 的启动与对话列表是用替身程序和按真实格式编写的对话文件测试的，没有在装有这两个工具的 Linux 上实际使用过。macOS 的电脑端还没有写；接口在 `docs/PROTOCOL.md`。
 - 没有 iOS App。
 - 界面只有中文。
 - App 在后台时不会推送通知；任务是否需要你，要打开 App 才能看到。

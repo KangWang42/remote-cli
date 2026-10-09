@@ -17,7 +17,8 @@ Configuration lives in <data>/config.json:
 RemoteDirs holds the folders a terminal may be started in; folders added from the phone
 are kept beside them in <data>/terminal-projects.json. RemoteMaxMode limits what Claude
 Code and Codex may do when started from the phone: "read", "edit" or empty for their own
-default.
+default. PairUrl is the address the phone uses for the relay when it is not Server, as when
+the relay runs on this computer and Server is http://127.0.0.1:8722.
 
 Besides a shell, the phone can start Claude Code and Codex when they are installed for
 this user, continue their saved conversations, and look at the files of a project.
@@ -894,7 +895,7 @@ class Agent:
         if not self.paired:
             self.paired = True
             if sys.stderr.isatty():
-                print_pairing(self.server, self.password, pairing_name(cfg))
+                print_pairing(pairing_address(cfg, self.server), self.password, pairing_name(cfg))
             else:                               # a service: this output is kept in the journal
                 say("配对信息不写入日志；在终端运行 agent.py --pair --data %s 查看地址、密码和二维码" % self.data)
         with self.work:
@@ -1152,6 +1153,13 @@ def pairing_name(cfg):
     return tidy(str(cfg.get("Name") or socket.gethostname()), 60)
 
 
+def pairing_address(cfg, server):
+    """Where the phone reaches the relay. It differs from Server when the relay runs on
+    this computer: the agent talks to it locally, the phone through PairUrl."""
+    public = str(cfg.get("PairUrl") or "").strip().rstrip("/")
+    return public if SERVER_RE.match(public) else server
+
+
 def show_pairing(data):
     """--pair: what the phone needs to add this computer, for the person at the console."""
     cfg = read_config(data)
@@ -1160,7 +1168,7 @@ def show_pairing(data):
     if not SERVER_RE.match(server) or not password:
         say("缺少中转地址或密码：先在 %s 的 config.json 填写 Server，并用 --set-password 存入密码" % data)
         return 2
-    print_pairing(server, password, pairing_name(cfg))
+    print_pairing(pairing_address(cfg, server), password, pairing_name(cfg))
     return 0
 
 
