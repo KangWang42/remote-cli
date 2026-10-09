@@ -55,7 +55,9 @@ final class AggregateSessions {
         }
         String label() { return AggregateSessions.label(kind(null)); }
         int rank() { return AggregateSessions.rank(kind(null)); }
-        String toolName() { return "claude".equals(tool) ? "Claude Code" : "codex".equals(tool) ? "Codex" : "PowerShell"; }
+        /** What the computer calls its plain terminal ("PowerShell", "bash"); empty from a computer that does not say. */
+        String shell = "";
+        String toolName() { return "claude".equals(tool) ? "Claude Code" : "codex".equals(tool) ? "Codex" : shell.isEmpty() ? "PowerShell" : shell; }
         String shownTitle() { return title.isEmpty() ? toolName() : title; }
     }
     static String label(String kind) {

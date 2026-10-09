@@ -43,7 +43,7 @@ import org.json.JSONObject;
  * address, and the pages served by the program on the chosen computer, shown full screen.
  */
 public final class MainActivity extends Activity {
-    private static final int SPEECH = 4103, CAMERA = 4104;
+    private static final int SPEECH = 4103, CAMERA = 4104, NOTIFY = 4105;
     /** Colours the system bars and picks dark or light icons on them, so they stay readable on any skin. */
     private void bars(int shade) {
         boolean light = Kit.light(shade);
@@ -297,6 +297,13 @@ public final class MainActivity extends Activity {
     private void endScan() { if (scanner != null) { scanner.stop(); scanner = null; } }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
+        if (request == NOTIFY) {
+            if (results.length == 0 || results[0] != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                prefs.edit().putBoolean("watch", false).apply();
+                home("没有通知权限，任务提醒没有开启。可以在系统设置里允许通知后再开。");
+            }
+            return;
+        }
         if (request != CAMERA) return;
         if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) scan();
         else add("没有相机权限，不能扫码。可以在系统设置里允许，或在这里手动输入");
@@ -315,6 +322,19 @@ public final class MainActivity extends Activity {
         openPage(address, "", "/?project=" + Uri.encode(project) + "&take=" + session);
     }
     /** Straight into one terminal; its page is told to come back here rather than to that computer's list. */
+    /** The computer's page with the sheet that starts a terminal in one of its projects. */
+    void startNew(String address) { openPage(address, "", "/?new=1"); }
+    // ---- reminders: off until the person turns them on
+    boolean watching() { return prefs.getBoolean("watch", false); }
+    void toggleWatch() {
+        boolean on = !watching();
+        prefs.edit().putBoolean("watch", on).apply();
+        if (on && android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, NOTIFY);
+        if (!on) Watcher.stop(this);
+        home("");
+    }
     void openTerminal(String address, String terminal) {
         try { openPage(address, "", AggregateSessions.terminalPath(terminal) + "&from=bench"); }
         catch (IllegalArgumentException invalid) { android.widget.Toast.makeText(this, invalid.getMessage(), android.widget.Toast.LENGTH_SHORT).show(); }
@@ -438,6 +458,10 @@ public final class MainActivity extends Activity {
     private final class Bridge {
         /** The system's speech recognizer; what was said goes into the page's message box. */
         @JavascriptInterface public void voice() { runOnUiThread(MainActivity.this::dictate); }
+        /** Whether this phone has a speech recognizer of its own; without one the page does not offer the microphone. */
+        @JavascriptInterface public boolean canDictate() {
+            try { return new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).resolveActivity(getPackageManager()) != null; } catch (Exception unknown) { return false; }
+        }
         /** The page tells the colour of its skin so the bars around it match. */
         @JavascriptInterface public void chrome(String color) {
             if (color == null || !color.matches("#[0-9a-fA-F]{6}")) return;
@@ -504,7 +528,7 @@ public final class MainActivity extends Activity {
         if (web != null && (fromHome || computers().length() > 1)) { home(""); return; }
         super.onBackPressed();
     }
-    @Override protected void onPause() { super.onPause(); foreground = false; ticker.removeCallbacks(watch); bench.stop(); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); home(""); } }
-    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) { web.onResume(); ticker.post(watch); } if ("home".equals(screen)) bench.refresh(); if (updater != null) updater.checkIfDue(); }
+    @Override protected void onPause() { super.onPause(); foreground = false; if (watching() && computers().length() > 0 && !isFinishing()) Watcher.start(this); ticker.removeCallbacks(watch); bench.stop(); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); home(""); } }
+    @Override protected void onResume() { super.onResume(); foreground = true; Watcher.stop(this); if (web != null) { web.onResume(); ticker.post(watch); } if ("home".equals(screen)) bench.refresh(); if (updater != null) updater.checkIfDue(); }
     @Override protected void onDestroy() { foreground = false; ticker.removeCallbacks(watch); bench.stop(); net.shutdownNow(); if (updater != null) updater.stop(); if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
 }

@@ -21,8 +21,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="remote-cli-aggregate-") as output:
         subprocess.run([str(javac), "-J-Duser.language=en", "-Xlint:-options", "--release", "8", "-encoding", "UTF-8", "-d", output,
                         str(root / "android/src/io/github/kangwang42/remotecli/AggregateSessions.java"),
-                        str(root / "tests/AggregateSessionsCheck.java")], check=True)
+                        str(root / "android/src/io/github/kangwang42/remotecli/Watch.java"),
+                        str(root / "tests/AggregateSessionsCheck.java"), str(root / "tests/WatchCheck.java")], check=True)
         subprocess.run([str(java), "-cp", output, "io.github.kangwang42.remotecli.AggregateSessionsCheck"], check=True)
+        subprocess.run([str(java), "-cp", output, "io.github.kangwang42.remotecli.WatchCheck"], check=True)
 
 
 if __name__ == "__main__":

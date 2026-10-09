@@ -145,6 +145,12 @@ final class Workbench {
         version.setMinHeight(kit.dp(44)); version.setGravity(Gravity.CENTER_VERTICAL);
         kit.press(version, activity::checkUpdate);
         page.addView(version);
+        if (list.length() > 0) {
+            TextView remind = kit.text(activity.watching() ? "任务提醒：已开启 · 离开 App 后，有任务等你确认或完成时通知你" : "任务提醒：未开启 · 点这里开启", 13, kit.ACCENT);
+            remind.setMinHeight(kit.dp(44)); remind.setGravity(Gravity.CENTER_VERTICAL);
+            kit.press(remind, activity::toggleWatch);
+            page.addView(remind);
+        }
         activity.message = kit.text("", 13, kit.MUTED);
         page.addView(activity.message);
         return page;
@@ -266,6 +272,7 @@ final class Workbench {
                     entry.optString("host"), entry.optString("terminal"), entry.optString("session"),
                     entry.optBoolean("done"), entry.optLong("phase_at"));
                 made.said = entry.optString("said");
+                made.shell = device.optString("shell");
                 if (!terminal) made.used = entry.optLong("updated");
                 entries.add(made);
             }
@@ -415,6 +422,14 @@ final class Workbench {
             int shown = all ? order.size() : Math.max(busy, Math.min(SHOWN, order.size()));
             for (int i = 0; i < shown; i++) { card.addView(rule()); card.addView(projectRow(computer, order.get(i), looked)); }
             if (order.isEmpty()) { card.addView(rule()); card.addView(note("还没有项目。在电脑端的“项目”页添加文件夹。")); }
+            else {
+                // A terminal is started from here without walking to a project first.
+                card.addView(rule());
+                TextView fresh = kit.bold("＋ 新建终端", 13.5f, kit.ACCENT);
+                fresh.setGravity(Gravity.CENTER); fresh.setMinHeight(kit.dp(46));
+                kit.press(fresh, () -> activity.startNew(url));
+                card.addView(fresh);
+            }
             if (order.size() > Math.max(busy, SHOWN) || all && order.size() > SHOWN) {
                 card.addView(rule());
                 TextView toggle = kit.text(all ? "收起" : "其余 " + (order.size() - shown) + " 个项目", 13, kit.MUTED);

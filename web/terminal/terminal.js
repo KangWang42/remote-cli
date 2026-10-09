@@ -236,6 +236,10 @@
   $('again').addEventListener('click', () => { if (bridge) bridge.again(); });
   $('back').addEventListener('click', () => { if (bridge) bridge.close(); });
   $('voice').addEventListener('click', () => { if (bridge) bridge.voice(); });
+  // A microphone that does nothing is worse than none: many phones have no recognizer of their own, and there the
+  // one on the keyboard is the way to speak. In a browser the button stays only where the browser can listen.
+  const app = window.RemoteCliNative;
+  if (app ? (app.canDictate && !app.canDictate()) : !(window.SpeechRecognition || window.webkitSpeechRecognition)) $('voice').hidden = true;
 
   let wasEnded = null;
   function show(element, text) { if (element.textContent !== text) element.textContent = text; }

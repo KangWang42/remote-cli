@@ -3,6 +3,11 @@
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Only for the reminders, which are off until turned on: a notification when a task waits or is done, and the
+         service that looks at the computers while the app is not on the screen. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Only for reading the code on the computer's screen; asked for when "扫码连接" is tapped. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -22,5 +27,6 @@
                 <data android:scheme="remotecli" android:host="connect" />
             </intent-filter>
         </activity>
+        <service android:name=".Watcher" android:exported="false" android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
