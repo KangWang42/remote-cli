@@ -217,6 +217,8 @@ class Live:
                     env.pop(key, None)
                 env["TERM"] = "xterm-256color"
                 env["COLORTERM"] = "truecolor"
+                if not any("utf-8" in env.get(k, "").lower() for k in ("LANG", "LC_ALL")):
+                    env["LANG"] = "C.UTF-8"  # 中文输入编辑需要 UTF-8 locale；systemd 服务常无 LANG
                 os.execvpe(shell, [shell], env)
             except BaseException:
                 os._exit(127)
