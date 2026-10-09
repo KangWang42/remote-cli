@@ -116,6 +116,8 @@ App 有三层：**工作台**（所有电脑）→ **一台电脑**（它的项�
 
 ### 电脑上打开着的对话
 
+<img src="images/look.png" alt="电脑上打开着的对话：最近的内容和可以做的事" width="280">
+
 你在电脑上自己开的命令行窗口属于它自己，Remote CLI 拿不到它的画面，所以手机不能直接接着那个窗口用。点开这样的对话，先看到的是它最近的内容，下面才是可以做的事：
 
 | 选项 | 会发生什么 |
@@ -168,6 +170,8 @@ App 有三层：**工作台**（所有电脑）→ **一台电脑**（它的项�
 | PowerPoint（pptx、ppt） | 按原来的版式一张张显示，见下面的“Word 和 PowerPoint 保持原样” |
 | PDF | 逐页显示，滚动到哪页画哪页 |
 | 图片 | 适应屏幕，点一下看原始大小 |
+
+<img src="images/files-word.png" alt="Word 文件的原样" width="260"> <img src="images/files-slides.png" alt="PowerPoint 文件的原样" width="260">
 
 **Word 和 PowerPoint 保持原样。** 这两种文件的格式本身就是内容的一部分，所以最多有三种看法，在文件上方切换：
 

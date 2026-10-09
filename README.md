@@ -114,11 +114,11 @@ curl -fsSL https://raw.githubusercontent.com/KangWang42/remote-cli/main/agent-li
 ## 手机上的样子
 
 <p align="center">
-  <img src="docs/images/overview.png" alt="一台电脑的首页：进行中的任务和项目" width="200">
+  <img src="docs/images/overview.png" alt="一台电脑的首页：等你确认的任务可以直接在卡片上回答" width="200">
   &nbsp;
-  <img src="docs/images/project.png" alt="一个项目：新建终端和历史对话" width="200">
+  <img src="docs/images/look.png" alt="电脑上打开着的对话：先看内容，再决定要不要在手机上继续" width="200">
   &nbsp;
-  <img src="docs/images/list-dark.png" alt="深色外观下的首页" width="200">
+  <img src="docs/images/files-word.png" alt="Word 文件保持原来的版式" width="200">
   &nbsp;
   <img src="docs/images/terminal-dark.png" alt="深色外观下的终端" width="200">
 </p>
