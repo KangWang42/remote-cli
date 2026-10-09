@@ -93,7 +93,7 @@ class Pure(unittest.TestCase):
         live = agent.Live.__new__(agent.Live)     # no process: only the buffer parts
         live.id = "t" * 32
         live.lock = __import__("threading").Lock()
-        live.pending, live.output, live.seq = [], [], 0
+        live.pending, live.output, live.seq, live.out_bytes = [], [], 0, 0
         live.pending.append("字" * 20000)          # 20000 chars -> a 12000 and a 8000 piece
         agent.seal(live)
         self.assertEqual([len(c["data"]) for c in live.output], [12000, 8000])
@@ -323,6 +323,100 @@ class EndToEnd(unittest.TestCase):
                                    "tool": "shell", "dir": "其他"}, token=self.token)
         self.assertEqual(status, 400)
         self.assertIn("工具或目录", refused["error"])
+
+
+class SingletonLock(unittest.TestCase):
+    """A second agent on the same data directory must refuse to start (exit 3)."""
+
+    def run_second(self, command_for):
+        import fcntl
+        data = tempfile.mkdtemp()
+        lock = open(os.path.join(data, "agent.lock"), "w")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            proc = subprocess.run(command_for(data), capture_output=True, timeout=30)
+            self.assertEqual(proc.returncode, 3)
+            self.assertIn("已有 agent", proc.stderr.decode("utf-8"))
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+
+    def test_python_second_instance_exits_3(self):
+        self.run_second(lambda data: [sys.executable, os.path.join(HERE, "agent.py"), "--data", data])
+
+
+class EnvILocaleFallback(unittest.TestCase):
+    """A bare service environment (no LANG) must still yield a UTF-8 locale in the pty."""
+
+    def test_envi_locale_fallback(self):
+        tmp = tempfile.mkdtemp(prefix="rcli-envi-")
+        project = os.path.join(tmp, "p")
+        os.makedirs(project)
+        port = free_port()
+        base = "http://127.0.0.1:%d" % port
+        relay_log = open(os.path.join(tmp, "relay.log"), "w")
+        relay = subprocess.Popen(
+            [sys.executable, os.path.join(REPO, "relay", "server.py"), "--host", "127.0.0.1",
+             "--port", str(port), "--data", os.path.join(tmp, "relay"), "--web", os.path.join(REPO, "web")],
+            env={**os.environ, "RCLI_PASSWORD": PASSWORD},
+            stdout=subprocess.DEVNULL, stderr=relay_log)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        agent = None
+        try:
+            agent_data = os.path.join(tmp, "agent")
+            os.makedirs(agent_data)
+            with open(os.path.join(agent_data, "config.json"), "w", encoding="utf-8") as stream:
+                json.dump({"Server": base, "RemoteEnabled": True, "RemoteDirs": ["p=" + project]}, stream)
+            # a bare service environment: no LANG, no LC_*
+            agent = subprocess.Popen(
+                [sys.executable, os.path.join(HERE, "agent.py"), "--data", agent_data],
+                env={"RCLI_PASSWORD": PASSWORD, "HOME": os.path.expanduser("~"), "PATH": "/usr/bin:/bin"},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            token = request("POST", base + "/api/login", {"password": PASSWORD})[1]["token"]
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                view = request("GET", base + "/api/terminal", token=token)[1]
+                if view.get("device", {}).get("online"):
+                    break
+                time.sleep(0.3)
+            started = request("POST", base + "/api/terminal",
+                              {"id": secrets.token_hex(16), "action": "start", "tool": "shell", "dir": "p"},
+                              token=token)[1]
+            self.assertIn("terminal", started, started)
+            terminal, after, text = started["terminal"], 0, ""
+            deadline = time.time() + 30
+            while time.time() < deadline and "$" not in plain(text):
+                view = request("GET", "%s/api/terminal?terminal=%s&after=%d&wait=2"
+                               % (base, terminal, after), token=token)[1]
+                for chunk in view.get("chunks", []):
+                    text += chunk["data"]
+                    after = chunk["seq"]
+                time.sleep(0.2)
+            request("POST", base + "/api/terminal", {"id": secrets.token_hex(16), "action": "input",
+                      "terminal": terminal, "data": "locale | head -1; echo 中文兜底\n"}, token=token)
+            deadline = time.time() + 20
+            while time.time() < deadline and "兜底" not in plain(text):
+                view = request("GET", "%s/api/terminal?terminal=%s&after=%d&wait=2"
+                               % (base, terminal, after), token=token)[1]
+                for chunk in view.get("chunks", []):
+                    text += chunk["data"]
+                    after = chunk["seq"]
+                time.sleep(0.2)
+            p = plain(text)
+            self.assertIn("中文兜底", p, "Chinese echo broken")
+            self.assertIn("LANG=C.UTF-8", p, "locale fallback did not reach the pty")
+        finally:
+            if agent is not None:
+                agent.terminate()
+            relay.terminate()
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

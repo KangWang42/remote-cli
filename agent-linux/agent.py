@@ -42,7 +42,8 @@ SERVER_RE = re.compile(r"\Ahttps?://[^/\s]+\Z")
 MAX_TERMINALS = 8
 MAX_OWN_PROJECTS = 30
 OP_TTL = 150            # seconds an operation may travel before it is refused
-CHUNK_CHARS = 12000     # one numbered piece of output, as the Windows agent seals them
+CHUNK_CHARS = 12000
+OUTPUT_FLOOR_BYTES = 2 * 1024 * 1024  # unsent output is dropped past this; the relay dedups by seq     # one numbered piece of output, as the Windows agent seals them
 BATCH_BYTES = 512 * 1024
 BATCH_CHUNKS = 150
 STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT")
@@ -202,7 +203,9 @@ class Live:
         self.lock = threading.Lock()
         self.pending = []               # read from the program, not yet numbered
         self.output = []                # numbered, not yet acknowledged by the relay
+        self.out_bytes = 0              # bytes in `output`, maintained by seal/trim
         self.seq = 0
+        self.closing_at = None          # TERM sent; KILL follows if this lapses three seconds
         self.closed = False             # the process has been reaped
         self.drained = False            # the reader delivered everything
         self.exit_code = None
@@ -267,15 +270,16 @@ class Live:
         self.wake()
 
     def write(self, text):
+        # the lock is held for the whole write: closing the terminal between the fd check
+        # and the write could otherwise hand the reused fd number to a new terminal
         data = text.encode("utf-8")
         with self.lock:
             if self.fd < 0:
                 raise OpError("终端已结束")
-            fd = self.fd
-        try:
-            os.write(fd, data)
-        except OSError:
-            raise OpError("终端已结束")
+            try:
+                os.write(self.fd, data)
+            except OSError:
+                raise OpError("终端已结束")
 
     def resize(self, cols, rows):
         try:
@@ -283,6 +287,25 @@ class Live:
         except OSError:
             pass
         self.cols, self.rows = cols, rows
+
+    def begin_close(self):
+        """Sends TERM now; the report loop escalates to KILL later, outside the state lock."""
+        try:
+            os.killpg(self.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        if self.closing_at is None:
+            self.closing_at = time.time()
+
+    def escalate(self):
+        if self.closed or self.fd < 0:
+            return
+        if self.closing_at is None or time.time() - self.closing_at <= 3:
+            return
+        try:
+            os.killpg(self.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
     def kill(self):
         try:
@@ -300,7 +323,13 @@ class Live:
 
     def trim(self, upto):
         with self.lock:
-            self.output[:] = [chunk for chunk in self.output if chunk["seq"] > upto]
+            kept = []
+            for chunk in self.output:
+                if chunk["seq"] > upto:
+                    kept.append(chunk)
+                else:
+                    self.out_bytes -= len(chunk["data"])
+            self.output = kept
 
     def can_forget(self):
         with self.lock:
@@ -318,14 +347,21 @@ class Live:
 
 def seal(live):
     """Turns pending text into numbered pieces, so a busy screen is not held back by the
-    per-request piece limit. Only the report thread calls this."""
+    per-request piece limit. Only the report thread calls this. Pieces the relay has not
+    confirmed are dropped once they outgrow OUTPUT_FLOOR_BYTES: the relay deduplicates by
+    seq, so a reader that asks past dropped output gets its reset flag."""
     with live.lock:
         text = "".join(live.pending)
         live.pending = []
-    while text:
-        live.seq += 1
-        live.output.append({"terminal": live.id, "seq": live.seq, "data": text[:CHUNK_CHARS]})
-        text = text[CHUNK_CHARS:]
+        while text:
+            live.seq += 1
+            chunk = text[:CHUNK_CHARS]
+            live.out_bytes += len(chunk)
+            live.output.append({"terminal": live.id, "seq": live.seq, "data": chunk})
+            text = text[CHUNK_CHARS:]
+        while live.out_bytes > OUTPUT_FLOOR_BYTES and len(live.output) > 1:
+            live.out_bytes -= len(live.output[0]["data"])
+            del live.output[0]
 
 
 def output_batch(lives):
@@ -498,8 +534,10 @@ class Agent:
             if not enabled:
                 for live in self.terminals.values():
                     if not live.closed:
-                        live.kill()
+                        live.begin_close()
             dirs = self.projects.all(cfg)
+            for live in self.terminals.values():
+                live.escalate()
             for live in self.terminals.values():
                 seal(live)
             output = output_batch(list(self.terminals.values()))
@@ -590,7 +628,7 @@ class Agent:
                         raise OpError("尺寸无效")
                     live.resize(cols, rows)
                 elif action == "close":
-                    live.kill()
+                    live.begin_close()
                 else:
                     raise OpError("操作无效")
         except OpError as exc:
