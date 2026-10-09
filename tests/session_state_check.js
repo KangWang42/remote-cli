@@ -13,8 +13,10 @@ assert.match(app, /sessions\.filter\(s => sessionActivity\(s\) === 'active'\)/,
   'only explicitly active sessions may enter the activity list');
 assert.match(app, /sessions\.filter\(s => sessionActivity\(s\) === 'locked'\)/,
   'retained writer locks must remain available as locked history');
-assert.match(app, /Codex 共享 app-server 仍占用写入锁/,
-  'shared locks need an actionable explanation before takeover');
+assert.match(app, /手机不能替你关掉它。请先在那个应用里结束这段对话/,
+  'a conversation held by an app needs to say what to do on the computer');
+assert.match(app, /api\('\/api\/conversation'/, 'a conversation open on the computer is looked at before anything is done to it');
+assert.doesNotMatch(app, /写入锁|app-server|归属待确认/, 'the page speaks of what happens on the computer, not of locks');
 assert.match(page, /<details id="background" class="held-sessions"/);
-assert.match(page, /历史会话仍被后台锁定/);
+assert.match(page, /被电脑上其它程序占用的对话/);
 console.log('session state checks passed');

@@ -48,6 +48,8 @@ python tests\android_aggregate_check.py --jdk <JDK 目录>  # 工作台的分组
 python tests\android_update_check.py                      # App 更新器关闭安装流的顺序
 python tests\native_owner_check.py                        # 临时进程验证归属，不操作真实 Codex 会话
 python tests\session_copies_check.py                      # 同一段对话只列一次，用虚构的对话文件
+python tests\said_check.py                                # 手机上看到的对话内容：问了什么、答了什么、做了什么，用虚构的对话文件
+python tests\look_check.py                                # 先看对话再接手、票据登录、手机和电脑共用一个终端；真实的中转和电脑端
 python tests\tunnel_check.py --local                      # 直连回显延迟
 python tests\tunnel_check.py <cloudflared.exe> --protocol http2  # 公网回显延迟
 python tests\tunnel_keep_check.py <cloudflared.exe>       # 程序结束后再启动，公网地址不变

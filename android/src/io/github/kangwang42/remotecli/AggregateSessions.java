@@ -66,11 +66,11 @@ final class AggregateSessions {
             case "starting": return "正在启动";
             case "idle": return "等待输入";
             case "ended": return "已结束";
-            case "pc-busy": return "电脑正在执行";
-            case "pc-idle": return "电脑等待输入";
-            case "locked": return "后台锁定";
-            case "remote": return "其它远程终端";
-            case "unknown": return "归属待确认";
+            case "pc-busy": return "电脑上正在执行";
+            case "pc-idle": return "电脑上打开着";
+            case "locked": return "被电脑上的应用占用";
+            case "remote": return "被另一个远程终端占用";
+            case "unknown": return "被电脑上的程序占用";
             default: return "历史对话";
         }
     }

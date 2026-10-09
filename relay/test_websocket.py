@@ -85,6 +85,28 @@ class WebSocketIntegrationTests(unittest.TestCase):
         tr.agent(self.server.store, dict(self.live, acks=[{"id": start["id"]}]))
         self.sockets = []
 
+    def test_a_ticket_signs_in_once_and_only_for_a_minute(self):
+        ticket = self.client.call("/api/ticket", {})["ticket"]
+        fresh = Client(self.origin, timeout=3)
+        try:
+            self.assertRaisesRegex(RuntimeError, "HTTP 401", fresh.call, "/api/terminal")
+            self.assertTrue(fresh.call("/api/login", {"ticket": ticket})["ok"])
+            self.assertIn("device", fresh.call("/api/terminal", None))
+        finally:
+            fresh.close()
+        again = Client(self.origin, timeout=3)
+        try:
+            self.assertRaisesRegex(RuntimeError, "HTTP 401", again.call, "/api/login", {"ticket": ticket})       # used up
+            # a request that names a ticket is judged by the ticket alone
+            self.assertRaisesRegex(RuntimeError, "HTTP 401", again.call, "/api/login", {"ticket": "", "password": "wrong"})
+            self.assertRaisesRegex(RuntimeError, "HTTP 401", again.call, "/api/ticket", {})       # only for someone signed in
+        finally:
+            again.close()
+        tickets = self.server.tickets
+        late = tickets.make()
+        tickets.until = {key: 0 for key in tickets.until}
+        self.assertFalse(tickets.take(late))
+
     def tearDown(self):
         for ws in self.sockets:
             ws.close()

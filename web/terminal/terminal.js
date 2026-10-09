@@ -64,10 +64,20 @@
 
   let running = false, restoring = true, initialized = false, lastSize = '', tool = 'claude', ended = false;
   let wide = 0, tall = 0, start = 0, paletteOpen = false, sizeTimer = 0;
+  // A terminal can be open on the phone and in a window on the computer at once, and the two are seldom the same
+  // size. The program is drawn for one size only: that of whoever typed last. `theirs` is the size the computer
+  // reports; `sized` is when this page last asked for its own, so that a report still on its way is not taken for
+  // someone else's wish.
+  let theirs = '', sized = 0;
 
   function send(data) {
     if (!bridge) return false;
     if (!running) { notice.textContent = restoring && !ended ? '正在载入终端输出，稍后再发送' : '终端尚未连接或已经结束'; return false; }
+    const mine = `${term.cols}x${term.rows}`;
+    if (theirs && theirs !== mine && Date.now() - sized > 2000) {
+      lastSize = mine; sized = Date.now();
+      bridge.resize(JSON.stringify({ cols: term.cols, rows: term.rows }));
+    }
     bridge.input(data);
     return true;
   }
@@ -81,7 +91,7 @@
     clearTimeout(sizeTimer);
     if (running && size !== lastSize && bridge) sizeTimer = setTimeout(() => {
       if (!running || size === lastSize) return;
-      lastSize = size;
+      lastSize = size; sized = Date.now();
       bridge.resize(JSON.stringify({ cols, rows }));
     }, 180);
   }
@@ -234,6 +244,7 @@
       const t = payload.terminal, device = payload.device;
       const live = t.state === 'running' && device.online && device.enabled;
       tool = t.tool; ended = t.state === 'closed';
+      theirs = t.cols && t.rows ? `${t.cols}x${t.rows}` : '';
       slash.hidden = !(COMMANDS[tool] || []).length;
       if ($('files').hidden) $('files').hidden = false;        // the folder this terminal works in is known now
       if (!initialized || payload.reset) {

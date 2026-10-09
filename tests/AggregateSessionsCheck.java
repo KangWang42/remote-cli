@@ -29,8 +29,8 @@ public final class AggregateSessionsCheck {
         require(group.active.size() == 2, "Shared/unknown locks and duplicate attached histories entered active count");
         require(group.history.size() == 3, "Locked histories were lost");
         require("等你确认".equals(group.active.get(0).label()), "Confirmation must sort before computer work");
-        require("后台锁定".equals(group.history.get(0).label()), "Shared busy lock must not display running");
-        require("归属待确认".equals(group.history.get(1).label()), "Legacy host must not imply computer CLI");
+        require("被电脑上的应用占用".equals(group.history.get(0).label()), "Shared busy lock must not display running");
+        require("被电脑上的程序占用".equals(group.history.get(1).label()), "Legacy host must not imply computer CLI");
         require("历史对话".equals(group.history.get(2).label()), "Ended history label");
         require(groups.get(1).active.isEmpty(), "Empty configured project omitted or polluted");
         require("正在启动".equals(groups.get(2).active.get(0).label()), "Starting terminal must be listed");

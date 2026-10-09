@@ -127,10 +127,22 @@ dialog[open] { animation: rise .18s ease-out; }
 #sheet-form > p { color: var(--muted); font-size: .9rem; }
 #sheet-form label { font-size: .82rem; color: var(--muted); margin-bottom: -4px; }
 #sheet-form input { background: var(--bg); }
+/* what was last said in a conversation that is open on the computer */
+#sheet-form .said { display: grid; gap: 8px; max-height: 44vh; overflow-y: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); overscroll-behavior: contain; }
+#sheet-form .said .line { display: grid; gap: 2px; font-size: .9rem; line-height: 1.5; }
+#sheet-form .said .line b { font-size: .74rem; font-weight: 600; color: var(--muted); }
+#sheet-form .said .line span { white-space: pre-wrap; overflow-wrap: anywhere; }
+#sheet-form .said .line.user span { color: var(--accent); }
+#sheet-form .said .line.did { grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: .8rem; color: var(--muted); }
+#sheet-form .said .line.did span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, Consolas, monospace; }
+#sheet-form p.quiet { color: var(--muted); font-size: .8rem; text-align: center; }
+#sheet-form p.why { color: var(--ink); font-size: .88rem; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--busy) 14%, transparent); }
 #sheet-form button.choice { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 50px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--raised); text-align: left; line-height: 1.35; }
 #sheet-form button.choice.solid { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; justify-content: center; }
 #sheet-form button.choice.danger { color: var(--bad); justify-content: center; font-weight: 600; }
 #sheet-form button.choice small { display: block; color: var(--muted); font-size: .8rem; font-weight: 400; overflow-wrap: anywhere; }
+#sheet-form button.choice.solid small { color: inherit; opacity: .85; }
+#sheet-form button.choice.solid span { text-align: center; }
 #sheet-form button.cancel { min-height: 46px; color: var(--muted); border-radius: 14px; }
 .swatches { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .swatches button { display: grid; gap: 6px; padding: 8px; border: 2px solid transparent; border-radius: 14px; background: var(--raised); font-size: .8rem; }

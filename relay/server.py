@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded P
 import relay  # noqa: E402
 import websocket  # noqa: E402
 
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024
@@ -128,6 +128,33 @@ def read_password(data):
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as stream:
         stream.write(made + "\n")
     return made, True
+
+
+class Tickets:
+    """Sign-ins handed out to someone who is signed in already, each good once and for a minute. The program on
+    the computer uses one to open its own pages in a browser window without the password ever being in an address."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.until = {}
+
+    def make(self):
+        ticket = secrets.token_urlsafe(24)
+        with self.lock:
+            now = time.time()
+            for old in [key for key, end in self.until.items() if end < now]:
+                del self.until[old]
+            if len(self.until) > 200:
+                self.until.clear()
+            self.until[hashlib.sha256(ticket.encode("utf-8")).hexdigest()] = now + 60
+        return ticket
+
+    def take(self, ticket):
+        if not isinstance(ticket, str) or not ticket:
+            return False
+        with self.lock:
+            end = self.until.pop(hashlib.sha256(ticket.encode("utf-8")).hexdigest(), 0)
+        return end >= time.time()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -348,7 +375,11 @@ class Handler(BaseHTTPRequestHandler):
             if attempts.blocked(address):
                 return self._json(429, {"error": "密码错误次数过多，请 15 分钟后再试"})
             given = payload.get("password")
-            if not isinstance(given, str) or not hmac.compare_digest(given.encode("utf-8"), self.server.password.encode("utf-8")):
+            if "ticket" in payload:
+                accepted = self.server.tickets.take(payload.get("ticket"))
+            else:
+                accepted = isinstance(given, str) and hmac.compare_digest(given.encode("utf-8"), self.server.password.encode("utf-8"))
+            if not accepted:
                 attempts.fail(address)
                 time.sleep(0.4)
                 return self._json(401, {"error": "密码不正确"})
@@ -361,7 +392,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True}, {"Set-Cookie": "rcli=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"})
         if not self._authed():
             return self._json(401, {"error": "auth"})
-        call = {"/api/terminal": relay.command, "/api/terminal/agent": relay.agent, "/api/terminal/agent/pull": relay.pull, "/api/files": relay.files}.get(path)
+        if path == "/api/ticket":
+            return self._json(200, {"ticket": self.server.tickets.make()})
+        call = {"/api/terminal": relay.command, "/api/terminal/agent": relay.agent, "/api/terminal/agent/pull": relay.pull, "/api/files": relay.files,
+                "/api/conversation": relay.conversation}.get(path)
         if call is None:
             return self._json(404, {"error": "not found"})
         try:
@@ -386,6 +420,7 @@ def make_server(host, port, data, web, password=None):
     server.password, server.password_made = password, made
     server.sessions = Sessions(os.path.join(data, "sessions.json"))
     server.attempts = Attempts()
+    server.tickets = Tickets()
     server.store = os.path.join(data, "terminals.json")
     server.web = os.path.abspath(web)
     return server

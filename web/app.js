@@ -212,16 +212,45 @@
     await run({ action: 'close', terminal: t.id }, '正在结束…');
     refresh();
   }
-  async function takeOver(session) {
-    if (!usable()) return;
+  // A conversation that a program on the computer has open. Looking at it does nothing to that program: the last
+  // things said are read from the conversation's file. Carrying on from the phone is a separate, deliberate step,
+  // offered below what was said, in the words of what will happen on the computer.
+  function ways(session) {
     const host = sessionHost(session), locked = sessionActivity(session) === 'locked';
     const canClose = session.can_takeover === true && !locked;
-    const choices = [{ label: canClose ? '结束原终端并接管对话' : '我已关闭原应用，检查接管', sub: '继续同一段历史；后台锁释放后才能接管', value: 'close', kind: 'solid' }];
-    if (session.tool === 'codex' && (data.device.features || []).includes('codex-fork')) choices.push({ label: '另建副本', sub: '这是独立的新对话，两边之后各自继续，不是接管', value: 'copy' });
-    const reason = host === 'shared'
-      ? '电脑没有可定位的可见终端；Codex 共享 app-server 仍占用写入锁。请先在原应用中结束并关闭对应会话，再检查接管；也可以直接新开副本。'
-      : canClose ? '接管会结束原终端中的这段对话，正在执行的任务可能中断。' : (session.takeover_reason || '请先在原终端中结束并关闭这段对话，再检查接管。');
-    const choice = await ask('接管 ' + TOOLS[session.tool] + ' 原对话', reason, choices);
+    const choices = [canClose
+      ? { label: '在手机上继续', sub: '电脑上的那个窗口会关闭，正在执行的任务会中断', value: 'close', kind: 'solid' }
+      : { label: '我已在电脑上关掉它，在手机上继续', sub: '还开着的话不会动它，会告诉你原因', value: 'close', kind: 'solid' }];
+    if (session.tool === 'codex' && (data.device.features || []).includes('codex-fork'))
+      choices.push({ label: '另开一份继续', sub: '带着到现在为止的内容新开一段；电脑上的那段不受影响，之后各走各的', value: 'copy' });
+    const why = canClose ? ''
+      : host === 'shared' ? '这段对话由电脑上的 Codex 应用或编辑器打开着，手机不能替你关掉它。请先在那个应用里结束这段对话。'
+      : session.takeover_reason || '手机不能确定是哪个程序在用这段对话，所以不会去关它。请先在电脑上结束使用它的程序。';
+    return { choices, why };
+  }
+  async function takeOver(session) {
+    if (!usable()) return;
+    const { choices, why } = ways(session), canPeek = (data.device.features || []).includes('peek');
+    const choice = await openSheet((form, finish) => {
+      form.append(el('h3', { textContent: session.title }),
+        el('p', { textContent: (hostLabel[sessionHost(session)] || hostLabel.unknown) + ' · ' + TOOLS[session.tool] + ' · ' + session.dir }));
+      if (canPeek) {
+        const said = el('div', { className: 'said' }, el('p', { className: 'quiet', textContent: '正在读取对话…' }));
+        form.append(said, el('p', { className: 'quiet', textContent: '只是查看，不影响电脑上的程序。' }));
+        api('/api/conversation', { id: newId(), session: session.id }).then(got => {
+          said.textContent = '';
+          const messages = got.messages || [];
+          if (got.more) said.append(el('p', { className: 'quiet', textContent: '更早的内容没有显示' }));
+          if (!messages.length) said.append(el('p', { className: 'quiet', textContent: '这段对话还没有内容' }));
+          messages.forEach(m => said.append(el('div', { className: 'line ' + (m.role === 'tool' ? 'did' : m.role) },
+            el('b', { textContent: m.role === 'user' ? '你' : m.role === 'assistant' ? TOOLS[session.tool] : '操作' }), el('span', { textContent: m.text }))));
+          said.scrollTop = said.scrollHeight;       // what was said last is what one came to see
+        }).catch(error => { said.textContent = ''; said.append(el('p', { className: 'quiet', textContent: error.message })); });
+      }
+      if (why) form.append(el('p', { className: 'why', textContent: why }));
+      choices.forEach(c => form.append(el('button', { type: 'button', className: 'choice ' + (c.kind || ''), onclick: () => finish(c.value) },
+        el('span', null, c.label, el('small', { textContent: c.sub })))));
+    });
     if (choice) start(session.tool, session.dir, session.id, choice === 'close', choice === 'copy');
   }
   async function addProject() {
@@ -261,7 +290,7 @@
     if (!s.live) return 'history';
     return sessionHost(s) === 'cli' ? 'active' : 'locked';
   }
-  const hostLabel = { cli: '电脑 CLI 运行中', shared: '后台锁定 · 没有可见窗口', remote: '其它远程终端锁定', unknown: '后台锁定 · 归属待确认' };
+  const hostLabel = { cli: '电脑上打开着', shared: '被电脑上的应用占用', remote: '被另一个远程终端占用', unknown: '被电脑上的程序占用' };
   function sessionCard(s, withProject) {
     const meta = el('span', { className: 'meta' });
     if (s.live) {
@@ -406,14 +435,19 @@
 
   (async () => {
     try {
-      // The app hands the password over once, after the "#"; it never travels in a request line.
-      const given = new URLSearchParams(location.hash.slice(1)).get('p');
-      if (given) {
-        history.replaceState(null, '', location.pathname);
-        try { await api('/api/login', { password: given }); } catch (error) { showLogin(); $('login-error').textContent = error.message; return; }
+      // The app hands the password over once, after the "#"; it never travels in a request line. The program on the
+      // computer opens its own window with a ticket instead: good once, for a minute, and of no use afterwards.
+      const handed = new URLSearchParams(location.hash.slice(1)), given = handed.get('p'), ticket = handed.get('t');
+      const wanted = new URLSearchParams(location.search).get('open') || '';
+      if (given || ticket) {
+        history.replaceState(null, '', location.pathname + location.search);
+        try { await api('/api/login', ticket ? { ticket } : { password: given }); }
+        catch (error) { showLogin(); $('login-error').textContent = ticket ? '这个窗口的登录已过期，请从电脑端程序重新打开' : error.message; return; }
       }
       const session = await (await fetch('/api/session', { credentials: 'same-origin' })).json();
       if (!session.signed_in) return showLogin();
+      // ?open=<terminal> goes straight to that terminal: the computer's own window opens the one that was picked.
+      if (/^[a-f0-9]{32}$/.test(wanted)) return location.replace('terminal/?id=' + wanted);
       // ?project=<name> opens one project directly, for a link or a picture of that page.
       project = history.state && history.state.project || new URLSearchParams(location.search).get('project') || '';
       $('home').hidden = false;

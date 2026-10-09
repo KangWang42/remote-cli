@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT = ROOT / "agent-windows" / "bin" / "RemoteCliAgent.exe"
-PORT = 8733
+PORT = int(os.environ.get("RCLI_TEST_PORT", "8733"))
 password = "test-" + secrets.token_hex(8)
 new_id = lambda: secrets.token_hex(16)
 

@@ -14,12 +14,16 @@ All bodies are JSON in UTF-8. Errors are `{"error": "text for the person"}` with
 | `POST /api/login` `{"password": "..."}` | `{"ok": true, "token": "..."}` and a cookie `rcli`. Six wrong passwords from one address, or forty in total, lock sign-in for 15 minutes (429) |
 | `GET /api/session` | `{"signed_in": bool, "version": "x.y.z"}` |
 | `POST /api/logout` | forgets the token |
+| `POST /api/ticket` (signed in) | `{"ticket": "..."}`: a sign-in that works once, within a minute, as `POST /api/login` `{"ticket": "..."}` |
 
 Later requests carry the cookie or `Authorization: Bearer <token>`. A token is good for 90 days from its last
 use. `POST` requests must have `Content-Type: application/json`; when an `Origin` header is present it must be
 the relay itself. The computer signs in the same way as the viewer.
 
 The app passes the password to its page once as `/#p=<password>`; the page signs in and removes it.
+The program on the computer opens its own window on `/?open=<terminal>#t=<ticket>` (or `/#t=<ticket>` for the list):
+the page signs in with the ticket, so the password is never part of an address. A terminal shown there is the one
+the phone shows; output goes to every reader and input is taken from any of them.
 The code shown on the computer is `remotecli://connect?u=<address>&p=<password>&n=<computer name>`; the name is optional and lets a phone that knows several computers tell them apart (the same name with a new address replaces the old address).
 
 ## Viewer
@@ -40,7 +44,7 @@ The code shown on the computer is `remotecli://connect?u=<address>&p=<password>&
 the computer; `live` means a program on the computer has it open, `terminal` is set when one of the relay's
 terminals already shows it. `state` is `starting`, `running` or `closed`; `status` is `busy`, `idle` or empty.
 
-Agents may advertise `info.features`: `codex-fork`, `codex-takeover`, and `terminal-exit`. These are forwarded
+Agents may advertise `info.features`: `codex-fork`, `codex-takeover`, `terminal-exit`, `files`, `update` and `peek`. These are forwarded
 under `device.features`. Sessions may include `can_takeover`, `ownership_known`, and `takeover_reason`.
 An agent verifies Codex's actual writer lock and process ownership before advertising takeover, then checks
 again before terminating the selected independent CLI. Shared app servers and phone descendants are protected.
@@ -131,6 +135,21 @@ to the project folder, with `/`.
 A refusal is `400 {"error": "..."}`. The computer answers only for paths inside the project folder and refuses a
 path whose real location, after links and junctions, is outside it. The relay keeps nothing of an answer.
 
+### A conversation that is open on the computer
+
+`POST /api/conversation` `{"id": "<16 to 32 hex digits>", "session": "<uuid>"}` is held like `/api/files` and needs the
+`peek` capability. It gives the last things said in a conversation the computer listed, without touching the program
+that has it open:
+
+```json
+{"title": "...", "updated": 1700000000000, "more": false,
+ "messages": [{"role": "user", "text": "..."}, {"role": "assistant", "text": "..."}, {"role": "tool", "text": "Bash：npm test"}]}
+```
+
+At most 40 messages of at most 1,500 characters, oldest first; `more` says that earlier ones exist. `tool` names
+something the tool did. What a tool writes into a conversation for itself (reminders, results of commands) is left
+out. The tool and the folder asked of the computer are the ones it reported for that conversation.
+
 ## Computer
 
 `fork` requires a session UUID, the `codex-fork` capability, and `takeover=false`. The new terminal starts with
@@ -158,7 +177,8 @@ one of its projects, a conversation must exist on disk. The relay only refuses m
 `POST /api/terminal/agent/pull` `{"instance": "...", "wait": 12}` is held by the relay until an operation is
 waiting and returns it at once, so a key press does not wait for the next report.
 
-An answer to `file_list` or `file_read` travels in `acks` as `{"id", "error", "result": {...}}`.
+An answer to `file_list`, `file_read` or `session_read` (the operation behind `/api/conversation`, with `session`,
+`tool` and `dir`) travels in `acks` as `{"id", "error", "result": {...}}`.
 
 The Windows program keeps its `instance` across a restart for an update: it notes its open terminals, and after
 the restart reports the same instance and the same terminal ids, with output numbered on from where it was.

@@ -380,6 +380,32 @@ class TerminalRelayTests(unittest.TestCase):
         tr.overview(self.path, now=1004 + 601)
         self.assertEqual(len(tr._pending), 0)
 
+    def test_a_conversation_is_read_by_the_computer_before_anything_is_done_to_it(self):
+        import threading
+        sid = "11111111-2222-3333-4444-555555555555"
+        ask = {"id": "c" * 32, "session": sid}
+        with self.assertRaisesRegex(RemoteError, "更新电脑端"):
+            tr.conversation(self.path, ask, now=1001, wait=0)
+        info = dict(self.info, features=["peek"])
+        tr.agent(self.path, {"info": info}, now=1001)
+        with self.assertRaisesRegex(RemoteError, "没有找到这个对话"):
+            tr.conversation(self.path, ask, now=1001, wait=0)
+        tr.agent(self.path, {"info": info, "sessions": [{"id": sid, "tool": "claude", "dir": "demo", "title": "原对话", "updated": 1, "live": True, "host": "cli"}]}, now=1001)
+        for bad in (dict(ask, session="x"), dict(ask, id="x"), dict(ask, session=None)):
+            with self.assertRaises(RemoteError):
+                tr.conversation(self.path, bad, now=1001, wait=0)
+        answers = {}
+        waiting = threading.Thread(target=lambda: answers.update(got=tr.conversation(self.path, ask, now=1001, wait=5)))
+        waiting.start()
+        asked = tr.pull(self.path, {"instance": self.info["instance"], "wait": 3})["operations"]
+        # the tool and the folder are what the computer reported, not what the viewer says
+        self.assertEqual([(o["action"], o["session"], o["tool"], o["dir"]) for o in asked], [("session_read", sid, "claude", "demo")])
+        said = [{"role": "user", "text": "修一下登录"}, {"role": "assistant", "text": "好的"}]
+        tr.agent(self.path, {"info": info, "acks": [{"id": ask["id"], "error": "", "result": {"messages": said, "more": False}}]}, now=1002)
+        waiting.join(5)
+        self.assertEqual(answers["got"]["messages"], said)
+        self.assertNotIn(ask["id"], tr._pending)        # nothing of it is kept
+
     def test_files_are_asked_of_the_computer_and_answered_once(self):
         import threading
         ask = {"id": "f" * 32, "action": "file_list", "dir": "demo", "path": "src"}

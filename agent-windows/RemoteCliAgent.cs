@@ -503,6 +503,74 @@ public sealed class TerminalAgent {
         catch (NotSupportedException) { throw new ArgumentException("路径无效"); }
         catch (IOException) { throw new ArgumentException("读取失败，文件可能正被占用"); }
     }
+    // The last things said in a saved conversation, oldest first, for the phone to look at before anything is done to
+    // the program that has it open: what the person asked, what the tool answered, and the name of each thing it did.
+    // What the tools put into a conversation for themselves (reminders, command output, results) is left out.
+    public static Dictionary<string, object> Said(string path, string tool) {
+        const int limit = 768 * 1024, most = 40, chars = 1500;
+        var reader = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
+        var said = new List<Dictionary<string, object>>();
+        Func<Dictionary<string, object>, string, object> at = (d, k) => { object v; return d != null && d.TryGetValue(k, out v) ? v : null; };
+        Action<string, string> add = (role, text) => {
+            text = role == "tool" ? Regex.Replace(text ?? "", @"\s+", " ").Trim() : (text ?? "").Trim();
+            if (text.Length == 0) return;
+            if (text.Length > chars) text = text.Substring(0, Char.IsHighSurrogate(text[chars - 2]) ? chars - 2 : chars - 1) + "…";
+            said.Add(new Dictionary<string, object> { { "role", role }, { "text", text } });
+        };
+        Func<object, object, string> brief = (name, given) => {
+            var input = given as Dictionary<string, object>; string about = "";
+            foreach (string key in new[] { "command", "file_path", "path", "pattern", "description", "query", "url" }) { about = at(input, key) as string ?? ""; if (about.Length > 0) break; }
+            return (Convert.ToString(name) + (about.Length > 0 ? "：" + (about.Length > 160 ? about.Substring(0, 160) : about) : "")).Trim();
+        };
+        foreach (string line in ReadPart(path, true, limit).Split('\n')) {
+            if (!line.StartsWith("{", StringComparison.Ordinal)) continue;
+            Dictionary<string, object> row;
+            try { row = reader.Deserialize<Dictionary<string, object>>(line); } catch (Exception) { continue; }
+            string type = at(row, "type") as string;
+            if (tool == "claude") {
+                var message = at(row, "message") as Dictionary<string, object>;
+                if ((type != "user" && type != "assistant") || true.Equals(at(row, "isSidechain")) || true.Equals(at(row, "isMeta")) || message == null) continue;
+                object content = at(message, "content");
+                IEnumerable parts = content is string ? new object[] { new Dictionary<string, object> { { "type", "text" }, { "text", content } } } : content as IEnumerable;
+                if (parts == null) continue;
+                foreach (object item in parts) {
+                    var part = item as Dictionary<string, object>; string kind = at(part, "type") as string, text = at(part, "text") as string;
+                    if (kind == "text" && text != null) { if (type == "assistant" || !text.TrimStart().StartsWith("<", StringComparison.Ordinal)) add(type, text); }
+                    else if (kind == "tool_use" && type == "assistant") add("tool", brief(at(part, "name"), at(part, "input")));
+                }
+            } else {
+                var payload = at(row, "payload") as Dictionary<string, object>;
+                if (type != "response_item" || payload == null) continue;
+                string kind = at(payload, "type") as string, role = at(payload, "role") as string;
+                if (kind == "message" && (role == "user" || role == "assistant")) {
+                    var parts = at(payload, "content") as IEnumerable;
+                    if (parts == null || at(payload, "content") is string) continue;
+                    foreach (object item in parts) {
+                        string text = at(item as Dictionary<string, object>, "text") as string;
+                        if (text != null && (role == "assistant" || !text.TrimStart().StartsWith("<", StringComparison.Ordinal))) add(role, text);
+                    }
+                }
+                else if (kind == "function_call" || kind == "custom_tool_call" || kind == "local_shell_call") add("tool", brief(at(payload, "name") ?? "shell", null));
+            }
+        }
+        var file = new FileInfo(path);
+        return new Dictionary<string, object> { { "messages", said.Skip(Math.Max(0, said.Count - most)).ToList() }, { "more", said.Count > most || file.Length > limit }, { "updated", Milliseconds(file.LastWriteTimeUtc) } };
+    }
+    Dictionary<string, object> ReadConversation(Dictionary<string, object> op, Dictionary<string, object> prefs) {
+        string session = Get(op, "session"), tool = Get(op, "tool"), dir = Get(op, "dir"), root;
+        var saved = sessions.FirstOrDefault(s => s.Id == session && s.Tool == tool && s.Dir == dir);
+        if (saved == null || !Regex.IsMatch(session, Uuid) || !AllDirs(prefs).TryGetValue(dir, out root)) throw new ArgumentException("电脑上没有找到这个对话，请刷新后重试");
+        try {
+            string file = tool == "claude"
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects", ProjectFolder(root), session + ".jsonl")
+                : Directory.GetFiles(Path.Combine(CodexSessions.Home, "sessions"), "rollout-*" + session + ".jsonl", SearchOption.AllDirectories).FirstOrDefault();
+            if (file == null || !File.Exists(file)) throw new FileNotFoundException();
+            var result = Said(file, tool); result["title"] = saved.Title;
+            return result;
+        }
+        catch (IOException) { throw new ArgumentException("读不到这个对话的内容"); }
+        catch (UnauthorizedAccessException) { throw new ArgumentException("读不到这个对话的内容"); }
+    }
     public void ChangeProjects(Dictionary<string, object> op, Dictionary<string, object> prefs, string action) {
         var settings = Dirs(prefs); var own = OwnProjects();
         string name = Tidy(Get(op, "name"));
@@ -690,12 +758,13 @@ public sealed class TerminalAgent {
         if (completed.ContainsKey(id)) { reported.Remove(id); return; }
         string error = ""; Dictionary<string, object> result = null;
         try {
-            bool project = action == "project_add" || action == "project_remove" || action == "project_rename", file = action == "file_list" || action == "file_read", update = action == "update";
-            if (!Regex.IsMatch(id, @"\A[a-f0-9]{16,32}\z") || (!project && !file && !update && !Regex.IsMatch(terminal, @"\A[a-f0-9]{32}\z"))) throw new ArgumentException("操作编号无效");
+            bool project = action == "project_add" || action == "project_remove" || action == "project_rename", file = action == "file_list" || action == "file_read", update = action == "update", peek = action == "session_read";
+            if (!Regex.IsMatch(id, @"\A[a-f0-9]{16,32}\z") || (!project && !file && !update && !peek && !Regex.IsMatch(terminal, @"\A[a-f0-9]{32}\z"))) throw new ArgumentException("操作编号无效");
             double at; if (!Double.TryParse(Get(op, "at"), out at) || Math.Abs((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds - at) > 150) throw new ArgumentException("操作已过期");
             if (Get(prefs, "RemoteEnabled") != "True") throw new InvalidOperationException("电脑远控已关闭");
             if (project) ChangeProjects(op, prefs, action);
             else if (update) { if (UpdateRequested == null) throw new InvalidOperationException("这台电脑运行的是不带自动更新的后台程序"); UpdateRequested(); }
+            else if (peek) result = ReadConversation(op, prefs);
             else if (file) {
                 string root;
                 if (!AllDirs(prefs).TryGetValue(Get(op, "dir"), out root)) throw new ArgumentException("目录未获允许");
@@ -783,7 +852,7 @@ public sealed class TerminalAgent {
             }).ToArray();
             var payload = new Dictionary<string, object> {
                 { "info", new { instance = instance, enabled = enabled, workspaces = allowed.Keys.ToArray(), tools = tools, version = Version, newer = Newer,
-                    features = new[] { "codex-fork", "codex-takeover", "terminal-exit", "files" }.Concat(UpdateRequested != null ? new[] { "update" } : new string[0]).ToArray(),
+                    features = new[] { "codex-fork", "codex-takeover", "terminal-exit", "files", "peek" }.Concat(UpdateRequested != null ? new[] { "update" } : new string[0]).ToArray(),
                     projects = settings.Select(d => new { name = d.Key, path = d.Value, @fixed = true, exists = true })
                         .Concat(OwnProjects().Where(p => !settings.ContainsKey(p.Key)).Select(p => new { name = p.Key, path = p.Value, @fixed = false, exists = allowed.ContainsKey(p.Key) })).ToArray(),
                     candidates = candidates.ToArray() } },

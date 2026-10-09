@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "0.7.1";
+    const string Version = "0.8.0";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -350,33 +350,76 @@ public sealed class App : Form {
         int phones = running.Count(r => r[6] == "phone"), cli = running.Count(r => r[6] == "cli");
         nav[2].SetBadge(running.Count > 0 ? running.Count.ToString() : "");
         bool allowed = Convert.ToString(config["RemoteEnabled"]) == "True";
-        sideStatus.Set(trouble ? "还不能连接" : preparing ? "正在准备…" : !allowed ? "已暂停手机访问" : phones == 0 ? "手机可以连接" : phones + " 个手机终端运行中",
+        sideStatus.Set(trouble ? "还不能连接" : preparing ? "正在准备…" : !allowed ? "已暂停手机访问" : phones == 0 ? "手机可以连接" : phones + " 个共用终端运行中",
             trouble ? Theme.Bad : preparing || !allowed ? Theme.Busy : Theme.Good);
         if (mark == activityMark && running.Count > 0 && !pages[2].Visible) return;
         activityMark = mark;
         activity.Show(running.Select(r => {
             DateTime started; DateTime.TryParse(r[3], null, System.Globalization.DateTimeStyles.RoundtripKind, out started);
             string tool = r[0] == "claude" ? "Claude Code" : r[0] == "codex" ? "Codex" : "PowerShell";
-            string tag = r[6] == "shared" ? "共享后台保留" : r[6] == "remote" ? "其它远程终端" : r[6] == "unknown" ? "归属待确认" : r[6] == "cli" ? "电脑 CLI" : r[2] == "busy" ? "正在执行" : "手机终端";
-            return new Row { Glyph = Theme.IconTerminal, Title = (r[4].Length > 0 ? r[4] : tool) + " · " + r[1], About = (r[5].Length > 0 ? r[5] + " · " : "") + tool + (r[6] == "phone" ? " · 双击可在电脑接管 · " + Since(started.ToUniversalTime()) : ""), Value = r,
+            string tag = r[6] == "shared" ? "被应用占用" : r[6] == "remote" ? "其它远程终端" : r[6] == "unknown" ? "被程序占用" : r[6] == "cli" ? "电脑自己的窗口" : r[2] == "busy" ? "正在执行" : "手机和电脑共用";
+            return new Row { Glyph = Theme.IconTerminal, Title = (r[4].Length > 0 ? r[4] : tool) + " · " + r[1], About = (r[5].Length > 0 ? r[5] + " · " : "") + tool + (r[6] == "phone" ? " · 双击在电脑上打开 · " + Since(started.ToUniversalTime()) : ""), Value = r,
                              Tag = tag, TagColour = r[6] == "phone" || r[6] == "cli" ? Theme.Good : Theme.Busy };
         }));
-        activityNote.Text = running.Count == 0 ? "" : phones + " 个手机终端 · " + cli + " 个电脑 CLI。这里仅显示可操作的活动；后台写入锁不代表电脑有窗口。";
+        activityNote.Text = running.Count == 0 ? "" : phones + " 个共用终端 · " + cli + " 个电脑自己的窗口。共用终端在手机和电脑上是同一个画面，谁输入都行。";
+    }
+    // A window on this computer for the very pages the phone uses. The terminals in it are the same ones the phone
+    // shows, so a terminal can be looked at and typed into from both at once, and nothing has to be handed over.
+    // The window signs in with a ticket the relay gives out for one use: the password is never part of an address.
+    void OpenWindow(string terminal) {
+        string origin = Convert.ToString(config["Server"]).TrimEnd('/');
+        if (origin.Length == 0 || password.Length == 0) { Toast("电脑后台还没有准备好，请稍后再试"); return; }
+        Task.Run(() => {
+            try {
+                string token = Convert.ToString(Ask(origin + "/api/login", new Dictionary<string, object> { { "password", password } }, "")["token"]);
+                string ticket = Convert.ToString(Ask(origin + "/api/ticket", new Dictionary<string, object>(), token)["ticket"]);
+                string url = origin + "/" + (terminal != null ? "?open=" + terminal : "") + "#t=" + Uri.EscapeDataString(ticket);
+                string browser = AppBrowser();
+                // A browser's "app" window has no address bar and keeps its sign-in in a folder of its own.
+                if (browser != null) Process.Start(new ProcessStartInfo(browser, "--app=\"" + url + "\" --user-data-dir=\"" + Path.Combine(dataDir, "window") + "\" --window-size=480,880 --no-first-run --no-default-browser-check") { UseShellExecute = false });
+                else Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            } catch (Exception error) {
+                BeginInvoke(new Action(() => Toast("窗口没有打开：" + error.Message)));
+            }
+        });
+    }
+    Dictionary<string, object> Ask(string url, Dictionary<string, object> payload, string token) {
+        var request = (HttpWebRequest)WebRequest.Create(url); request.Method = "POST"; request.ContentType = "application/json"; request.Timeout = 8000;
+        if (token.Length > 0) request.Headers["Authorization"] = "Bearer " + token;
+        byte[] body = Encoding.UTF8.GetBytes(json.Serialize(payload));
+        using (var stream = request.GetRequestStream()) stream.Write(body, 0, body.Length);
+        using (var reply = request.GetResponse()) using (var reader = new StreamReader(reply.GetResponseStream(), Encoding.UTF8))
+            return json.Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
+    }
+    static string AppBrowser() {
+        foreach (string root in new[] { Environment.GetEnvironmentVariable("ProgramFiles(x86)"), Environment.GetEnvironmentVariable("ProgramFiles"), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) })
+            foreach (string inner in new[] { @"Microsoft\Edge\Application\msedge.exe", @"Google\Chrome\Application\chrome.exe" }) {
+                if (String.IsNullOrEmpty(root)) continue;
+                string file = Path.Combine(root, inner);
+                if (File.Exists(file)) return file;
+            }
+        return null;
+    }
+    void OpenActivity() {
+        var row = activity.Selected; var raw = row == null ? null : row.Value as string[];
+        if (raw == null || raw.Length < 8) { Toast("先在上面选一个终端"); return; }
+        if (raw[6] != "phone") { Toast("这个对话开在电脑自己的窗口里，直接去那个窗口用就行"); return; }
+        OpenWindow(raw[7]);
     }
     void TakeoverActivity() {
         var row = activity.Selected; var raw = row == null ? null : row.Value as string[];
-        if (raw == null || raw.Length < 8 || raw[6] != "phone") { Toast("只有手机创建的终端可以从电脑接管"); return; }
+        if (raw == null || raw.Length < 8 || raw[6] != "phone") { Toast("先在上面选一个手机和电脑共用的终端"); return; }
         if (agent == null) { Toast("电脑后台还没有准备好，请稍后再试"); return; }
         string tool = raw[0] == "claude" ? "Claude Code" : raw[0] == "codex" ? "Codex" : "PowerShell";
-        if (raw[0] == "shell") { Toast("PowerShell 没有可恢复的会话，请在电脑端项目页重新新建"); return; }
-        if (!Confirm("在电脑上接管这个终端？", "手机终端会先结束，然后在电脑打开 " + tool + "。对话会继续使用同一个会话；接管期间手机不能继续输入。", "接管并在电脑打开", true)) return;
+        if (raw[0] == "shell") { Toast("PowerShell 没有可恢复的会话，不能转成独立窗口；用“在电脑上打开”就能直接用它"); return; }
+        if (!Confirm("转成电脑上的独立窗口？", "这个终端会先结束，然后在电脑的命令行窗口里接着同一段对话，正在执行的任务会中断，手机上不再能看到它。\n只是想在电脑上用它，选“在电脑上打开”就行，不用转。", "结束它并转成独立窗口", true)) return;
         activity.Enabled = false;
         Task.Run(() => {
             try {
                 var takeover = agent.TakeoverForComputer(raw[7]);
                 BeginInvoke(new Action(() => {
                     activity.Enabled = true;
-                    try { Process.Start(TerminalAgent.ComputerProcess(takeover, Convert.ToString(config["RemoteMaxMode"]))); Toast("已在电脑上接管 " + tool); RefreshActivity(); }
+                    try { Process.Start(TerminalAgent.ComputerProcess(takeover, Convert.ToString(config["RemoteMaxMode"]))); Toast("已转成电脑上的独立窗口：" + tool); RefreshActivity(); }
                     catch (Exception error) { Toast("电脑终端没有打开：" + error.Message); }
                 }));
             } catch (Exception error) {
@@ -483,12 +526,15 @@ public sealed class App : Form {
         ShowProjects();
 
         // ---- page: activity
-        var activityPage = Page("活动", "电脑和手机看到同一份会话。这里显示手机终端和可定位的电脑 CLI；双击手机终端，可结束手机输入并在电脑接管。");
-        var liveCard = Place(activityPage, new Card(), 28, 92, 652, 410);
-        Place(liveCard, activity, 8, 8, 636, 394);
-        activity.EmptyTitle = "没有正在运行的终端"; activity.EmptyAbout = "在手机上选一个项目，新建 Claude Code、Codex 或 PowerShell 终端，\n它就会出现在这里。";
-        activity.DoubleClick += (s, e) => TakeoverActivity();
-        activity.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; TakeoverActivity(); } };
+        var activityPage = Page("活动", "手机和电脑用的是同一批终端。双击一个终端，在电脑上打开它：手机上照常能看、能输入，不用交接。");
+        var liveCard = Place(activityPage, new Card(), 28, 92, 652, 362);
+        Place(liveCard, activity, 8, 8, 636, 346);
+        activity.EmptyTitle = "没有正在运行的终端"; activity.EmptyAbout = "点下面的“新建或查看全部”，或在手机上选一个项目新建终端，\n它就会出现在这里，两边都能用。";
+        activity.DoubleClick += (s, e) => OpenActivity();
+        activity.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; OpenActivity(); } };
+        Action(activityPage, "在电脑上打开", Theme.IconTerminal, ButtonKind.Primary, 28, 468, 150, 36, (s, e) => OpenActivity());
+        Action(activityPage, "新建或查看全部", Theme.IconOpen, ButtonKind.Normal, 188, 468, 164, 36, (s, e) => OpenWindow(null));
+        Action(activityPage, "转成独立窗口", "", ButtonKind.Ghost, 362, 468, 130, 36, (s, e) => TakeoverActivity());
         Place(activityPage, activityNote, 28, 518, 652, 20); activityNote.BackColor = Theme.Bg; activityNote.ForeColor = Theme.Muted;
 
         // ---- page: settings

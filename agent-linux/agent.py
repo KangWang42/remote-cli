@@ -45,7 +45,7 @@ import time
 import uuid
 from urllib.parse import quote, urlsplit
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 ID_RE = re.compile(r"\A[a-f0-9]{16,32}\Z")
 TERMINAL_RE = re.compile(r"\A[a-f0-9]{32}\Z")
 SERVER_RE = re.compile(r"\Ahttps?://[^/\s]+\Z")
@@ -54,7 +54,9 @@ PROJECT_ACTIONS = ("project_add", "project_remove", "project_rename")
 FILE_ACTIONS = ("file_list", "file_read")
 FILE_PIECE = 737280     # bytes of a file in one answer, as the Windows agent cuts them
 FILE_ENTRIES = 3000     # entries of a folder in one answer
-FEATURES = ["terminal-exit", "files"]
+FEATURES = ["terminal-exit", "files", "peek"]
+SAID_MESSAGES = 40      # of a conversation, the last this many things said are shown on the phone
+SAID_CHARS = 1500       # and of each, this much
 # where the tools' own installers put them; a service's PATH seldom has these
 TOOL_DIRS = (".local/bin", ".npm-global/bin", "bin", ".bun/bin", ".volta/bin", ".cargo/bin")
 MAX_TERMINALS = 8
@@ -270,6 +272,55 @@ def claude_title(path):
     return ""
 
 
+def said(path, tool):
+    """The last things said in a saved conversation, oldest first: what the person asked, what
+    the tool answered, and the name of each thing it did. What the tools put into a
+    conversation for themselves (reminders, command output, results) is left out."""
+    limit = 768 * 1024
+    out = []
+
+    def add(role, text):
+        text = " ".join(text.split()) if role == "tool" else text.strip()
+        if text:
+            out.append({"role": role, "text": text if len(text) <= SAID_CHARS else text[:SAID_CHARS - 1] + "…"})
+
+    def brief(name, given):
+        given = given if isinstance(given, dict) else {}
+        about = next((given[k] for k in ("command", "file_path", "path", "pattern", "description", "query", "url")
+                      if isinstance(given.get(k), str)), "")
+        return (str(name or "") + ("：" + about[:160] if about else "")).strip()
+
+    for row in rows(read_part(path, True, limit)):
+        if tool == "claude":
+            message = row.get("message")
+            if row.get("type") not in ("user", "assistant") or row.get("isSidechain") or row.get("isMeta") \
+                    or not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            parts = [{"type": "text", "text": content}] if isinstance(content, str) else content if isinstance(content, list) else []
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    if row["type"] == "assistant" or not part["text"].lstrip().startswith("<"):
+                        add(row["type"], part["text"])
+                elif part.get("type") == "tool_use" and row["type"] == "assistant":
+                    add("tool", brief(part.get("name"), part.get("input")))
+        else:
+            payload = row.get("payload")
+            if row.get("type") != "response_item" or not isinstance(payload, dict):
+                continue
+            if payload.get("type") == "message" and payload.get("role") in ("user", "assistant"):
+                for part in payload.get("content") if isinstance(payload.get("content"), list) else []:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str) \
+                            and (payload["role"] == "assistant" or not part["text"].lstrip().startswith("<")):
+                        add(payload["role"], part["text"])
+            elif payload.get("type") in ("function_call", "custom_tool_call", "local_shell_call"):
+                add("tool", brief(payload.get("name") or "shell", None))
+    more = len(out) > SAID_MESSAGES or os.path.getsize(path) > limit
+    return {"messages": out[-SAID_MESSAGES:], "more": more, "updated": int(os.path.getmtime(path) * 1000)}
+
+
 def parent_of(pid):
     try:
         with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as stream:
@@ -305,6 +356,21 @@ class Sessions:
 
     def known(self, session, tool, name):
         return next((s for s in self.found if s["id"] == session and s["tool"] == tool and s["dir"] == name), None)
+
+    def read(self, session, tool, name, dirs):
+        """What was last said in a conversation of a project, for the phone to look at."""
+        saved = self.known(session, tool, name) if UUID_RE.match(session) else None
+        if saved is None or name not in dirs:
+            raise OpError("电脑上没有找到这个对话，请刷新后重试")
+        if tool == "claude":
+            found = [os.path.join(self.home, ".claude", "projects", re.sub(r"[^a-zA-Z0-9]", "-", dirs[name]), session + ".jsonl")]
+        else:
+            home = os.environ.get("CODEX_HOME") or os.path.join(self.home, ".codex")
+            found = glob.glob(os.path.join(home, "sessions", "**", "rollout-*%s.jsonl" % session), recursive=True)
+        try:
+            return dict(said(found[0], tool), title=saved["title"])
+        except (OSError, IndexError):
+            raise OpError("读不到这个对话的内容")
 
     def scan(self, dirs, terminals):
         found = []
@@ -993,7 +1059,8 @@ class Agent:
         """Carries out one operation. Called with self.work held, from the report loop or
         the held pull; the same id is never carried out twice."""
         try:
-            op_id, terminal = check_op(op, need_terminal=op.get("action") not in PROJECT_ACTIONS + FILE_ACTIONS)
+            op_id, terminal = check_op(op, need_terminal=op.get("action") not in
+                                       PROJECT_ACTIONS + FILE_ACTIONS + ("session_read",))
         except OpError as error:
             say("拒绝操作：%s" % error)
             return
@@ -1012,6 +1079,9 @@ class Agent:
                 if root is None:
                     raise OpError("没有这个项目")
                 result = files(root, op.get("path", ""), action, op.get("offset", 0))
+            elif action == "session_read":
+                result = self.sessions.read(str(op.get("session") or ""), str(op.get("tool") or ""),
+                                            str(op.get("dir") or ""), dirs)
             elif action == "start":
                 self.start_terminal(op, dirs, terminal)
             else:

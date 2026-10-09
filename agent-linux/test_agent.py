@@ -260,6 +260,46 @@ class Pure(unittest.TestCase):
         self.assertIsNotNone(sessions.known(named, "claude", "项目"))
         self.assertIsNone(sessions.known(named, "codex", "项目"))
 
+        # what was said, for the phone to look at before it does anything to the program
+        with open(os.path.join(saved, named + ".jsonl"), "a", encoding="utf-8") as stream:
+            for row in (
+                {"type": "user", "message": {"role": "user", "content": "<system-reminder>不给人看</system-reminder>"}},
+                {"type": "user", "isSidechain": True, "message": {"role": "user", "content": "子任务"}},
+                {"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": "我先看看登录的代码。"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "grep -rn login src"}}]}},
+                {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "很长的输出"}]}},
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "长" * 3000}]}},
+            ):
+                stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+        dirs = {"项目": project}
+        got = sessions.read(named, "claude", "项目", dirs)
+        self.assertEqual(got["title"], "修好 登录")
+        self.assertEqual([(m["role"], m["text"][:14]) for m in got["messages"]], [
+            ("user", "第一句"), ("assistant", "我先看看登录的代码。"), ("tool", "Bash：grep -rn "), ("assistant", "长" * 14)])
+        self.assertEqual(len(got["messages"][-1]["text"]), agent.SAID_CHARS)
+        self.assertFalse(got["more"])
+        with open(os.path.join(rollouts, "rollout-2026-10-09T10-00-00-%s.jsonl" % codex), "a", encoding="utf-8") as stream:
+            for payload in (
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "规则"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context>x</environment_context>"},
+                                                                 {"type": "input_text", "text": "部署一下"}]},
+                {"type": "function_call", "name": "shell", "arguments": "{}"},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "部署好了"}]},
+            ):
+                stream.write(json.dumps({"type": "response_item", "payload": payload}, ensure_ascii=False) + "\n")
+        before = os.environ.pop("CODEX_HOME", None)
+        try:
+            got = sessions.read(codex, "codex", "项目", dirs)
+        finally:
+            if before is not None:
+                os.environ["CODEX_HOME"] = before
+        self.assertEqual([(m["role"], m["text"]) for m in got["messages"]],
+                         [("user", "部署一下"), ("tool", "shell"), ("assistant", "部署好了")])
+        for wrong in ((named, "codex", "项目"), (empty, "claude", "项目"), ("not-an-id", "claude", "项目"), (named, "claude", "别的")):
+            with self.assertRaises(agent.OpError):
+                sessions.read(*wrong, dirs)
+
     def test_qr_code(self):
         text = "remotecli://connect?u=https%3A%2F%2Fa-b-c-d.trycloudflare.com&p=3AasQ_tDwOpmumz1aqxb6znL&n=ubuntu"
         code = agent.qr_code(text)
@@ -326,6 +366,7 @@ class EndToEnd(unittest.TestCase):
         saved = os.path.join(cls.home, ".claude", "projects", re.sub("[^a-zA-Z0-9]", "-", cls.project))
         os.makedirs(saved)
         with open(os.path.join(saved, cls.saved + ".jsonl"), "w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"type": "user", "message": {"role": "user", "content": "上次说到哪了"}}, ensure_ascii=False) + "\n")
             stream.write(json.dumps({"type": "ai-title", "aiTitle": "上次的对话", "sessionId": cls.saved}) + "\n")
         with open(os.path.join(cls.project, "说明.txt"), "w", encoding="utf-8") as stream:
             stream.write("文件内容 e2e\n")
@@ -494,6 +535,11 @@ class EndToEnd(unittest.TestCase):
         # 9. a saved conversation is listed with its name and continued by its id
         self.assertEqual([(s["id"], s["title"], s["tool"], s["dir"]) for s in view["sessions"]],
                          [(self.saved, "上次的对话", "claude", "项目")])
+        self.assertIn("peek", device.get("features", []))
+        status, looked = request("POST", self.base + "/api/conversation", {"id": secrets.token_hex(16), "session": self.saved},
+                                 token=self.token, timeout=30)
+        self.assertEqual(status, 200, looked)
+        self.assertEqual((looked["title"], looked["messages"]), ("上次的对话", [{"role": "user", "text": "上次说到哪了"}]))
         again = self.op({"action": "start", "tool": "claude", "dir": "项目", "session": self.saved})["terminal"]
         self.assertIn("STANDIN_CLAUDE[--resume %s]" % self.saved, self.read_until(again, "STANDIN_CLAUDE["))
         for terminal in (new, again):
