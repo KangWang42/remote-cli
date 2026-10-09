@@ -1,0 +1,61 @@
+# 组成、构建和测试
+
+[← 回到首页](../README.md)
+
+给想读代码、自己构建或参与修改的人。
+
+## 组成
+
+```
+手机 App  ──HTTP(S)──▶  中转 relay（电脑上自带，或你自己的服务器）  ◀──HTTP(S)──  电脑端程序（运行终端）
+```
+
+| 目录 | 内容 |
+| --- | --- |
+| `agent-windows/` | 电脑端：`RemoteCliApp.cs`（窗口、托盘、连接方式）、`RemoteCliAgent.cs`（终端与对话扫描）、`QrCode.cs`、`Setup.cs`（安装程序）。C#，用 Windows 自带的编译器构建 |
+| `agent-linux/` | Linux 电脑端：`agent.py`（终端、对话扫描、查看文件），一个文件，只用 Python 标准库；`install.sh` 一条命令装好中转和电脑端；`remote-cli-agent.service` 是 systemd 用户服务 |
+| `relay/` | 中转：`server.py`（登录与 HTTP）、`relay.py`（终端状态与输出的转发）。只用 Python 标准库 |
+| `android/` | 安卓 App：`MainActivity`（各界面之间的跳转、扫码回调、语音识别）、`Workbench`（工作台）、`Kit`（配色和界面部件）、`AggregateSessions`（任务分组与排序，不依赖 Android，可单独检查） |
+| `web/` | App 里一台电脑的列表页和终端页（xterm.js），由中转提供、嵌在 App 内显示；随电脑端一起更新 |
+| `docs/PROTOCOL.md` | 三方之间的接口，想写别的客户端或别的系统的电脑端看这里 |
+
+电脑和手机都只向中转发起请求，电脑不需要公网地址或端口映射。
+
+## 自己构建
+
+```powershell
+# 电脑端（两个 exe），只需要 Windows 自带的 .NET Framework 4.x
+powershell -ExecutionPolicy Bypass -File agent-windows\build.ps1
+
+# 安装程序：会从 python.org 下载官方的嵌入式 Python 并核对哈希
+python tools\package_windows.py
+
+# 安卓：需要 JDK 11+ 和 Android SDK（build-tools 36.0.0、platforms/android-36），不需要 Gradle
+powershell -ExecutionPolicy Bypass -File android\build.ps1 -Jdk <JDK 目录> -Sdk <SDK 目录>
+```
+
+安卓的签名密钥在第一次构建时生成，保存在仓库之外的 `~/.remote-cli-signing`。请保留它：换一把密钥签名的 App 不能覆盖安装原来的。
+
+```powershell
+# 测试
+python -m unittest discover -s relay -p "test_*.py"
+python3 -m unittest discover -s agent-linux -p "test_*.py"   # Linux 电脑端，在 Linux 上运行：真实中转、真实终端，Claude Code 用替身程序
+python tests\e2e_windows.py
+node tests\bridge_check.js                                # 传输选择、连续输入和断线重试
+node tests\terminal_scroll_check.js                       # 拖动、惯性、反向和停止
+node tests\session_state_check.js                         # 运行中的会话与保留的写入锁分开显示
+python tests\android_aggregate_check.py --jdk <JDK 目录>  # 工作台的分组、排序、已完成标记和刷新判定
+python tests\android_update_check.py                      # App 更新器关闭安装流的顺序
+python tests\native_owner_check.py                        # 临时进程验证归属，不操作真实 Codex 会话
+python tests\session_copies_check.py                      # 同一段对话只列一次，用虚构的对话文件
+python tests\tunnel_check.py --local                      # 直连回显延迟
+python tests\tunnel_check.py <cloudflared.exe> --protocol http2  # 公网回显延迟
+python tests\tunnel_keep_check.py <cloudflared.exe>       # 程序结束后再启动，公网地址不变
+python tests\smooth_check.py                           # 历史很长时按键回显和连续输出的间隔
+python tests\files_check.py [chrome.exe <输出文件夹>]    # 查看文件：列目录、读文件、不出项目文件夹；带浏览器时给每种查看器截图
+python tests\restart_check.py                          # 电脑端和中转重启后，终端在原编号下接回
+chrome --headless=new --window-size=1480,520 --screenshot=skins.png tests\skin_code_check.html   # 各外观下代码、diff 和 16 色的显示
+python tests\setup_check.py dist\RemoteCli-Setup-x.y.z.exe      # 安装程序，沙盒方式，不碰已有安装
+python tests\pages_check.py <chrome.exe> <输出文件夹>     # 用本机的中转和电脑端截取列表页和终端页
+java -cp .cache\zxing-core-3.5.3.jar tests\QrDecodeCheck.java <二维码.png> <内容>   # 手机端的二维码识别
+```
