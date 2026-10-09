@@ -38,6 +38,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -85,6 +86,13 @@ public final class MainActivity extends Activity {
     private final Map<String, TextView[]> glanceViews = new HashMap<>();
     private final Runnable look = this::lookAtAll;
     private final Runnable watch = this::checkConnection;
+    private final Runnable aggregateLook = this::refreshAggregate;
+    private final Map<String, LinearLayout> aggregateViews = new HashMap<>();
+    private final Map<String, String> aggregateMarks = new HashMap<>();
+    private final Map<String, Integer> aggregatePending = new HashMap<>();
+    private final Map<String, Boolean> aggregateExpanded = new HashMap<>();
+    private int aggregateGeneration;
+    private boolean returnToAggregate;
     private boolean foreground, checkingConnection;
     private String currentOrigin = "";
     private ConnectionHealth connectionHealth = new ConnectionHealth();
@@ -134,7 +142,9 @@ public final class MainActivity extends Activity {
         bars(BG);
         if (!linked(getIntent())) {
             JSONArray list = computers();
-            if (list.length() == 1) open(list.optJSONObject(0).optString("url"), ""); else home("");
+            if (list.length() == 1) open(list.optJSONObject(0).optString("url"), "");
+            else if (list.length() > 1) aggregate();
+            else home("");
         }
         updater.checkIfDue();
     }
@@ -216,6 +226,8 @@ public final class MainActivity extends Activity {
     private void show(View content, String name) {
         ticker.removeCallbacks(look);
         ticker.removeCallbacks(watch);
+        ticker.removeCallbacks(aggregateLook);
+        aggregateGeneration++;
         if (web != null) { root.removeView(web); web.destroy(); web = null; }
         root.removeAllViews();
         palette(prefs.getBoolean("light", false));
@@ -383,12 +395,12 @@ public final class MainActivity extends Activity {
     }
 
     /** Fetches one computer's list for the all-computers view. It never changes the selected WebView. */
-    private JSONObject terminalData(String url) throws Exception {
+    private JSONObject terminalData(String url, String cookie) throws Exception {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(url + "/api/terminal").openConnection();
             connection.setConnectTimeout(4000); connection.setReadTimeout(8000); connection.setUseCaches(false);
-            String cookie = CookieManager.getInstance().getCookie(url);
+            connection.setInstanceFollowRedirects(false);
             if (cookie != null) connection.setRequestProperty("Cookie", cookie);
             int code = connection.getResponseCode();
             if (code == 401) return new JSONObject().put("_error", "需要重新扫码登录");
@@ -405,79 +417,135 @@ public final class MainActivity extends Activity {
         } finally { if (connection != null) connection.disconnect(); }
     }
 
-    /** Shows one comfortable, read-only list before the user enters a specific computer. */
+    /** Each computer fills its own group independently, so an offline host does not delay the others. */
     private void aggregate() {
         final JSONArray list = computers();
-        if (list.length() < 2) return;
-        LinearLayout loading = column(34);
-        loading.addView(button("返回我的电脑", 2, () -> home("")));
-        loading.addView(bold("全部项目和对话", 23, INK), below(18));
-        loading.addView(text("正在读取每台电脑的项目和终端…", 14, MUTED), below(6));
-        show(loading, "aggregate");
-        net.execute(() -> {
-            ArrayList<ComputerSnapshot> snapshots = new ArrayList<>();
-            for (int i = 0; i < list.length(); i++) {
-                JSONObject computer = list.optJSONObject(i); if (computer == null) continue;
-                String url = computer.optString("url"), error = ""; JSONObject data = null;
-                try { data = terminalData(url); if (data.has("_error")) { error = data.optString("_error"); data = null; } }
-                catch (Exception unreachable) { error = "连不上，可能没开机或地址已变化"; }
-                snapshots.add(new ComputerSnapshot(computer, data, error));
-            }
-            runOnUiThread(() -> { if ("aggregate".equals(screen)) aggregateView(snapshots); });
-        });
+        if (list.length() < 2) { home(""); return; }
+        palette(prefs.getBoolean("light", false));
+        LinearLayout column = column(34);
+        column.addView(button("管理电脑 / 添加电脑", 2, () -> home("")));
+        column.addView(bold("全部项目和对话", 23, INK), below(18));
+        column.addView(text("按电脑分组，自动刷新。点项目查看对话，点手机终端直接继续；历史记录可展开查看。", 14, MUTED), below(6));
+        aggregateViews.clear(); aggregateMarks.clear();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject computer = list.optJSONObject(i); if (computer == null) continue;
+            LinearLayout holder = new LinearLayout(this); holder.setOrientation(LinearLayout.VERTICAL);
+            holder.addView(aggregateComputer(new ComputerSnapshot(computer, null, "正在读取…")));
+            aggregateViews.put(computer.optString("url"), holder);
+            column.addView(holder, below(16));
+        }
+        column.addView(button("立即刷新", 1, this::refreshAggregate), below(16));
+        message = text("", 14, MUTED); column.addView(message, below(8));
+        show(column, "aggregate");
+        refreshAggregate();
     }
 
-    private void aggregateView(ArrayList<ComputerSnapshot> snapshots) {
-        LinearLayout column = column(34);
-        column.addView(button("返回我的电脑", 2, () -> home("")));
-        column.addView(bold("全部项目和对话", 23, INK), below(18));
-        column.addView(text("按电脑分组显示；点项目即可进入对应电脑继续使用。", 14, MUTED), below(6));
-        for (ComputerSnapshot snapshot : snapshots) column.addView(aggregateComputer(snapshot), below(16));
-        column.addView(button("刷新", 1, this::aggregate), below(2));
-        show(column, "aggregate");
+    private void refreshAggregate() {
+        ticker.removeCallbacks(aggregateLook);
+        if (!foreground || !"aggregate".equals(screen)) return;
+        int generation = aggregateGeneration;
+        JSONArray list = computers();
+        for (int i = 0; i < list.length(); i++) {
+            final JSONObject computer = list.optJSONObject(i); if (computer == null) continue;
+            final String url = computer.optString("url");
+            if (aggregatePending.containsKey(url)) continue;
+            final String cookie = CookieManager.getInstance().getCookie(url);
+            aggregatePending.put(url, generation);
+            net.execute(() -> {
+                String error = ""; JSONObject data = null;
+                try { data = terminalData(url, cookie); if (data.has("_error")) { error = data.optString("_error"); data = null; } }
+                catch (Exception unreachable) { error = "连不上，请检查电脑或重新扫码"; }
+                final ComputerSnapshot snapshot = new ComputerSnapshot(computer, data, error);
+                runOnUiThread(() -> {
+                    aggregatePending.remove(url);
+                    if (!foreground || !"aggregate".equals(screen) || generation != aggregateGeneration) return;
+                    LinearLayout holder = aggregateViews.get(url); if (holder == null) return;
+                    String mark = aggregateSignature(snapshot);
+                    if (mark.equals(aggregateMarks.get(url))) return;
+                    aggregateMarks.put(url, mark);
+                    holder.removeAllViews(); holder.addView(aggregateComputer(snapshot));
+                });
+            });
+        }
+        ticker.postDelayed(aggregateLook, 6000);
+    }
+
+    private String aggregateSignature(ComputerSnapshot snapshot) {
+        if (snapshot.data == null) return snapshot.error;
+        JSONObject device = snapshot.data.optJSONObject("device");
+        return (device == null ? "" : device.optBoolean("online") + ":" + device.optBoolean("enabled")) + AggregateSessions.signature(aggregateProjects(snapshot.data));
+    }
+
+    private static List<AggregateSessions.Project> aggregateProjects(JSONObject data) {
+        ArrayList<String> names = new ArrayList<>();
+        ArrayList<AggregateSessions.Entry> entries = new ArrayList<>();
+        JSONObject device = data.optJSONObject("device");
+        JSONArray folders = device == null ? null : device.optJSONArray("workspaces");
+        for (int i = 0; folders != null && i < folders.length(); i++) names.add(folders.optString(i));
+        JSONArray projects = device == null ? null : device.optJSONArray("projects");
+        for (int i = 0; projects != null && i < projects.length(); i++) {
+            JSONObject project = projects.optJSONObject(i); if (project != null) names.add(project.optString("name"));
+        }
+        for (boolean terminal : new boolean[]{true, false}) {
+            JSONArray source = data.optJSONArray(terminal ? "terminals" : "sessions");
+            for (int i = 0; source != null && i < source.length(); i++) {
+                JSONObject entry = source.optJSONObject(i); if (entry == null) continue;
+                entries.add(new AggregateSessions.Entry(terminal, entry.optString("id"), entry.optString("dir"),
+                    entry.optString("title"), entry.optString("tool"), entry.optString("state"),
+                    entry.optString("phase"), entry.optString("status"), entry.optBoolean("live"),
+                    entry.optString("host"), entry.optString("terminal"), entry.optString("session")));
+            }
+        }
+        return AggregateSessions.projects(names, entries);
     }
 
     private View aggregateComputer(ComputerSnapshot snapshot) {
         JSONObject computer = snapshot.computer;
         String url = computer.optString("url"), name = computer.optString("name");
         LinearLayout card = column(14); card.setPadding(dp(16), dp(16), dp(16), dp(16)); card.setBackground(shape(PANEL, LINE, 20));
-        card.addView(bold(name.isEmpty() ? host(url) : name, 17, INK));
+        TextView heading = bold(name.isEmpty() ? host(url) : name, 17, INK);
+        heading.setMinHeight(dp(44)); press(heading, () -> open(url, "")); card.addView(heading);
         card.addView(text(host(url), 12.5f, MUTED), below(2));
-        if (snapshot.data == null) { card.addView(text(snapshot.error, 14, BAD), below(12)); return card; }
+        if (snapshot.data == null) { card.addView(text(snapshot.error, 14, MUTED), below(12)); return card; }
         JSONObject device = snapshot.data.optJSONObject("device");
         if (device == null || !device.optBoolean("online")) { card.addView(text("电脑端程序没有在运行", 14, MUTED), below(12)); return card; }
         if (!device.optBoolean("enabled")) { card.addView(text("电脑端暂停了手机访问", 14, MUTED), below(12)); return card; }
-        JSONArray projects = device.optJSONArray("projects"), terminals = snapshot.data.optJSONArray("terminals"), sessions = snapshot.data.optJSONArray("sessions");
-        ArrayList<String> names = new ArrayList<>();
-        for (int i = 0; projects != null && i < projects.length(); i++) { String project = projects.optJSONObject(i) == null ? "" : projects.optJSONObject(i).optString("name"); if (!project.isEmpty()) names.add(project); }
-        for (int i = 0; sessions != null && i < sessions.length(); i++) { JSONObject session = sessions.optJSONObject(i); String project = session == null ? "" : session.optString("dir"); if (!project.isEmpty() && !names.contains(project)) names.add(project); }
-        for (String project : names) {
-            int open = 0, saved = 0;
-            for (int i = 0; terminals != null && i < terminals.length(); i++) { JSONObject terminal = terminals.optJSONObject(i); if (terminal != null && project.equals(terminal.optString("dir")) && ("running".equals(terminal.optString("state")) || "starting".equals(terminal.optString("state")))) open++; }
-            for (int i = 0; sessions != null && i < sessions.length(); i++) { JSONObject session = sessions.optJSONObject(i); if (session != null && project.equals(session.optString("dir"))) saved++; }
+        List<AggregateSessions.Project> projects = aggregateProjects(snapshot.data);
+        for (AggregateSessions.Project group : projects) {
+            final String project = group.name;
             LinearLayout projectCard = column(8); projectCard.setPadding(dp(12), dp(10), dp(12), dp(10)); projectCard.setBackground(shape(RAISED, 0, 14));
-            projectCard.addView(bold(project, 15, INK));
-            projectCard.addView(text((open > 0 ? open + " 个终端" : "没有运行中的终端") + (saved > 0 ? " · " + saved + " 段对话" : ""), 12.5f, MUTED), below(1));
-            for (int i = 0; terminals != null && i < terminals.length(); i++) {
-                JSONObject terminal = terminals.optJSONObject(i);
-                if (terminal == null || !project.equals(terminal.optString("dir")) || !("running".equals(terminal.optString("state")) || "starting".equals(terminal.optString("state")))) continue;
-                String title = terminal.optString("title"); if (title.isEmpty()) title = terminal.optString("tool");
-                String phase = terminal.optString("phase", "busy".equals(terminal.optString("status")) ? "正在执行" : "等待输入");
-                projectCard.addView(text("终端 · " + title + " · " + phase, 13, INK), below(6));
+            TextView title = bold(project + "  ›", 15, INK); title.setMinHeight(dp(44));
+            press(title, () -> open(url, "", project)); projectCard.addView(title);
+            projectCard.addView(text(group.active.isEmpty() ? "没有运行中的终端" : group.active.size() + " 个活动会话", 12.5f, MUTED), below(1));
+            for (AggregateSessions.Entry entry : group.active) {
+                TextView row = text(entry.shownTitle() + "\n" + entry.toolName() + " · " + entry.label(), 14, entry.rank() == 0 ? BAD : INK);
+                row.setMinHeight(dp(52)); row.setPadding(0, dp(8), 0, dp(8));
+                press(row, () -> { if (entry.terminal) openTerminal(url, entry.id); else open(url, "", project); });
+                projectCard.addView(row, below(4));
             }
-            int shown = 0;
-            for (int i = 0; sessions != null && i < sessions.length() && shown < 30; i++) {
-                JSONObject session = sessions.optJSONObject(i); if (session == null || !project.equals(session.optString("dir"))) continue;
-                String title = session.optString("title"); if (title.isEmpty()) title = session.optString("tool");
-                String state = session.optBoolean("live") ? ("busy".equals(session.optString("status")) ? "运行中" : "已占用") : "历史";
-                projectCard.addView(text("对话 · " + title + " · " + state, 13, MUTED), below(5)); shown++;
+            if (!group.history.isEmpty()) {
+                final String key = url + "\n" + project;
+                LinearLayout history = new LinearLayout(this); history.setOrientation(LinearLayout.VERTICAL);
+                TextView toggle = text("历史和后台锁定 · " + group.history.size() + " 段  ▾", 13, MUTED);
+                toggle.setMinHeight(dp(44)); toggle.setGravity(Gravity.CENTER_VERTICAL);
+                history.setVisibility(Boolean.TRUE.equals(aggregateExpanded.get(key)) ? View.VISIBLE : View.GONE);
+                press(toggle, () -> {
+                    boolean expand = history.getVisibility() != View.VISIBLE;
+                    aggregateExpanded.put(key, expand); history.setVisibility(expand ? View.VISIBLE : View.GONE);
+                });
+                projectCard.addView(toggle);
+                for (int i = 0; i < Math.min(30, group.history.size()); i++) {
+                    AggregateSessions.Entry entry = group.history.get(i);
+                    TextView row = text(entry.shownTitle() + "\n" + entry.toolName() + " · " + entry.label(), 13, MUTED);
+                    row.setMinHeight(dp(48)); row.setPadding(0, dp(6), 0, dp(6));
+                    press(row, () -> open(url, "", project)); history.addView(row, below(4));
+                }
+                if (group.history.size() > 30) history.addView(text("更多历史请进入项目查看", 12.5f, MUTED), below(5));
+                projectCard.addView(history);
             }
-            if (saved > shown) projectCard.addView(text("还有 " + (saved - shown) + " 段对话，进入项目查看", 12.5f, MUTED), below(5));
-            final String target = project;
-            press(projectCard, () -> open(url, "", target));
             card.addView(projectCard, below(10));
         }
-        if (names.isEmpty()) card.addView(text("还没有项目或保存的对话", 14, MUTED), below(12));
+        if (projects.isEmpty()) card.addView(text("还没有项目或保存的对话", 14, MUTED), below(12));
         return card;
     }
 
@@ -559,8 +627,18 @@ public final class MainActivity extends Activity {
         open(address, password, "");
     }
     private void open(String address, String password, String project) {
+        openPage(address, password, project.isEmpty() ? "/" : "/?project=" + Uri.encode(project));
+    }
+    private void openTerminal(String address, String terminal) {
+        try { openPage(address, "", AggregateSessions.terminalPath(terminal)); }
+        catch (IllegalArgumentException invalid) { android.widget.Toast.makeText(this, invalid.getMessage(), android.widget.Toast.LENGTH_SHORT).show(); }
+    }
+    private void openPage(String address, String password, String path) {
         ticker.removeCallbacks(look);
         ticker.removeCallbacks(watch);
+        ticker.removeCallbacks(aggregateLook);
+        aggregateGeneration++;
+        returnToAggregate = "aggregate".equals(screen);
         currentOrigin = address;
         connectionHealth = new ConnectionHealth();
         prefs.edit().putString("server", address).apply();
@@ -592,7 +670,7 @@ public final class MainActivity extends Activity {
             }
         });
         root.addView(web, new FrameLayout.LayoutParams(-1, -1));
-        String target = address + "/" + (project.isEmpty() ? "" : "?project=" + Uri.encode(project));
+        String target = address + path;
         if (!password.isEmpty()) target += "#p=" + Uri.encode(password);
         web.loadUrl(target);
         if (foreground) ticker.post(watch);
@@ -664,7 +742,7 @@ public final class MainActivity extends Activity {
         @JavascriptInterface public void update() { runOnUiThread(() -> { android.widget.Toast.makeText(MainActivity.this, "正在检查新版本…", android.widget.Toast.LENGTH_SHORT).show(); updater.check(true); }); }
         @JavascriptInterface public String version() { return versionName(); }
         /** Back to the list of computers. */
-        @JavascriptInterface public void disconnect() { runOnUiThread(() -> home("")); }
+        @JavascriptInterface public void disconnect() { runOnUiThread(() -> { if (returnToAggregate) aggregate(); else home(""); }); }
     }
 
     private void dictate() {
@@ -688,11 +766,12 @@ public final class MainActivity extends Activity {
         if ("add".equals(screen)) { home(""); return; }
         if ("aggregate".equals(screen)) { home(""); return; }
         if (web != null && web.canGoBack()) { web.goBack(); return; }
+        if (web != null && returnToAggregate) { aggregate(); return; }
         // From a computer's first page, back leads to the list when there is more than one to choose from.
         if (web != null && computers().length() > 1) { home(""); return; }
         super.onBackPressed();
     }
-    @Override protected void onPause() { super.onPause(); foreground = false; ticker.removeCallbacks(look); ticker.removeCallbacks(watch); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); home(""); } }
-    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) { web.onResume(); ticker.post(watch); } if ("home".equals(screen)) lookAtAll(); if (updater != null) updater.checkIfDue(); }
-    @Override protected void onDestroy() { foreground = false; ticker.removeCallbacks(look); ticker.removeCallbacks(watch); net.shutdownNow(); if (updater != null) updater.stop(); if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
+    @Override protected void onPause() { super.onPause(); foreground = false; ticker.removeCallbacks(look); ticker.removeCallbacks(watch); ticker.removeCallbacks(aggregateLook); CookieManager.getInstance().flush(); if (web != null) web.onPause(); if (scanner != null) { endScan(); home(""); } }
+    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) { web.onResume(); ticker.post(watch); } if ("home".equals(screen)) lookAtAll(); if ("aggregate".equals(screen)) refreshAggregate(); if (updater != null) updater.checkIfDue(); }
+    @Override protected void onDestroy() { foreground = false; ticker.removeCallbacks(look); ticker.removeCallbacks(watch); ticker.removeCallbacks(aggregateLook); net.shutdownNow(); if (updater != null) updater.stop(); if (web != null) { web.destroy(); web = null; } super.onDestroy(); }
 }

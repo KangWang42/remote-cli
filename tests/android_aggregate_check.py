@@ -1,12 +1,29 @@
-"""Source regression checks for the multi-computer aggregate screen."""
+"""Run the aggregation model against real Java fixtures without an Android device.
+
+    python tests/android_aggregate_check.py --jdk <existing JDK directory>
+"""
+import argparse
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 
 
-root = Path(__file__).resolve().parents[1]
-source = (root / "android/src/io/github/kangwang42/remotecli/MainActivity.java").read_text(encoding="utf-8")
-assert 'button("聚合查看所有项目和对话", 1, this::aggregate)' in source
-assert 'new URL(url + "/api/terminal")' in source
-assert 'private void aggregateView(ArrayList<ComputerSnapshot> snapshots)' in source
-assert 'press(projectCard, () -> open(url, "", target))' in source
-assert 'if ("aggregate".equals(screen)) { home(""); return; }' in source
-print("android aggregate checks passed")
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--jdk", default=os.environ.get("JAVA_HOME"))
+    args = parser.parse_args()
+    if not args.jdk:
+        parser.error("Pass --jdk with the existing JDK directory")
+    root = Path(__file__).resolve().parents[1]
+    javac = Path(args.jdk) / "bin/javac.exe"
+    java = Path(args.jdk) / "bin/java.exe"
+    with tempfile.TemporaryDirectory(prefix="remote-cli-aggregate-") as output:
+        subprocess.run([str(javac), "-J-Duser.language=en", "-Xlint:-options", "--release", "8", "-encoding", "UTF-8", "-d", output,
+                        str(root / "android/src/io/github/kangwang42/remotecli/AggregateSessions.java"),
+                        str(root / "tests/AggregateSessionsCheck.java")], check=True)
+        subprocess.run([str(java), "-cp", output, "io.github.kangwang42.remotecli.AggregateSessionsCheck"], check=True)
+
+
+if __name__ == "__main__":
+    main()
