@@ -1,15 +1,26 @@
-# Remote CLI
+<h1 align="center">Remote CLI</h1>
 
-在手机上使用电脑里的终端、Claude Code 和 Codex。电脑装一个程序，手机装一个 App，扫码连上。
+<p align="center">
+  <b>在手机上使用电脑里的终端、Claude Code 和 Codex。</b><br>
+  电脑装一个程序，手机装一个 App，扫码连上。
+</p>
 
-*Use your computer's terminal, Claude Code and Codex from your phone. One program on the computer, one app on the phone. The interface is in Chinese for now.*
+<p align="center">
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/KangWang42/remote-cli?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC&color=7aa2f7" alt="最新版本"></a>
+  <img src="https://img.shields.io/badge/%E7%94%B5%E8%84%91-Windows%2010%20%2F%2011-9ece6a" alt="电脑：Windows 10 / 11">
+  <img src="https://img.shields.io/badge/%E6%89%8B%E6%9C%BA-Android%208.0%2B-9ece6a" alt="手机：Android 8.0 及以上">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/KangWang42/remote-cli?label=%E8%AE%B8%E5%8F%AF&color=8189ad" alt="许可：MIT"></a>
+</p>
 
-- **真实终端**：电脑上用 ConPTY 运行 `claude`、`codex` 或 PowerShell，手机上看到的就是它的画面，可以输入、按键、翻看、语音输入。
-- **离开后继续运行**：关掉 App，电脑上的任务不停；回来接着看。
-- **一眼看到要处理的事**：App 首页是工作台，把所有电脑上正在运行的任务排在一起，等你确认的在最前，点一下直接进终端。
-- **接着电脑上的对话**：列出 Claude Code 和 Codex 保存的对话；Codex 可结束电脑上的独立 CLI 后接手，也可保留电脑会话，在手机新开带历史的副本。
-- **六套外观**：四套深色、两套明亮，工作台、列表和终端一起换；文字大小和终端行距可调。
-- **不需要服务器**：同一个 Wi-Fi 下直连；或者一键建立 Cloudflare 临时隧道，在外面也能连。有自己服务器的可以部署中转，地址固定。
+<p align="center">
+  <a href="#下载">下载</a> ·
+  <a href="#五分钟上手">五分钟上手</a> ·
+  <a href="#手机上怎么用">使用说明</a> ·
+  <a href="#常见问题">常见问题</a> ·
+  <a href="#安全">安全</a>
+</p>
+
+<p align="center"><i>Use your computer's terminal, Claude Code and Codex from your phone. One program on the computer, one app on the phone. The interface is in Chinese for now.</i></p>
 
 <p align="center">
   <img src="docs/images/windows.png" alt="电脑端窗口：连接方式、二维码、密码和项目文件夹" width="330">
@@ -19,15 +30,56 @@
   <img src="docs/images/terminal.png" alt="手机上的终端页" width="230">
 </p>
 
-## 目录
+## 为什么用它
 
-- [下载](#下载)
-- [五分钟上手](#五分钟上手)
-- [手机上怎么用](#手机上怎么用)
-- [停止和卸载](#停止和卸载)
-- [常见问题](#常见问题)
-- [安全](#安全)
-- [组成](#组成) · [自己部署中转](#自己部署中转) · [自己构建](#自己构建) · [已知限制](#已知限制)
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>一部手机，多台电脑</h3>
+      办公室、家里、实验室的电脑各扫一次码，App 全部记住。首页的工作台把它们放在一起：每台是否在线、各有几个任务在等你，一屏看完。一台关机或连不上，不影响查看其它电脑。
+    </td>
+    <td width="50%" valign="top">
+      <h3>一步跳到要处理的任务</h3>
+      所有电脑上正在运行的任务排成一列，等你确认的在最前，其次是已完成还没看过的。点一下直接进入那个终端；在终端里点标题，可以切换到同一台电脑的其它任务，不用退回列表。
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>随时随地，离开也不中断</h3>
+      终端运行在电脑上。关掉 App、锁屏、换网络，任务照常执行；地铁上打开 App，接着刚才的画面继续。在外面可以回答确认提问、发下一条指令，也可以用语音输入。
+    </td>
+    <td width="50%" valign="top">
+      <h3>三种连接方式，不需要服务器</h3>
+      同一个 Wi-Fi 下直连，最快；人在外面，一键建立 Cloudflare 临时隧道，不用注册账号；有自己的服务器，可以部署中转获得固定地址。三种方式在电脑端一点即换，手机重新扫码即可。
+    </td>
+  </tr>
+</table>
+
+```mermaid
+flowchart LR
+    phone["手机 App<br>工作台"]
+    lan["局域网直连<br>同一个 Wi-Fi"]
+    tunnel["公网隧道<br>Cloudflare，免注册"]
+    relay["自有中转<br>固定 https 地址"]
+    a["办公室电脑"]
+    b["家里电脑"]
+    c["实验室电脑"]
+    phone --> lan --> a
+    phone --> tunnel --> b
+    phone --> relay --> c
+```
+
+每台电脑各自选择连接方式，手机上统一管理。
+
+**还有这些**
+
+| | |
+| --- | --- |
+| 真实终端 | 电脑上用 ConPTY 运行 `claude`、`codex` 或 PowerShell，手机上看到的就是它的画面，可以输入、按键、翻看 |
+| 接着电脑上的对话 | 列出 Claude Code 和 Codex 保存的对话，点开就继续；Codex 可接手电脑上的独立 CLI，也可保留电脑会话、在手机新开带历史的副本 |
+| 状态一目了然 | 等你确认、已完成、正在执行、等待输入各有一种颜色，工作台、列表和终端里用的是同一套 |
+| 六套外观 | 四套深色、两套明亮，工作台、列表和终端一起换；文字大小和终端行距可调 |
+| 软件内更新 | 电脑端和 App 都会检查新版本，下载并校验后安装 |
 
 ## 下载
 
