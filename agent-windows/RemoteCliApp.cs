@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "0.6.9";
+    const string Version = "0.7.0";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -43,7 +43,9 @@ public sealed class App : Form {
     TextBox passwordBox { get { return passwordField.Box; } }
     readonly PictureBox qr = new PictureBox();
     readonly RowList folders = new RowList(), activity = new RowList();
-    readonly Switch enabledSwitch = new Switch(), autostartSwitch = new Switch();
+    readonly Switch enabledSwitch = new Switch(), autostartSwitch = new Switch(), autoUpdateSwitch = new Switch();
+    readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer { Interval = 10 * 60 * 1000 }, quietTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+    ReleaseUpdate waitingUpdate;
     readonly List<Panel> pages = new List<Panel>();
     readonly List<NavItem> nav = new List<NavItem>();
     readonly System.Windows.Forms.Timer toastTimer = new System.Windows.Forms.Timer(), activityTimer = new System.Windows.Forms.Timer();
@@ -69,7 +71,7 @@ public sealed class App : Form {
         try { config = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(ConfigFile, Encoding.UTF8)); } catch { config = null; }
         if (config == null) config = new Dictionary<string, object>();
         foreach (var item in new Dictionary<string, object> { { "Mode", "lan" }, { "Port", 8722 }, { "Server", "" }, { "OwnServer", "" }, { "RemoteEnabled", true },
-                 { "RemoteMaxMode", "full" }, { "TunnelProtocol", "auto" }, { "RemoteDirs", new object[0] } })
+                 { "RemoteMaxMode", "full" }, { "TunnelProtocol", "auto" }, { "AutoUpdate", false }, { "RemoteDirs", new object[0] } })
             if (!config.ContainsKey(item.Key) || config[item.Key] == null) config[item.Key] = item.Value;
         if (Array.IndexOf(new[] { "lan", "cloud", "own" }, Mode) < 0) config["Mode"] = "lan";
         try { password = Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(PasswordFile), null, DataProtectionScope.CurrentUser)); } catch { password = ""; }
@@ -491,7 +493,9 @@ public sealed class App : Form {
 
         // ---- page: settings
         var settings = Page("设置", "这些设置只影响这台电脑。");
-        var rows = Place(settings, new Card(), 28, 92, 652, 6 * 60 + 12);
+        var rows = Place(settings, new Card(), 28, 92, 652, 7 * 60 + 12);
+        autoUpdateSwitch.On = Convert.ToString(config["AutoUpdate"]) == "True";
+        autoUpdateSwitch.Changed += (s, e) => { config["AutoUpdate"] = autoUpdateSwitch.On; Save(); if (autoUpdateSwitch.On) CheckForUpdate(false); };
         enabledSwitch.On = Convert.ToString(config["RemoteEnabled"]) == "True";
         enabledSwitch.Changed += (s, e) => { config["RemoteEnabled"] = enabledSwitch.On; Save(); RefreshActivity(); Toast(enabledSwitch.On ? "已允许手机访问" : "已暂停，手机立即不能操作"); };
         using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) autostartSwitch.On = key != null && key.GetValue("RemoteCli") != null;
@@ -523,11 +527,12 @@ public sealed class App : Form {
             new SettingRow("新终端的权限", "Claude Code 和 Codex 从手机启动时用什么权限模式", rights, 250, 34),
             new SettingRow("公网隧道的协议", "隧道经常断开或出现 1033 时改用 HTTP/2", protocol, 170, 34),
             new SettingRow("本机端口", "局域网直连和公网隧道使用，被占用时换一个", portBox, 96, 32),
-            new SettingRow("版本 " + Version, "从 GitHub 发布页检查并安装新版本", updateButton, 150, 34) };
+            new SettingRow("自动更新", "关闭时由你在这里或手机上发起；打开后在终端空闲时自己装好", autoUpdateSwitch, 46, 26),
+            new SettingRow("版本 " + Version, "从 GitHub 发布页检查并安装新版本；手机上也可以发起", updateButton, 150, 34) };
         for (int i = 0; i < all.Length; i++) Place(rows, all[i], 2, 6 + i * 60, 648, 60);
-        Action(settings, "打开数据文件夹", Theme.IconOpen, ButtonKind.Normal, 28, 484, 150, 36, (s, e) => { try { Process.Start(new ProcessStartInfo("explorer.exe", "\"" + dataDir + "\"")); } catch (Exception) { } });
-        Action(settings, "项目主页", Theme.IconGlobe, ButtonKind.Ghost, 186, 484, 110, 36, (s, e) => { try { Process.Start(new ProcessStartInfo("https://github.com/KangWang42/remote-cli") { UseShellExecute = true }); } catch (Exception) { } });
-        Action(settings, "退出 Remote CLI", Theme.IconPower, ButtonKind.Danger, 530, 484, 150, 36, (s, e) => Quit());
+        Action(settings, "打开数据文件夹", Theme.IconOpen, ButtonKind.Normal, 28, 544, 150, 36, (s, e) => { try { Process.Start(new ProcessStartInfo("explorer.exe", "\"" + dataDir + "\"")); } catch (Exception) { } });
+        Action(settings, "项目主页", Theme.IconGlobe, ButtonKind.Ghost, 186, 544, 110, 36, (s, e) => { try { Process.Start(new ProcessStartInfo("https://github.com/KangWang42/remote-cli") { UseShellExecute = true }); } catch (Exception) { } });
+        Action(settings, "退出 Remote CLI", Theme.IconPower, ButtonKind.Danger, 530, 544, 150, 36, (s, e) => Quit());
 
         // ---- toast, tray, timers
         Place(this, toast, 0, WindowHeight - 58, 200, 34);
@@ -554,25 +559,41 @@ public sealed class App : Form {
             if (factor > 1.01f) { Scale(new SizeF(factor, factor)); folders.ItemHeight = (int)(54 * factor); activity.ItemHeight = (int)(54 * factor); }
         }
         Shown += (s, e) => {
-            agent = new TerminalAgent(dataDir);
+            agent = new TerminalAgent(dataDir) { Version = Version };
+            // The phone may ask for the update: it is looked for and installed at once, whatever the terminals are doing.
+            agent.UpdateRequested = () => BeginInvoke(new Action(() => CheckForUpdate(false, true)));
+            updateTimer.Tick += (t, a) => CheckForUpdate(false);
+            quietTimer.Tick += async (t, a) => {
+                if (waitingUpdate == null || !updateButton.Enabled) return;
+                if (agent != null && !agent.Quiet(20)) return;        // a tool is working or someone is typing: later
+                var found = waitingUpdate; waitingUpdate = null;
+                await InstallUpdate(found);
+            };
+            updateTimer.Start(); quietTimer.Start();
             Task.Run(async () => { await Connect(); await agent.Run(); });
             activityTimer.Start();
             CheckForUpdate(false);
         };
     }
-    async void CheckForUpdate(bool manual) {
+    // manual: the button in this window. remote: the phone asked. Neither: the program looks by itself every ten minutes.
+    async void CheckForUpdate(bool manual, bool remote = false) {
         if (updateButton == null || !updateButton.Enabled) return;
-        if (!manual) {
+        if (!manual && !remote) {
             DateTime previous;
-            if (config.ContainsKey("UpdateCheckUtc") && DateTime.TryParse(Convert.ToString(config["UpdateCheckUtc"]), null, System.Globalization.DateTimeStyles.RoundtripKind, out previous) && DateTime.UtcNow - previous < TimeSpan.FromHours(6)) return;
+            if (config.ContainsKey("UpdateCheckUtc") && DateTime.TryParse(Convert.ToString(config["UpdateCheckUtc"]), null, System.Globalization.DateTimeStyles.RoundtripKind, out previous) && DateTime.UtcNow - previous < TimeSpan.FromMinutes(9)) return;
             config["UpdateCheckUtc"] = DateTime.UtcNow.ToString("o"); Save();
         }
         updateButton.Enabled = false; if (manual) Toast("正在检查 GitHub 最新版本…");
         try {
             ReleaseUpdate found = await AutoUpdater.CheckAsync(Version); availableUpdate = found;
+            if (agent != null) agent.Newer = found == null ? "" : found.Version;
             if (found == null) { updateButton.Text = "已是最新版"; updateButton.Glyph = Theme.IconCheck; if (manual) Toast("已是最新版"); return; }
             updateButton.Text = "更新到 v" + found.Version; updateButton.Kind = ButtonKind.Primary; updateButton.Glyph = Theme.IconDownload; nav[3].SetBadge("新");
-            if (Confirm("发现新版本 v" + found.Version, "现在下载并重启更新吗？更新时手机终端会短暂断开，公网隧道的地址不变。", "下载并更新", false)) await InstallUpdate(found);
+            if (remote) { updateButton.Enabled = true; await InstallUpdate(found); }
+            else if (Convert.ToString(config["AutoUpdate"]) == "True") waitingUpdate = found;      // installed by quietTimer when no terminal is at work
+            else if (manual) {      // found by itself: the button and the phone's menu say so, no question is put on the screen
+                if (Confirm("发现新版本 v" + found.Version, "现在下载并重启更新吗？手机会断开几秒，终端随后接回原对话，公网隧道的地址不变。", "下载并更新", false)) { updateButton.Enabled = true; await InstallUpdate(found); }
+            }
         } catch (Exception error) { updateButton.Text = "检查更新"; if (manual) Toast("检查更新失败：" + error.Message); }
         finally { updateButton.Enabled = true; }
     }
@@ -582,6 +603,7 @@ public sealed class App : Form {
             string file = await AutoUpdater.DownloadAsync(found, Path.Combine(dataDir, "updates"));
             string folder = appDir;
             Process.Start(new ProcessStartInfo(file, "--quiet --dir \"" + folder + "\" --wait-pid " + Process.GetCurrentProcess().Id + " --launch") { CreateNoWindow = true, UseShellExecute = false, WorkingDirectory = folder });
+            if (agent != null) agent.KeepForRestart();
             updating = Mode == "cloud" && address.Length > 0; quitting = true; Shutdown(); Application.Exit();
         } catch (Exception error) { updateButton.Enabled = true; updateButton.Text = "更新失败"; Say("更新失败：" + error.Message, true); }
     }

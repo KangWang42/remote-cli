@@ -139,6 +139,7 @@ _id = re.compile(r"^[a-f0-9]{16,32}$")
 _session = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 _device = {"seen": 0, "instance": "", "enabled": False, "workspaces": [], "tools": [], "projects": [], "candidates": []}
 PROJECT_ACTIONS = ("project_add", "project_remove", "project_rename")
+UPDATE_ACTION = "update"      # the program on the computer looks for a newer version of itself and installs it
 _sessions = []  # conversations saved on the computer, as its last report listed them
 MAX_TERMINALS, MAX_HISTORY, OUTPUT_LIMIT, CLOSED_LIMIT = 8, 12, 2_000_000, 300_000
 LABELS = {"claude": "Claude Code", "codex": "Codex", "shell": "PowerShell"}
@@ -429,7 +430,11 @@ def command(path, payload, now=None):
         if not _view(now)["online"] or not _device["enabled"]:
             raise RemoteError("电脑未连接或远控已关闭，请等待电脑上线后重试")
         terminal = payload.get("terminal", "")
-        if action in PROJECT_ACTIONS:
+        if action == UPDATE_ACTION:
+            terminal = ""
+            if "update" not in _device.get("features", []):
+                raise RemoteError("电脑端版本不支持从手机更新，请先在电脑上更新一次")
+        elif action in PROJECT_ACTIONS:
             # The computer keeps the list of project folders and checks the folder itself; this only refuses malformed requests.
             terminal = ""
             if action == "project_add":
@@ -513,6 +518,56 @@ def command(path, payload, now=None):
         return {k: op[k] for k in ("id", "terminal", "state", "error")}
 
 
+FILE_ACTIONS = ("file_list", "file_read")
+FILE_SECONDS = 25
+
+
+def files(path, payload, now=None, wait=FILE_SECONDS):
+    """What a project folder holds, or a piece of one of its files. The computer reads it; the relay passes the
+    question on and holds the request until the answer is there. Nothing of it is written anywhere, and the answer
+    is handed over once."""
+    now = time.time() if now is None else now
+    if not isinstance(payload, dict):
+        raise RemoteError("请求格式无效")
+    op_id, action, folder, where = payload.get("id"), payload.get("action"), payload.get("dir"), payload.get("path", "")
+    if not isinstance(op_id, str) or not _id.fullmatch(op_id):
+        raise RemoteError("操作编号无效")
+    if action not in FILE_ACTIONS:
+        raise RemoteError("不支持此操作")
+    if not isinstance(where, str) or len(where) > 1000 or any(ord(c) < 32 for c in where):
+        raise RemoteError("路径无效")
+    if type(payload.get("offset", 0)) is not int or payload.get("offset", 0) < 0:
+        raise RemoteError("位置无效")
+    with _changed:
+        _expire(now)
+        if op_id in _pending:
+            raise RemoteError("操作编号已被其它操作使用")
+        if not _view(now)["online"] or not _device["enabled"]:
+            raise RemoteError("电脑未连接或远控已关闭，请等待电脑上线后重试")
+        if "files" not in _device.get("features", []):
+            raise RemoteError("电脑端版本不支持查看文件，请更新电脑端")
+        if folder not in _device["workspaces"]:
+            raise RemoteError("没有这个项目")
+        op = {"id": op_id, "terminal": "", "state": "queued", "error": "", "at": now,
+              "payload": {"id": op_id, "action": action, "dir": folder, "path": where, "offset": payload.get("offset", 0)}}
+        _pending[op_id] = _pending.queued[op_id] = op
+        _wake()
+        deadline = time.monotonic() + wait
+        while op["state"] == "queued":
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _changed.wait(min(remaining, 5))
+        _pending.queued.pop(op_id, None)
+        _pending.pop(op_id, None)       # asked once, answered once: nothing of a file stays here
+        if op["state"] == "queued":
+            op["state"] = "error"
+            raise RemoteError("电脑没有及时回应，请重试")
+        if op["error"]:
+            raise RemoteError(op["error"])
+        return op.get("result") or {}
+
+
 def pull(path, payload, now=None):
     """Held open by the computer: answers with the operations it has not been given yet, as soon as there is one.
     They stay queued until the computer reports them done, so a lost answer is made up by its next report."""
@@ -557,7 +612,8 @@ def agent(path, payload, now=None):
                 if isinstance(s, dict) and isinstance(s.get("id"), str) and _session.fullmatch(s["id"]) and s.get("tool") in ("claude", "codex")
                 and isinstance(s.get("dir"), str) and isinstance(s.get("title"), str) and s["title"].strip() and type(s.get("updated")) is int]
         _device.update(seen=now, instance=instance, enabled=info.get("enabled") is True,
-                       features=[x for x in info.get("features", []) if x in ("codex-fork", "codex-takeover", "terminal-exit")],
+                       version=str(info.get("version") or "")[:20], newer=str(info.get("newer") or "")[:20],
+                       features=[x for x in info.get("features", []) if x in ("codex-fork", "codex-takeover", "terminal-exit", "files", "update")],
                        tools=[x for x in info.get("tools", []) if x in ("claude", "codex", "shell")],
                        workspaces=[x for x in info.get("workspaces", []) if isinstance(x, str) and 0 < len(x) <= 60],
                        projects=_folders(info.get("projects"), 60), candidates=_folders(info.get("candidates"), 12))
@@ -572,6 +628,9 @@ def agent(path, payload, now=None):
                 continue
             op = _pending.get(ack.get("id"))
             if op and op["state"] == "queued":
+                if op["payload"]["action"] in FILE_ACTIONS:
+                    op["result"] = ack.get("result") if isinstance(ack.get("result"), dict) else {}
+                    wrote = True        # the request that waits for it looks again
                 op.update(state="error" if ack.get("error") else "done", error=str(ack.get("error", ""))[:300])
                 _pending.queued.pop(op["id"], None)
                 term = state["threads"].get(op["terminal"])

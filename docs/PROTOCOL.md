@@ -116,6 +116,20 @@ to held requests. Switching to the background cancels the active reader; returni
 | `project_add` | `path`, optional `name`, `create` |
 | `project_rename` | `name`, `to` |
 | `project_remove` | `name` |
+| `update` | none. The program on the computer looks for a newer release of itself and installs it; needs the `update` capability |
+
+### Files
+
+`POST /api/files` `{"id": "<16 to 32 hex digits>", "action": "file_list" | "file_read", "dir": "<workspace>", "path": "sub/folder", "offset": 0}`
+is held until the computer has answered, at most 25 seconds; it needs the `files` capability. `path` is relative
+to the project folder, with `/`.
+
+- `file_list` → `{"path", "entries": [{"name", "dir", "size", "modified" (ms), "hidden"}], "more"}`; at most 3,000 entries.
+- `file_read` → `{"path", "size", "modified", "offset", "data" (base64), "end"}`; one piece is at most 737,280 bytes,
+  the next is asked for with `offset` advanced by the bytes received.
+
+A refusal is `400 {"error": "..."}`. The computer answers only for paths inside the project folder and refuses a
+path whose real location, after links and junctions, is outside it. The relay keeps nothing of an answer.
 
 ## Computer
 
@@ -128,7 +142,7 @@ the same folder. A locked source cannot be resumed concurrently; choose fork or 
 
 ```json
 {"info": {"instance": "<32 hex, new at each start>", "enabled": true, "tools": ["claude", "shell"], "workspaces": ["demo"],
-          "projects": [...], "candidates": [...]},
+          "features": ["files", "update"], "version": "0.7.0", "newer": "", "projects": [...], "candidates": [...]},
  "terminals": [{"id": "...", "state": "running", "status": "idle"}],
  "output": [{"terminal": "...", "seq": 13, "data": "..."}],
  "acks": [{"id": "<operation id>", "error": ""}],
@@ -143,6 +157,12 @@ one of its projects, a conversation must exist on disk. The relay only refuses m
 
 `POST /api/terminal/agent/pull` `{"instance": "...", "wait": 12}` is held by the relay until an operation is
 waiting and returns it at once, so a key press does not wait for the next report.
+
+An answer to `file_list` or `file_read` travels in `acks` as `{"id", "error", "result": {...}}`.
+
+The Windows program keeps its `instance` across a restart for an update: it notes its open terminals, and after
+the restart reports the same instance and the same terminal ids, with output numbered on from where it was.
+The relay and the viewer then see the same terminals continue.
 
 ## Storage
 

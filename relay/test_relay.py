@@ -380,6 +380,41 @@ class TerminalRelayTests(unittest.TestCase):
         tr.overview(self.path, now=1004 + 601)
         self.assertEqual(len(tr._pending), 0)
 
+    def test_files_are_asked_of_the_computer_and_answered_once(self):
+        import threading
+        ask = {"id": "f" * 32, "action": "file_list", "dir": "demo", "path": "src"}
+        with self.assertRaisesRegex(RemoteError, "更新电脑端"):
+            tr.files(self.path, ask, now=1001, wait=0)
+        info = dict(self.info, features=["files", "update"], version="0.7.0", newer="0.7.1")
+        tr.agent(self.path, {"info": info}, now=1001)
+        for bad in (dict(ask, dir="other"), dict(ask, path="a\x00b"), dict(ask, action="file_delete"), dict(ask, offset=-1), dict(ask, id="x")):
+            with self.assertRaises(RemoteError):
+                tr.files(self.path, bad, now=1001, wait=0)
+        answers = {}
+        waiting = threading.Thread(target=lambda: answers.update(got=tr.files(self.path, ask, now=1001, wait=5)))
+        waiting.start()
+        asked = tr.pull(self.path, {"instance": self.info["instance"], "wait": 3})["operations"]
+        self.assertEqual([(o["action"], o["dir"], o["path"], o["offset"]) for o in asked], [("file_list", "demo", "src", 0)])
+        tr.agent(self.path, {"info": info, "acks": [{"id": ask["id"], "error": "", "result": {"path": "src", "entries": [{"name": "a.py"}]}}]}, now=1002)
+        waiting.join(5)
+        self.assertEqual(answers["got"]["entries"], [{"name": "a.py"}])
+        self.assertNotIn(ask["id"], tr._pending)        # nothing of it is kept
+        refused = dict(ask, id="e" * 32)
+        failing = threading.Thread(target=lambda: answers.update(error=self.assertRaisesRegex(RemoteError, "不在项目文件夹内", tr.files, self.path, refused, 1003, 5)))
+        failing.start()
+        tr.pull(self.path, {"instance": self.info["instance"], "wait": 3})
+        tr.agent(self.path, {"info": info, "acks": [{"id": refused["id"], "error": "路径不在项目文件夹内"}]}, now=1004)
+        failing.join(5)
+        with self.assertRaisesRegex(RemoteError, "没有及时回应"):
+            tr.files(self.path, dict(ask, id="d" * 32), now=1005, wait=0.2)
+        # the versions are shown, and the phone may ask for the update
+        device = tr.overview(self.path, now=1006)["device"]
+        self.assertEqual((device["version"], device["newer"]), ("0.7.0", "0.7.1"))
+        self.assertEqual(tr.command(self.path, {"action": "update", "id": "c" * 32}, now=1006)["state"], "queued")
+        tr.agent(self.path, {"info": self.info}, now=1007)
+        with self.assertRaisesRegex(RemoteError, "先在电脑上更新一次"):
+            tr.command(self.path, {"action": "update", "id": "b" * 32}, now=1007)
+
     def test_output_is_streamed_as_it_arrives_and_a_wake_up_between_look_and_wait_is_not_lost(self):
         import threading
         import time

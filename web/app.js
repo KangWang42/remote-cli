@@ -63,6 +63,12 @@
   }
   paint();
   $('back').innerHTML = ICON.back; $('look').innerHTML = ICON.look; $('more').innerHTML = ICON.more;
+  $('project-files-icon').innerHTML = ICON.folder; $('project-files-chev').innerHTML = ICON.chev;
+  $('project-files').addEventListener('click', () => {
+    if (!usable()) return toast('电脑离线，暂时看不了文件');
+    if (!(data.device.features || []).includes('files')) return toast('电脑端版本不支持查看文件，请更新电脑端');
+    location.href = 'files/?dir=' + encodeURIComponent(project);
+  });
   document.querySelector('.mark').innerHTML = ICON.mark;
 
   async function api(path, payload) {
@@ -127,11 +133,19 @@
     if (ready) choices.push({ label: '添加项目', sub: '把电脑上的一个文件夹加进来', value: 'add' });
     if (native) choices.push({ label: '回到工作台', sub: '查看所有电脑和进行中的任务，或换一台电脑', value: 'switch' });
     if (native && native.update) choices.push({ label: '检查 App 更新', sub: '当前版本 ' + (native.version ? native.version() : ''), value: 'update' });
+    const device = data ? data.device : {};
+    if (ready && (device.features || []).includes('update')) choices.push(device.newer
+      ? { label: '更新电脑端到 v' + device.newer, sub: '当前 v' + device.version + '。更新时会中断几秒，终端随后接回原对话', value: 'computer' }
+      : { label: '检查电脑端更新', sub: '电脑端当前 v' + device.version + '；有新版本会直接装好', value: 'computer' });
     choices.push({ label: '退出登录', sub: '下次需要重新扫码或输入密码', value: 'out', kind: 'danger' });
     const choice = await ask('更多', '', choices);
     if (choice === 'add') addProject();
     else if (choice === 'switch') native.disconnect();
     else if (choice === 'update') native.update();
+    else if (choice === 'computer') {
+      try { await api('/api/terminal', { action: 'update', id: newId() }); toast(device.newer ? '电脑端开始更新，中断几秒后自动恢复' : '已让电脑端检查更新'); }
+      catch (error) { toast(error.message); }
+    }
     else if (choice === 'out') { try { await api('/api/logout', {}); } catch (error) { /* signed out anyway */ } if (native) native.disconnect(); else showLogin(); }
   });
 
@@ -330,7 +344,7 @@
     }
 
     const folder = (device.projects || []).find(p => p.name === project);
-    $('project-path').textContent = folder ? folder.path : '';
+    $('project-path').textContent = folder ? '\u200e' + folder.path : '';      // read from the left although it is cut at the left
     const tools = Object.keys(TOOLS).filter(t => (device.tools || []).includes(t));
     const launch = $('launch');
     if (launch.dataset.signature !== tools.join() + ready) {

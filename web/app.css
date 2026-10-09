@@ -94,7 +94,13 @@ button.wide { width: 100%; margin-top: 8px; border: 1px dashed var(--line); }
 .count i { width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
 
 /* ---- one project */
-#project-path { color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; margin-top: 6px; }
+#project-files { display: flex; align-items: center; gap: 12px; width: 100%; margin-top: 8px; padding: 10px 12px 10px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); text-align: left; }
+#project-files:active { background: var(--raised); }
+#project-files .tool { --tint: var(--accent); }
+#project-files .text { flex: 1; min-width: 0; display: grid; gap: 1px; }
+#project-files b { font-weight: 600; }
+#project-files .chev { color: var(--muted); opacity: .6; }
+#project-path { color: var(--muted); font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 #launch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
 #launch button { display: grid; justify-items: center; gap: 8px; padding: 14px 6px 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); font-size: .84rem; font-weight: 600; line-height: 1.25; text-align: center; }
 #launch button:active { background: var(--raised); }

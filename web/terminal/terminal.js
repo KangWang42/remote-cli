@@ -222,6 +222,7 @@
     resize();
   });
   $('menu').addEventListener('click', () => { if (bridge) bridge.menu(); });
+  $('files').addEventListener('click', () => { if (bridge) bridge.files(); });
   $('again').addEventListener('click', () => { if (bridge) bridge.again(); });
   $('back').addEventListener('click', () => { if (bridge) bridge.close(); });
   $('voice').addEventListener('click', () => { if (bridge) bridge.voice(); });
@@ -234,6 +235,7 @@
       const live = t.state === 'running' && device.online && device.enabled;
       tool = t.tool; ended = t.state === 'closed';
       slash.hidden = !(COMMANDS[tool] || []).length;
+      if ($('files').hidden) $('files').hidden = false;        // the folder this terminal works in is known now
       if (!initialized || payload.reset) {
         restoring = true; running = false;
         scroller.stop();

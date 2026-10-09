@@ -1,13 +1,17 @@
 package io.github.kangwang42.remotecli;
 
-/** A brief network interruption is retried; a dead Cloudflare tunnel goes straight to pairing. */
+/**
+ * A dead Cloudflare tunnel goes straight to pairing. Anything else is waited out for about half a minute: the
+ * program on the computer restarts when it updates itself, and its pages carry on by themselves afterwards.
+ */
 final class ConnectionHealth {
+    static final int PATIENCE = 10;      // checks three seconds apart, each waiting up to three more
     private int failures;
     boolean sample(boolean reachable, int status) {
         if (reachable) { failures = 0; return false; }
-        return status == 530 || ++failures >= 2;
+        return status == 530 || ++failures >= PATIENCE;
     }
     static boolean httpError(boolean mainFrame, boolean relayRequest, int status) {
-        return status >= 500 && (mainFrame || relayRequest);
+        return status == 530 ? mainFrame || relayRequest : status >= 500 && mainFrame;
     }
 }

@@ -24,16 +24,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded P
 import relay  # noqa: E402
 import websocket  # noqa: E402
 
-VERSION = "0.6.9"
+VERSION = "0.7.0"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
-         ".woff2": "font/woff2", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
+         ".woff2": "font/woff2", ".bcmap": "application/octet-stream", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
          ".ico": "image/x-icon", ".webmanifest": "application/manifest+json"}
 SECURITY = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
-            "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                                       "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}
+            "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+                                       "media-src 'self' blob:; worker-src 'self' blob:; "
+                                       "font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}
 
 
 class Sessions:
@@ -360,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True}, {"Set-Cookie": "rcli=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"})
         if not self._authed():
             return self._json(401, {"error": "auth"})
-        call = {"/api/terminal": relay.command, "/api/terminal/agent": relay.agent, "/api/terminal/agent/pull": relay.pull}.get(path)
+        call = {"/api/terminal": relay.command, "/api/terminal/agent": relay.agent, "/api/terminal/agent/pull": relay.pull, "/api/files": relay.files}.get(path)
         if call is None:
             return self._json(404, {"error": "not found"})
         try:

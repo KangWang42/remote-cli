@@ -117,9 +117,57 @@ public sealed class PseudoTerminal : IDisposable {
 public sealed class TerminalAgent {
     string Origin = "";
     readonly string dataDir;
-    public TerminalAgent(string dataFolder = null) { dataDir = dataFolder ?? DefaultData; }
+    public TerminalAgent(string dataFolder = null) {
+        dataDir = dataFolder ?? DefaultData;
+        // A program that restarted for an update left word of its terminals: it comes back as the same computer and
+        // opens them again, so the phone's pages go on where they were.
+        try {
+            var kept = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(RestartFile, Encoding.UTF8));
+            File.Delete(RestartFile);
+            if (DateTime.UtcNow - DateTime.Parse(Get(kept, "at"), null, System.Globalization.DateTimeStyles.RoundtripKind) < TimeSpan.FromMinutes(15) && Regex.IsMatch(Get(kept, "instance"), @"\A[a-f0-9]{32}\z")) {
+                instance = Get(kept, "instance");
+                returning = List(kept, "terminals").OfType<Dictionary<string, object>>().ToList();
+            }
+        } catch { }
+    }
+    string RestartFile { get { return Path.Combine(dataDir, "restart.json"); } }
+    List<Dictionary<string, object>> returning;
+    /// What the window around this agent offers: its version, a newer one it knows of, and a way to be told to update.
+    public string Version = "", Newer = "";
+    public Action UpdateRequested;
+    /// Whether nothing has been typed or printed for a while and no tool says it is working: a moment to restart in.
+    public bool Quiet(int seconds) {
+        lock (work) {
+            var since = DateTime.UtcNow.AddSeconds(-seconds);
+            return lastInput < since && terminals.Values.Where(t => !t.Pty.Closed).All(t => t.Status != "busy" && t.Printed < since);
+        }
+    }
+    /// Before a restart for an update: writes down which terminals are open and what each of them runs.
+    public void KeepForRestart() {
+        lock (work) lock (gate) {
+            foreach (var t in terminals.Values) Seal(t);
+            var open = terminals.Values.Where(t => !t.Pty.Closed).Select(t => new Dictionary<string, object> { { "id", t.Id }, { "tool", t.Tool }, { "dir", t.Dir }, { "session", t.Session }, { "seq", t.Seq }, { "cols", t.Pty.Cols }, { "rows", t.Pty.Rows } }).ToArray();
+            try { File.WriteAllText(RestartFile, json.Serialize(new Dictionary<string, object> { { "instance", instance }, { "at", DateTime.UtcNow.ToString("o") }, { "terminals", open } }), new UTF8Encoding(false)); } catch { }
+        }
+    }
+    // A terminal that was open before the restart: Claude Code and Codex go on with the conversation they had, a shell
+    // starts afresh in its folder. Its output continues the numbering, so the relay and the phone take it as the same terminal.
+    void Return(Dictionary<string, object> kept, Dictionary<string, object> prefs) {
+        string id = Get(kept, "id"), tool = Get(kept, "tool"), dir = Get(kept, "dir"), session = Get(kept, "session");
+        var dirs = AllDirs(prefs);
+        string launcher = FindTool(tool);
+        if (!Regex.IsMatch(id, @"\A[a-f0-9]{32}\z") || terminals.ContainsKey(id) || launcher == null || !dirs.ContainsKey(dir)) return;
+        var live = new LiveTerminal { Id = id, Tool = tool, Dir = dir, Session = session, Seq = Convert.ToInt64(kept["seq"]) };
+        live.Pending.Append("\r\n\x1b[2m" + (tool == "shell" ? "Remote CLI 已更新，这是重新打开的 PowerShell。" : session.Length > 0 ? "Remote CLI 已更新，正在接回原来的对话…" : "Remote CLI 已更新；原对话保存在电脑上，可从历史对话继续。") + "\x1b[0m\r\n");
+        live.Pty = new PseudoTerminal(Command(tool, launcher, session, false, Get(prefs, "RemoteMaxMode"), false, tool == "codex" && SupportsStandalone(launcher), false), dirs[dir],
+            Math.Max(20, Math.Min(240, Convert.ToInt32(kept["cols"]))), Math.Max(6, Math.Min(100, Convert.ToInt32(kept["rows"]))), text => {
+                lock (gate) { live.Pending.Append(text); live.Printed = DateTime.UtcNow; }
+                Wake();
+            });
+        terminals[id] = live;
+    }
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
-    readonly string instance = Guid.NewGuid().ToString("N");
+    string instance = Guid.NewGuid().ToString("N");       // the same again after a restart for an update
     readonly Dictionary<string, LiveTerminal> terminals = new Dictionary<string, LiveTerminal>();
     readonly Dictionary<string, Dictionary<string, object>> completed = new Dictionary<string, Dictionary<string, object>>();
     readonly HashSet<string> reported = new HashSet<string>();
@@ -128,7 +176,7 @@ public sealed class TerminalAgent {
     DateTime nextLogin = DateTime.MinValue;
     public sealed class LiveTerminal {
         public string Id, Tool, Dir, Session = "", Status = ""; public PseudoTerminal Pty; public long Seq;
-        public DateTime Started = DateTime.UtcNow, ClosedSeen = DateTime.MinValue;
+        public DateTime Started = DateTime.UtcNow, ClosedSeen = DateTime.MinValue, Printed = DateTime.MinValue;
         public StringBuilder Pending = new StringBuilder();   // read from the program, not yet numbered
         public List<Dictionary<string, object>> Output = new List<Dictionary<string, object>>();
     }
@@ -401,6 +449,60 @@ public sealed class TerminalAgent {
         path = Path.GetFullPath(path).TrimEnd('\\');
         return path.Length == 2 ? path + "\\" : path;
     }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetFinalPathNameByHandleW(Microsoft.Win32.SafeHandles.SafeFileHandle file, StringBuilder path, uint size, uint flags);
+    // Where a path really is, after every link and junction on the way has been followed.
+    static string RealPath(string path) {
+        using (var handle = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new FileNotFoundException();
+            var name = new StringBuilder(2048);
+            uint length = GetFinalPathNameByHandleW(handle, name, 2048, 0);
+            if (length == 0 || length >= 2048) throw new IOException();
+            string real = name.ToString();
+            return (real.StartsWith(@"\\?\UNC\", StringComparison.Ordinal) ? @"\\" + real.Substring(8) : real.StartsWith(@"\\?\", StringComparison.Ordinal) ? real.Substring(4) : real).TrimEnd('\\');
+        }
+    }
+    public const int FilePiece = 737280;        // a multiple of three bytes, so that the pieces can be put together as text
+    // What a project folder holds, or a piece of one of its files, for the file pages on the phone. Nothing outside the
+    // project's own folder is given out: a link inside it that leads elsewhere on the computer is refused.
+    public static Dictionary<string, object> Files(string root, string relative, string action, long offset) {
+        try {
+            root = Path.GetFullPath(root).TrimEnd('\\');
+            relative = (relative ?? "").Replace('/', '\\').Trim('\\');
+            string full = relative.Length == 0 ? root : Path.GetFullPath(root + "\\" + relative);       // also right for a whole drive
+            if (full != root && !full.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("路径不在项目文件夹内");
+            string realRoot = RealPath(root + "\\"), real = RealPath(full.Length == root.Length ? root + "\\" : full);
+            if (!String.Equals(real, realRoot, StringComparison.OrdinalIgnoreCase) && !real.StartsWith(realRoot + "\\", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("这个位置链接到项目文件夹之外，不能打开");
+            string shown = full.Length > root.Length ? full.Substring(root.Length + 1).Replace('\\', '/') : "";
+            if (action == "file_list") {
+                var folder = new DirectoryInfo(full);
+                if (!folder.Exists) throw new ArgumentException("这不是文件夹");
+                var entries = new List<object>(); bool more = false;
+                foreach (FileSystemInfo item in folder.EnumerateFileSystemInfos()) {
+                    if (entries.Count >= 3000) { more = true; break; }
+                    bool inner = (item.Attributes & FileAttributes.Directory) != 0;
+                    entries.Add(new Dictionary<string, object> { { "name", item.Name }, { "dir", inner }, { "size", inner ? 0 : ((FileInfo)item).Length }, { "modified", Milliseconds(item.LastWriteTimeUtc) },
+                        { "hidden", (item.Attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0 || item.Name.StartsWith(".", StringComparison.Ordinal) } });
+                }
+                return new Dictionary<string, object> { { "path", shown }, { "entries", entries }, { "more", more } };
+            }
+            if (Directory.Exists(full)) throw new ArgumentException("这是文件夹");
+            using (var stream = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+                if (offset < 0 || offset > stream.Length) throw new ArgumentException("位置无效");
+                stream.Seek(offset, SeekOrigin.Begin);
+                byte[] bytes = new byte[(int)Math.Min(FilePiece, stream.Length - offset)]; int read = 0, n;
+                while (read < bytes.Length && (n = stream.Read(bytes, read, bytes.Length - read)) > 0) read += n;
+                return new Dictionary<string, object> { { "path", shown }, { "size", stream.Length }, { "modified", Milliseconds(File.GetLastWriteTimeUtc(full)) }, { "offset", offset },
+                    { "data", Convert.ToBase64String(bytes, 0, read) }, { "end", offset + read >= stream.Length } };
+            }
+        }
+        catch (FileNotFoundException) { throw new ArgumentException("文件不存在"); }
+        catch (DirectoryNotFoundException) { throw new ArgumentException("文件夹不存在"); }
+        catch (UnauthorizedAccessException) { throw new ArgumentException("没有权限读取"); }
+        catch (PathTooLongException) { throw new ArgumentException("路径太长"); }
+        catch (NotSupportedException) { throw new ArgumentException("路径无效"); }
+        catch (IOException) { throw new ArgumentException("读取失败，文件可能正被占用"); }
+    }
     public void ChangeProjects(Dictionary<string, object> op, Dictionary<string, object> prefs, string action) {
         var settings = Dirs(prefs); var own = OwnProjects();
         string name = Tidy(Get(op, "name"));
@@ -586,13 +688,19 @@ public sealed class TerminalAgent {
     void Execute(Dictionary<string, object> op, Dictionary<string, object> prefs) {
         string id = Get(op, "id"), terminal = Get(op, "terminal"), action = Get(op, "action");
         if (completed.ContainsKey(id)) { reported.Remove(id); return; }
-        string error = "";
+        string error = ""; Dictionary<string, object> result = null;
         try {
-            bool project = action == "project_add" || action == "project_remove" || action == "project_rename";
-            if (!Regex.IsMatch(id, @"\A[a-f0-9]{16,32}\z") || (!project && !Regex.IsMatch(terminal, @"\A[a-f0-9]{32}\z"))) throw new ArgumentException("操作编号无效");
+            bool project = action == "project_add" || action == "project_remove" || action == "project_rename", file = action == "file_list" || action == "file_read", update = action == "update";
+            if (!Regex.IsMatch(id, @"\A[a-f0-9]{16,32}\z") || (!project && !file && !update && !Regex.IsMatch(terminal, @"\A[a-f0-9]{32}\z"))) throw new ArgumentException("操作编号无效");
             double at; if (!Double.TryParse(Get(op, "at"), out at) || Math.Abs((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds - at) > 150) throw new ArgumentException("操作已过期");
             if (Get(prefs, "RemoteEnabled") != "True") throw new InvalidOperationException("电脑远控已关闭");
             if (project) ChangeProjects(op, prefs, action);
+            else if (update) { if (UpdateRequested == null) throw new InvalidOperationException("这台电脑运行的是不带自动更新的后台程序"); UpdateRequested(); }
+            else if (file) {
+                string root;
+                if (!AllDirs(prefs).TryGetValue(Get(op, "dir"), out root)) throw new ArgumentException("目录未获允许");
+                result = Files(root, Get(op, "path"), action, op.ContainsKey("offset") ? Convert.ToInt64(op["offset"]) : 0);
+            }
             else if (action == "start") {
                 if (terminals.ContainsKey(terminal)) return;
                 if (terminals.Values.Count(t => !t.Pty.Closed) >= 8) throw new InvalidOperationException("最多同时运行 8 个终端");
@@ -624,7 +732,7 @@ public sealed class TerminalAgent {
                 if (fresh) session = Guid.NewGuid().ToString();
                 var live = new LiveTerminal { Id = terminal, Tool = tool, Dir = dir, Session = fork ? "" : session };
                 live.Pty = new PseudoTerminal(Command(tool, launcher, session, Get(op, "history") == "True", Get(prefs, "RemoteMaxMode"), fork, tool == "codex" && SupportsStandalone(launcher), fresh), dirs[dir], 80, 24, text => {
-                    lock (gate) live.Pending.Append(text);
+                    lock (gate) { live.Pending.Append(text); live.Printed = DateTime.UtcNow; }
                     Wake();
                 });
                 terminals[terminal] = live;
@@ -639,6 +747,7 @@ public sealed class TerminalAgent {
             }
         } catch (Exception ex) { error = ex is ArgumentException || ex is InvalidOperationException || ex is IOException ? ex.Message : "终端操作失败：" + ex.GetType().Name; }
         completed[id] = new Dictionary<string, object> { { "id", id }, { "error", error } };
+        if (result != null && error.Length == 0) completed[id]["result"] = result;
         lastActivity = DateTime.UtcNow; soon = true; if (action == "start" || action == "close") nextScan = DateTime.UtcNow.AddSeconds(1.5);
         if (action.StartsWith("project_", StringComparison.Ordinal)) nextScan = DateTime.MinValue;
     }
@@ -647,6 +756,7 @@ public sealed class TerminalAgent {
         if (client == null && !await Login(prefs)) return;
         string body, listedText; bool listing; Dictionary<string, object>[] acknowledgments;
         lock (work) {
+            if (returning != null) { var back = returning; returning = null; foreach (var kept in back) { try { Return(kept, prefs); } catch { } } nextScan = DateTime.UtcNow.AddSeconds(3); }
             bool enabled = Get(prefs, "RemoteEnabled") == "True";
             if (!enabled) foreach (var t in terminals.Values.Where(t => !t.Pty.Closed)) t.Pty.Dispose();
             List<Dictionary<string, object>> output;
@@ -664,9 +774,16 @@ public sealed class TerminalAgent {
             if (DateTime.UtcNow - toolsAt > TimeSpan.FromSeconds(30)) { tools = new[] { "claude", "codex", "shell" }.Where(t => FindTool(t) != null).ToArray(); toolsAt = DateTime.UtcNow; }
             lock (gate) { foreach (var t in terminals.Values) Seal(t); output = OutputBatch(terminals.Values.SelectMany(t => t.Output.Take(30))); }
             if (output.Count > 0) lastActivity = DateTime.UtcNow;
-            acknowledgments = completed.Where(p => !reported.Contains(p.Key)).Take(200).Select(p => p.Value).ToArray();
+            // Pieces of files are large: a report carries as many as fit, the rest go with the next.
+            int room = 3 * FilePiece, taken = 0;
+            acknowledgments = completed.Where(p => !reported.Contains(p.Key)).Take(200).Select(p => p.Value).TakeWhile(a => {
+                object answer; Dictionary<string, object> piece = a.TryGetValue("result", out answer) ? answer as Dictionary<string, object> : null;
+                room -= piece != null && piece.ContainsKey("data") ? ((string)piece["data"]).Length : 0;
+                return taken++ == 0 || room >= 0;
+            }).ToArray();
             var payload = new Dictionary<string, object> {
-                { "info", new { instance = instance, enabled = enabled, workspaces = allowed.Keys.ToArray(), tools = tools, features = new[] { "codex-fork", "codex-takeover", "terminal-exit" },
+                { "info", new { instance = instance, enabled = enabled, workspaces = allowed.Keys.ToArray(), tools = tools, version = Version, newer = Newer,
+                    features = new[] { "codex-fork", "codex-takeover", "terminal-exit", "files" }.Concat(UpdateRequested != null ? new[] { "update" } : new string[0]).ToArray(),
                     projects = settings.Select(d => new { name = d.Key, path = d.Value, @fixed = true, exists = true })
                         .Concat(OwnProjects().Where(p => !settings.ContainsKey(p.Key)).Select(p => new { name = p.Key, path = p.Value, @fixed = false, exists = allowed.ContainsKey(p.Key) })).ToArray(),
                     candidates = candidates.ToArray() } },
@@ -688,7 +805,7 @@ public sealed class TerminalAgent {
             string answer = await response.Content.ReadAsStringAsync();
             lock (work) {
                 var result = json.Deserialize<Dictionary<string, object>>(answer);
-                foreach (var a in acknowledgments) reported.Add(Convert.ToString(a["id"]));
+                foreach (var a in acknowledgments) { reported.Add(Convert.ToString(a["id"])); a.Remove("result"); }
                 if (listing) { sentSessions = listedText; sessionsSent = DateTime.UtcNow; }
                 var ack = result.ContainsKey("output_ack") ? result["output_ack"] as Dictionary<string, object> : null;
                 if (ack != null) lock (gate) foreach (var t in terminals.Values) { object seq; if (ack.TryGetValue(t.Id, out seq)) t.Output.RemoveAll(c => Convert.ToInt64(c["seq"]) <= Convert.ToInt64(seq)); }

@@ -217,6 +217,9 @@
       location.replace('?id=' + body.terminal);
     } catch (error) { ui().error(error.message); }
   }
+  // The files of the project this terminal works in. The terminal goes on running on the computer; the back arrow
+  // of the file pages, or the phone's back key, leads here again.
+  function files() { if (terminal) location.href = '../files/?dir=' + encodeURIComponent(terminal.dir) + '&from=terminal'; }
   function menu() {
     if (!terminal) return;
     const closed = terminal.state === 'closed', dom = store.get('renderer', 'webgl') === 'dom', choices = [];
@@ -240,6 +243,7 @@
       }, false, 'solid']], dialog => dialog.append(box));
       box.focus(); box.select();
     }]);
+    choices.push(['查看项目文件', files]);
     choices.push(['复制终端画面', async () => { try { await navigator.clipboard.writeText(ui().screenText()); } catch (error) { ui().error('浏览器不允许复制，请长按选择文字'); } }]);
     choices.push([dom ? '画面卡顿时：改用显卡绘制' : '画面空白或花屏时：改用兼容绘制', () => { store.set('renderer', dom ? 'webgl' : 'dom'); location.reload(); }]);
     if (!closed) choices.push(['结束终端', () => sheet('结束这个终端？', [['结束终端', () => enqueue({ action: 'close' }), false, 'danger']], dialog => {
@@ -279,6 +283,7 @@
     input(data) { if (data && data.length <= 16000) enqueue({ action: 'input', data }); },
     resize(size) { try { const s = JSON.parse(size); enqueue({ action: 'resize', cols: s.cols, rows: s.rows }); } catch (error) { /* ignore */ } },
     menu,
+    files,
     again,
     fontSize: () => Number(store.get('font', '13')),
     saveFontSize(size) { if (size >= 9 && size <= 20) store.set('font', String(size)); }

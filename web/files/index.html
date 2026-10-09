@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#fbfbfc">
+  <title>文件 · Remote CLI</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../app.css">
+  <link rel="stylesheet" href="files.css">
+  <script defer src="../terminal/skins.js"></script>
+  <script defer src="kinds.js"></script>
+  <script defer src="files.js"></script>
+</head>
+<body>
+  <main id="page">
+    <header class="top">
+      <button type="button" class="icon" id="back" aria-label="返回"></button>
+      <div class="who">
+        <h1 id="heading">文件</h1>
+        <p id="device"><span id="where"></span></p>
+      </div>
+      <button type="button" class="icon" id="more" aria-label="更多"></button>
+    </header>
+
+    <!-- a folder -->
+    <div id="folder" hidden>
+      <nav id="crumbs" aria-label="所在位置"></nav>
+      <input id="search" type="search" placeholder="在这个文件夹里找" aria-label="按名称筛选" hidden>
+      <ul class="cards" id="entries"></ul>
+      <p id="folder-note" class="note" hidden></p>
+    </div>
+
+    <!-- one file -->
+    <div id="file" hidden>
+      <div id="tabs" role="tablist" hidden></div>
+      <div id="view"></div>
+    </div>
+
+    <div id="loading" aria-hidden="true" hidden><i></i><i></i><i></i></div>
+    <section id="progress" hidden><p id="progress-text"></p><div class="bar"><i id="progress-bar"></i></div></section>
+    <section id="problem" class="notice" hidden><b id="problem-title"></b><span id="problem-text"></span><button type="button" class="quiet" id="retry">重试</button></section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="sheet"><form method="dialog" id="sheet-form"></form></dialog>
+</body>
+</html>
