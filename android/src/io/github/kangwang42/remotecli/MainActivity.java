@@ -391,6 +391,7 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private static final java.util.List<String> LOOK = java.util.Arrays.asList("skin", "text", "font", "spacing", "renderer");
     private final class Bridge {
         /** The system's speech recognizer; what was said goes into the page's message box. */
         @JavascriptInterface public void voice() { runOnUiThread(MainActivity.this::dictate); }
@@ -403,6 +404,19 @@ public final class MainActivity extends Activity {
         /** Looks for a newer version of the app now; the answer comes as a short notice or a question. */
         @JavascriptInterface public void update() { runOnUiThread(() -> { android.widget.Toast.makeText(MainActivity.this, "正在检查新版本…", android.widget.Toast.LENGTH_SHORT).show(); updater.check(true); }); }
         @JavascriptInterface public String version() { return versionName(); }
+        /**
+         * The look chosen in the pages (skin, text size, terminal font, line spacing, drawing) is kept by the app, so
+         * that it is the same on every computer. Until one is chosen here, the skin is the one last shown.
+         */
+        @JavascriptInterface public String pref(String key) {
+            if (!LOOK.contains(key)) return "";
+            String value = prefs.getString("look-" + key, "");
+            return value.isEmpty() && "skin".equals(key) && prefs.contains("shade") ? Kit.name(prefs.getInt("shade", 0)) : value;
+        }
+        @JavascriptInterface public void setPref(String key, String value) {
+            if (value == null || !LOOK.contains(key) || !value.matches("[a-z0-9]{1,16}")) return;
+            prefs.edit().putString("look-" + key, value).apply();
+        }
         /** Back to the workbench. disconnect is the name older pages call. */
         @JavascriptInterface public void home() { runOnUiThread(() -> MainActivity.this.home("")); }
         @JavascriptInterface public void disconnect() { home(); }

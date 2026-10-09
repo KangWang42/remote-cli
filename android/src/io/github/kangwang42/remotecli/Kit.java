@@ -31,6 +31,12 @@ final class Kit {
         {0xfbfbfc, 0xf0f1f4, 0xe4e6eb, 0xd5d8df, 0x2b2f3a, 0x666b78, 0x2f6fe4, 0xffffff, 0x3d8a3a, 0xa36a00, 0xc93c37},
         {0xfaf4ed, 0xf4ede4, 0xebe1d5, 0xddd3c6, 0x4a4566, 0x7a7089, 0x286983, 0xffffff, 0x3b7d5c, 0xb9781a, 0xb4506a}
     };
+    private static final String[] NAMES = {"night", "slate", "pine", "dusk", "paper", "dawn"};
+    /** The name the pages give the skin with this background, or nothing for another colour. */
+    static String name(int background) {
+        for (int i = 0; i < SKINS.length; i++) if (SKINS[i][0] == (background & 0xffffff)) return NAMES[i];
+        return "";
+    }
     /** The skin a new installation starts with. */
     static final int PAPER = 0xfffbfbfc;
     private final Activity activity;

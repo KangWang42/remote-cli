@@ -5,9 +5,18 @@
   const TOOLS = { claude: 'Claude Code', codex: 'Codex', shell: 'PowerShell' };
   const ABOUT = { claude: 'Anthropic', codex: 'OpenAI', shell: '命令行' };
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
-  const saved = (key, fallback) => { try { return localStorage.getItem('rcli-' + key) || fallback; } catch (error) { return fallback; } };
-  const keep = (key, value) => { try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ } };
   const native = window.RemoteCliNative || null;
+  // The look belongs to the app, not to one computer: inside the app it is kept there, so every computer's pages
+  // open in the same skin and text size. A browser keeps it per address, as it keeps everything else.
+  const LOOK = ['skin', 'text'];
+  const saved = (key, fallback) => {
+    if (native && native.pref && LOOK.includes(key)) { const chosen = native.pref(key); if (chosen) return chosen; }
+    try { return localStorage.getItem('rcli-' + key) || fallback; } catch (error) { return fallback; }
+  };
+  const keep = (key, value) => {
+    if (native && native.setPref && LOOK.includes(key)) native.setPref(key, value);
+    try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ }
+  };
   let data = null, project = '', timer = 0, busy = false, shown = 12, toastTimer = 0;
 
   // ---- drawing helpers

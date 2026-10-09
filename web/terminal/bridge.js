@@ -4,8 +4,17 @@
   'use strict';
   const id = new URLSearchParams(location.search).get('id') || '';
   const native = window.RemoteCliNative || null;
-  const store = { get(key, fallback) { try { return localStorage.getItem('rcli-' + key) || fallback; } catch (error) { return fallback; } },
-    set(key, value) { try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ } } };
+  // Inside the app the look is the app's own, the same for every computer; a browser keeps it per address.
+  const LOOK = ['skin', 'font', 'spacing', 'renderer'];
+  const store = {
+    get(key, fallback) {
+      if (native && native.pref && LOOK.includes(key)) { const chosen = native.pref(key); if (chosen) return chosen; }
+      try { return localStorage.getItem('rcli-' + key) || fallback; } catch (error) { return fallback; }
+    },
+    set(key, value) {
+      if (native && native.setPref && LOOK.includes(key)) native.setPref(key, value);
+      try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ }
+    } };
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
   const ui = () => window.TerminalUI;
   const home = () => { location.replace('../'); };      // the list is one step back, not one more page
