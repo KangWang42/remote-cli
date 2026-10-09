@@ -12,13 +12,20 @@ Only the standard library is used. Terminal input and output never reach a log.
 
 Configuration lives in <data>/config.json:
     {"Server": "https://relay.example.com", "RemoteEnabled": true,
-     "Name": "ubuntu-server", "Shell": "/bin/bash",
+     "Name": "ubuntu-server", "Shell": "/bin/bash", "RemoteMaxMode": "",
      "RemoteDirs": ["演示=/home/you/演示"]}
 RemoteDirs holds the folders a terminal may be started in; folders added from the phone
-are kept beside them in <data>/terminal-projects.json.
+are kept beside them in <data>/terminal-projects.json. RemoteMaxMode limits what Claude
+Code and Codex may do when started from the phone: "read", "edit" or empty for their own
+default.
+
+Besides a shell, the phone can start Claude Code and Codex when they are installed for
+this user, continue their saved conversations, and look at the files of a project.
 """
+import base64
 import codecs
 import fcntl
+import glob
 import http.client
 import json
 import os
@@ -29,18 +36,28 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import termios
 import threading
 import time
+import uuid
 from urllib.parse import quote, urlsplit
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 ID_RE = re.compile(r"\A[a-f0-9]{16,32}\Z")
 TERMINAL_RE = re.compile(r"\A[a-f0-9]{32}\Z")
 SERVER_RE = re.compile(r"\Ahttps?://[^/\s]+\Z")
+UUID_RE = re.compile(r"\A[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
+PROJECT_ACTIONS = ("project_add", "project_remove", "project_rename")
+FILE_ACTIONS = ("file_list", "file_read")
+FILE_PIECE = 737280     # bytes of a file in one answer, as the Windows agent cuts them
+FILE_ENTRIES = 3000     # entries of a folder in one answer
+FEATURES = ["terminal-exit", "files"]
+# where the tools' own installers put them; a service's PATH seldom has these
+TOOL_DIRS = (".local/bin", ".npm-global/bin", "bin", ".bun/bin", ".volta/bin", ".cargo/bin")
 MAX_TERMINALS = 8
 MAX_OWN_PROJECTS = 30
 OP_TTL = 150            # seconds an operation may travel before it is refused
@@ -128,6 +145,311 @@ def parse_dirs(cfg):
     return out
 
 
+def find_tool(name):
+    """The program `claude` or `codex` of this user, or None."""
+    home = os.path.expanduser("~")
+    folders = [f for f in os.environ.get("PATH", "").split(os.pathsep) if f]
+    folders += [os.path.join(home, f) for f in TOOL_DIRS] + ["/usr/local/bin"]
+    folders += sorted(glob.glob(os.path.join(home, ".nvm", "versions", "node", "*", "bin")), reverse=True)
+    for folder in folders:
+        path = os.path.join(folder, name)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def tool_argv(tool, launcher, session, history, mode, fresh):
+    """The command line of a tool, the same choices as the Windows agent makes."""
+    if tool == "claude":
+        args = ["--session-id" if fresh else "--resume", session] if session else ["--resume"] if history else []
+        args += ["--permission-mode", "plan"] if mode == "read" else \
+            ["--permission-mode", "acceptEdits"] if mode == "edit" else []
+    else:
+        args = ["resume", session] if session else ["resume", "--include-non-interactive"] if history else []
+        args += ["-s", "read-only"] if mode == "read" else ["-s", "workspace-write"] if mode == "edit" else []
+    return [launcher] + args
+
+
+def files(root, relative, action, offset):
+    """What a project folder holds, or a piece of one of its files. Nothing outside the
+    project's own folder is given out: a link inside it that leads elsewhere is refused."""
+    root = os.path.normpath(root)
+    relative = str(relative or "").replace("\\", "/").strip("/")
+    full = os.path.normpath(os.path.join(root, relative)) if relative else root
+    inside = root.rstrip("/") + "/"
+    if full != root and not full.startswith(inside):
+        raise OpError("路径不在项目文件夹内")
+    real_root, real = os.path.realpath(root), os.path.realpath(full)
+    if real != real_root and not real.startswith(real_root.rstrip("/") + "/"):
+        raise OpError("这个位置链接到项目文件夹之外，不能打开")
+    shown = full[len(inside):] if full != root else ""
+    try:
+        if action == "file_list":
+            if not os.path.isdir(full):
+                raise OpError("这不是文件夹" if os.path.exists(full) else "文件夹不存在")
+            entries, more = [], False
+            with os.scandir(full) as listing:
+                for item in listing:
+                    if len(entries) >= FILE_ENTRIES:
+                        more = True
+                        break
+                    try:
+                        info = item.stat()
+                    except OSError:             # a link that leads nowhere is still an entry
+                        info = item.stat(follow_symlinks=False)
+                    inner = stat.S_ISDIR(info.st_mode)
+                    entries.append({"name": item.name, "dir": inner, "size": 0 if inner else info.st_size,
+                                    "modified": int(info.st_mtime * 1000), "hidden": item.name.startswith(".")})
+            return {"path": shown, "entries": entries, "more": more}
+        if os.path.isdir(full):
+            raise OpError("这是文件夹")
+        # opened without waiting, so a pipe or a device left in a project cannot hold the agent
+        fd = os.open(full, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise OpError("这不是普通文件，不能打开")
+            if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0 or offset > info.st_size:
+                raise OpError("位置无效")
+            stream.seek(offset)
+            data = stream.read(min(FILE_PIECE, info.st_size - offset))
+        return {"path": shown, "size": info.st_size, "modified": int(info.st_mtime * 1000), "offset": offset,
+                "data": base64.b64encode(data).decode("ascii"), "end": offset + len(data) >= info.st_size}
+    except FileNotFoundError:
+        raise OpError("文件不存在")
+    except PermissionError:
+        raise OpError("没有权限读取")
+    except OSError:
+        raise OpError("读取失败")
+
+
+def read_part(path, tail, limit):
+    """The beginning or the end of a file, as text, cut at whole lines where it was cut."""
+    with open(path, "rb") as stream:
+        size = os.fstat(stream.fileno()).st_size
+        if tail and size > limit:
+            stream.seek(size - limit)
+            data = stream.read(limit)
+            data = data[data.find(b"\n") + 1:]
+        else:
+            data = stream.read(limit)
+            if size > limit:
+                data = data[:data.rfind(b"\n") + 1]
+    return data.decode("utf-8", "replace")
+
+
+def rows(text):
+    for line in text.split("\n"):
+        if line.startswith("{"):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def claude_title(path):
+    """The name Claude Code shows for a conversation; without one, what was asked last,
+    else what it began with."""
+    custom = named = last = ""
+    for row in rows(read_part(path, True, 256 * 1024)):
+        custom = row.get("customTitle") if isinstance(row.get("customTitle"), str) else custom
+        named = row.get("aiTitle") if isinstance(row.get("aiTitle"), str) else named
+        last = row.get("lastPrompt") if isinstance(row.get("lastPrompt"), str) else last
+    if tidy(custom or named or last):
+        return tidy(custom or named or last)
+    for row in rows(read_part(path, False, 768 * 1024)):
+        message = row.get("message")
+        if row.get("type") != "user" or row.get("isSidechain") or row.get("isMeta") or not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = next((p.get("text") for p in content if isinstance(p, dict) and p.get("type") == "text"), "")
+        if isinstance(content, str) and tidy(content):
+            return tidy(content)
+    return ""
+
+
+def parent_of(pid):
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as stream:
+            return int(stream.read().rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def owner_of(pid, terminals):
+    """The terminal of ours a process runs in, following its parents; None for a process
+    that someone started elsewhere on this computer."""
+    mine = {live.pid: live for live in terminals if not live.closed}
+    for _ in range(16):
+        if pid in mine:
+            return mine[pid]
+        pid = parent_of(pid)
+        if pid <= 1:
+            return None
+    return None
+
+
+class Sessions:
+    """Conversations Claude Code and Codex saved on this computer for the projects, and
+    which of them a program has open right now. A conversation that is open outside our
+    terminals is listed as taken, so the phone does not open it a second time."""
+
+    def __init__(self):
+        self.home = os.path.expanduser("~")
+        self.titles = {}                # path -> (mtime, size, title)
+        self.folders = {}               # codex rollout path -> the folder it worked in
+        self.names = (None, {})         # codex's own index of names, by its mtime
+        self.found = []
+
+    def known(self, session, tool, name):
+        return next((s for s in self.found if s["id"] == session and s["tool"] == tool and s["dir"] == name), None)
+
+    def scan(self, dirs, terminals):
+        found = []
+        try:
+            found += self._claude(dirs, terminals)
+        except OSError:
+            pass
+        try:
+            found += self._codex(dirs, terminals)
+        except OSError:
+            pass
+        self.found = found
+        return found
+
+    def _title(self, path, info):
+        cached = self.titles.get(path)
+        if cached and cached[:2] == (info.st_mtime, info.st_size):
+            return cached[2]
+        try:
+            title = claude_title(path)
+        except OSError:
+            return cached[2] if cached else ""
+        if len(self.titles) > 2000:
+            self.titles.clear()
+        self.titles[path] = (info.st_mtime, info.st_size, title)
+        return title
+
+    def _claude(self, dirs, terminals):
+        taken = set()                   # open in a program that is not one of our terminals
+        for path in glob.glob(os.path.join(self.home, ".claude", "sessions", "*.json")):
+            try:
+                with open(path, encoding="utf-8") as stream:
+                    record = json.load(stream)
+                pid, session = record.get("pid"), record.get("sessionId")
+                if isinstance(pid, bool) or not isinstance(pid, int) or not isinstance(session, str) \
+                        or not UUID_RE.match(session):
+                    continue
+                with open("/proc/%d/comm" % pid, encoding="utf-8", errors="replace") as stream:
+                    if stream.read().strip() not in ("claude", "node"):
+                        continue
+            except (OSError, ValueError, AttributeError):
+                continue                # the program has left; its note stayed behind
+            owner = owner_of(pid, terminals)
+            if owner is None:
+                taken.add(session)
+            elif owner.tool == "claude":
+                owner.session = session
+                owner.status = record.get("status") if record.get("status") in ("idle", "busy") else ""
+        found = []
+        for name, folder in dirs.items():
+            saved = os.path.join(self.home, ".claude", "projects", re.sub(r"[^a-zA-Z0-9]", "-", folder))
+            recent = []
+            for path in glob.glob(os.path.join(saved, "*.jsonl")):
+                try:
+                    recent.append((os.stat(path), path))
+                except OSError:
+                    pass
+            recent.sort(key=lambda item: item[0].st_mtime, reverse=True)
+            for at, (info, path) in enumerate(recent):
+                session = os.path.basename(path)[:-6]
+                if not UUID_RE.match(session) or (at >= 15 and session not in taken):
+                    continue
+                title = self._title(path, info)
+                if title:
+                    found.append(self._entry(session, "claude", name, title, info, session in taken))
+        return found
+
+    def _codex(self, dirs, terminals):
+        home = os.environ.get("CODEX_HOME") or os.path.join(self.home, ".codex")
+        index = os.path.join(home, "session_index.jsonl")
+        try:
+            stamp = os.stat(index).st_mtime
+            if stamp != self.names[0]:
+                self.names = (stamp, {row["id"]: row.get("thread_name") for row in rows(read_part(index, True, 2 << 20))
+                                      if isinstance(row.get("id"), str)})
+        except OSError:
+            pass
+        root = os.path.join(home, "sessions")
+        open_now = self._codex_open(root)
+        recent = []
+        for path in glob.glob(os.path.join(root, "**", "rollout-*.jsonl"), recursive=True):
+            try:
+                recent.append((os.stat(path), path))
+            except OSError:
+                pass
+        recent.sort(key=lambda item: item[0].st_mtime, reverse=True)
+        found, counts = [], {}
+        for info, path in recent[:150]:
+            session = os.path.basename(path)[:-6][-36:]
+            if not UUID_RE.match(session):
+                continue
+            if path not in self.folders:
+                if len(self.folders) > 3000:
+                    self.folders.clear()
+                try:
+                    head = read_part(path, False, 16 * 1024)
+                except OSError:
+                    continue
+                first = next(rows(head), {})
+                payload = first.get("payload") if isinstance(first.get("payload"), dict) else {}
+                # a helper that a conversation started for itself is part of that conversation
+                self.folders[path] = "" if '"parent_thread_id"' in head else str(payload.get("cwd") or "")
+            folder = self.folders[path]
+            name = next((n for n, p in dirs.items() if folder and os.path.normpath(folder) == p), None)
+            if name is None:
+                continue
+            pid = open_now.get(path)
+            owner = owner_of(pid, terminals) if pid else None
+            if owner is not None and owner.tool == "codex" and not owner.session:
+                owner.session = session
+            live = pid is not None and owner is None
+            if not live and counts.get(name, 0) >= 15:
+                continue
+            if not live:
+                counts[name] = counts.get(name, 0) + 1
+            title = tidy(str(self.names[1].get(session) or "")) \
+                or "Codex 对话 " + time.strftime("%m-%d %H:%M", time.localtime(info.st_mtime))
+            found.append(self._entry(session, "codex", name, title, info, live))
+        return found
+
+    def _codex_open(self, root):
+        """Conversation files a Codex of this user holds open, as path -> process."""
+        held = {}
+        for comm in glob.glob("/proc/[0-9]*/comm"):
+            try:
+                with open(comm, encoding="utf-8", errors="replace") as stream:
+                    if not stream.read().strip().startswith(("codex", "node")):
+                        continue
+                folder = os.path.dirname(comm)
+                for fd in os.listdir(os.path.join(folder, "fd")):
+                    target = os.readlink(os.path.join(folder, "fd", fd))
+                    if target.startswith(root + "/") and target.endswith(".jsonl"):
+                        held[target] = int(os.path.basename(folder))
+            except (OSError, ValueError):
+                continue                # another user's process, or one that has just left
+        return held
+
+    @staticmethod
+    def _entry(session, tool, name, title, info, live):
+        return {"id": session, "tool": tool, "dir": name, "title": title, "updated": int(info.st_mtime * 1000),
+                "live": live, "host": "cli" if live else "", "status": "", "can_takeover": False,
+                "ownership_known": True, "takeover_reason": "请先在电脑上结束正在使用这个对话的程序" if live else ""}
+
+
 def check_op(op, need_terminal=True):
     """Shape and freshness of an operation, before anything is carried out."""
     op_id = op.get("id")
@@ -199,10 +521,13 @@ class Http:
 class Live:
     """One terminal: the child process, its pty, and the output waiting to be numbered."""
 
-    def __init__(self, terminal_id, project, cwd, cols, rows, shell, wake):
+    def __init__(self, terminal_id, project, cwd, cols, rows, argv, wake, tool="shell", session=""):
         self.id = terminal_id
         self.project = project          # the project's name, which a rename follows
         self.dir = cwd                  # its folder on this computer
+        self.tool = tool
+        self.session = session          # the conversation a tool shows, once it is known
+        self.status = ""                # busy or idle, where the tool says so itself
         self.wake = wake
         self.lock = threading.Lock()
         self.pending = []               # read from the program, not yet numbered
@@ -214,6 +539,7 @@ class Live:
         self.drained = False            # the reader delivered everything
         self.exit_code = None
         self.closed_at = None
+        self.told_closed = False        # the relay has accepted a report that said it ended
         self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pid, fd = pty.fork()
         if pid == 0:                    # child: pty.fork already made it a session leader
@@ -226,7 +552,10 @@ class Live:
                 env["COLORTERM"] = "truecolor"
                 if not any("utf-8" in env.get(k, "").lower() for k in ("LANG", "LC_ALL")):
                     env["LANG"] = "C.UTF-8"  # 中文输入编辑需要 UTF-8 locale；systemd 服务常无 LANG
-                os.execvpe(shell, [shell], env)
+                beside = os.path.dirname(argv[0])   # a tool finds its own runtime (node) next to itself
+                if tool != "shell" and beside not in env.get("PATH", "").split(os.pathsep):
+                    env["PATH"] = beside + os.pathsep + env.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+                os.execvpe(argv[0], argv, env)
             except BaseException:
                 os._exit(127)
         self.pid = pid
@@ -356,7 +685,7 @@ class Live:
 
     def can_forget(self):
         with self.lock:
-            return (self.closed and not self.pending and not self.output
+            return (self.closed and self.told_closed and not self.pending and not self.output
                     and (self.drained or (self.closed_at is not None and time.time() - self.closed_at > 15)))
 
     def dispose(self):
@@ -492,6 +821,10 @@ class Agent:
         self.password = password
         self.instance = secrets.token_hex(16)
         self.projects = Projects(data)
+        self.sessions = Sessions()
+        self.sessions_at = 0.0          # when the conversations were last looked up
+        self.sessions_sent = ("", 0.0)  # what the relay was last told, and when
+        self.tools = (["shell"], 0.0)
         self.terminals = {}
         self.completed = {}
         self.reported = set()
@@ -507,6 +840,7 @@ class Agent:
         self.last_input = 0.0
         self.soon = False
         self.paired = False
+        self.unreachable = False        # said once, not at every attempt
 
     # ---- wiring
     def wake(self):
@@ -524,13 +858,22 @@ class Agent:
     def login(self):
         if not SERVER_RE.match(self.server):
             return False
-        self.next_login = time.time() + 60      # one attempt a minute until it works
+        # A refused password is tried again once a minute: the relay locks sign-in after a
+        # few wrong ones. A relay that cannot be reached yet (both just started, the network
+        # is not up) is tried again soon.
+        self.next_login = time.time() + 60
         try:
             status, body = self.http.post(self.server + "/api/login", {"password": self.password})
             token = json.loads(body.decode("utf-8")).get("token") if status == 200 else None
         except (OSError, http.client.HTTPException, ValueError):
+            self.next_login = time.time() + 5
+            if not self.unreachable:
+                self.unreachable = True
+                say("连不上中转 %s，稍后重试" % self.server)
             return False
+        self.unreachable = False
         if not isinstance(token, str) or len(token) < 32:
+            say("中转拒绝了登录（HTTP %d），请核对密码；一分钟后重试" % status)
             return False
         self.token = token
         say("已连接中转 " + self.server)
@@ -568,15 +911,43 @@ class Agent:
             output = output_batch(list(self.terminals.values()))
             if output:
                 self.last_activity = time.time()
-            acks = [item for key, item in self.completed.items() if key not in self.reported][:200]
+            # Pieces of files are large: a report carries as many as fit, the rest go with the next.
+            acks, room = [], 3 * FILE_PIECE
+            for key, item in self.completed.items():
+                if key in self.reported:
+                    continue
+                room -= len(item.get("result", {}).get("data", ""))
+                if acks and room < 0:
+                    break
+                acks.append(item)
+                if len(acks) >= 200:
+                    break
+            now = time.time()
+            if now - self.tools[1] > 30:
+                self.tools = ([t for t in ("claude", "codex") if find_tool(t)] + ["shell"], now)
+            if now - self.sessions_at > 3:
+                self.sessions_at = now
+                self.sessions.scan(dirs, list(self.terminals.values()))
             payload = {
-                "info": {"instance": self.instance, "enabled": enabled, "tools": ["shell"],
+                "info": {"instance": self.instance, "enabled": enabled, "tools": self.tools[0],
+                         "features": FEATURES, "version": VERSION, "newer": "",
                          "workspaces": list(dirs.keys()),
                          "projects": self.projects.entries(cfg, dirs)},
                 "terminals": [{"id": live.id, "state": "closed" if live.closed else "running",
-                               "cols": live.cols, "rows": live.rows, "session": "", "status": "",
-                               "exit_code": live.exit_code} for live in self.terminals.values()],
+                               "cols": live.cols, "rows": live.rows, "session": live.session,
+                               "status": "" if live.closed else live.status, "exit_code": live.exit_code,
+                               "error": "程序退出（代码 %d），请检查终端画面中的原因" % live.exit_code
+                                        if live.exit_code else ""} for live in self.terminals.values()],
                 "output": output, "acks": acks}
+            # A program may end while this report travels: it is forgotten only after a
+            # report that said so, or the phone would show it running for ever.
+            ended = [item["id"] for item in payload["terminals"] if item["state"] == "closed"]
+            # The list of conversations is long: it goes out when it changed, and now and then
+            # in case the relay restarted.
+            listed = json.dumps(self.sessions.found, ensure_ascii=False, sort_keys=True)
+            listing = listed != self.sessions_sent[0] or now - self.sessions_sent[1] > 10
+            if listing:
+                payload["sessions"] = self.sessions.found
         try:
             status, body = self.http.post(self.server + "/api/terminal/agent", payload, self.token)
         except (OSError, http.client.HTTPException):
@@ -593,8 +964,14 @@ class Agent:
         if not isinstance(result, dict):
             return
         with self.work:
+            if listing:
+                self.sessions_sent = (listed, now)
+            for key in ended:
+                if key in self.terminals:
+                    self.terminals[key].told_closed = True
             for ack in acks:
                 self.reported.add(ack["id"])
+                ack.pop("result", None)         # handed over once: nothing of a file is kept
             ops = result.get("operations")
             if isinstance(ops, list):
                 for op in ops:
@@ -617,21 +994,25 @@ class Agent:
         """Carries out one operation. Called with self.work held, from the report loop or
         the held pull; the same id is never carried out twice."""
         try:
-            op_id, terminal = check_op(op, need_terminal=op.get("action") not in
-                                       ("project_add", "project_remove", "project_rename"))
+            op_id, terminal = check_op(op, need_terminal=op.get("action") not in PROJECT_ACTIONS + FILE_ACTIONS)
         except OpError as error:
             say("拒绝操作：%s" % error)
             return
         if op_id in self.completed:
             self.reported.discard(op_id)        # the ack may have been lost: send it again
             return
-        error = ""
+        error, result = "", None
         try:
             if cfg.get("RemoteEnabled") is not True:
                 raise OpError("电脑远控已关闭")
             action = str(op.get("action") or "")
-            if action in ("project_add", "project_remove", "project_rename"):
+            if action in PROJECT_ACTIONS:
                 self.projects.change(op, action, cfg, self.terminals)
+            elif action in FILE_ACTIONS:
+                root = dirs.get(str(op.get("dir") or ""))
+                if root is None:
+                    raise OpError("没有这个项目")
+                result = files(root, op.get("path", ""), action, op.get("offset", 0))
             elif action == "start":
                 self.start_terminal(op, dirs, terminal)
             else:
@@ -662,6 +1043,8 @@ class Agent:
         except Exception as exc:                # never leak a path or a stack to the phone
             error = "终端操作失败：" + type(exc).__name__
         self.completed[op_id] = {"id": op_id, "error": error}
+        if result is not None and not error:
+            self.completed[op_id]["result"] = result
         self.reported.discard(op_id)
         self.last_activity = time.time()
         self.soon = True
@@ -672,7 +1055,7 @@ class Agent:
         if terminal in self.terminals:
             return                              # already started; the operation is a repeat
         tool = str(op.get("tool") or "")
-        if tool != "shell":
+        if tool not in ("claude", "codex", "shell"):
             raise OpError("电脑没有这个工具")
         name = str(op.get("dir") or "")
         if name not in dirs:
@@ -683,7 +1066,30 @@ class Agent:
         if sum(1 for live in self.terminals.values() if not live.closed) >= MAX_TERMINALS:
             raise OpError("最多同时运行 %d 个终端，请先结束一个" % MAX_TERMINALS)
         cfg = read_config(self.data)
-        self.terminals[terminal] = Live(terminal, name, cwd, 80, 24, self.shell(cfg), self.wake)
+        session = ""
+        if tool == "shell":
+            argv = [self.shell(cfg)]
+        else:
+            # Ending a program that runs elsewhere on this computer, or copying its
+            # conversation, needs proof of who owns it; this agent does not do either.
+            if op.get("takeover") is True or op.get("fork") is True:
+                raise OpError("这台电脑不支持接管或副本，请先在电脑上结束原来的程序")
+            launcher = find_tool(tool)
+            if launcher is None:
+                raise OpError("电脑没有这个工具")
+            session, history = str(op.get("session") or ""), op.get("history") is True
+            if session:
+                self.sessions.scan(dirs, list(self.terminals.values()))     # as it is now, not seconds ago
+                saved = self.sessions.known(session, tool, name) if UUID_RE.match(session) else None
+                if saved is None:
+                    raise OpError("电脑上没有找到这个对话，请刷新后重试")
+                if saved["live"] or any(t.session == session and not t.closed for t in self.terminals.values()):
+                    raise OpError("这个对话正在被使用，请先结束使用它的程序")
+            fresh = tool == "claude" and not session and not history
+            if fresh:
+                session = str(uuid.uuid4())     # named by us, so the terminal knows its conversation at once
+            argv = tool_argv(tool, launcher, session, history, str(cfg.get("RemoteMaxMode") or ""), fresh)
+        self.terminals[terminal] = Live(terminal, name, cwd, 80, 24, argv, self.wake, tool, session)
 
     # ---- loops
     def listen(self):

@@ -289,6 +289,7 @@ App 有三层：**工作台**（所有电脑）→ **一台电脑**（它的项�
 | 目录 | 内容 |
 | --- | --- |
 | `agent-windows/` | 电脑端：`RemoteCliApp.cs`（窗口、托盘、连接方式）、`RemoteCliAgent.cs`（终端与对话扫描）、`QrCode.cs`、`Setup.cs`（安装程序）。C#，用 Windows 自带的编译器构建 |
+| `agent-linux/` | Linux 电脑端：`agent.py`（终端、对话扫描、查看文件），一个文件，只用 Python 标准库；`remote-cli-agent.service` 是 systemd 用户服务 |
 | `relay/` | 中转：`server.py`（登录与 HTTP）、`relay.py`（终端状态与输出的转发）。只用 Python 标准库 |
 | `android/` | 安卓 App：`MainActivity`（各界面之间的跳转、扫码回调、语音识别）、`Workbench`（工作台）、`Kit`（配色和界面部件）、`AggregateSessions`（任务分组与排序，不依赖 Android，可单独检查） |
 | `web/` | App 里一台电脑的列表页和终端页（xterm.js），由中转提供、嵌在 App 内显示；随电脑端一起更新 |
@@ -314,6 +315,57 @@ RCLI_PASSWORD='一个足够长的密码' python3 relay/server.py --host 127.0.0.
 
 没有窗口的电脑端 `RemoteCliAgent.exe` 也在安装目录里，适合只用自有中转、想自己用计划任务启动的情况；它读取 `%LOCALAPPDATA%\RemoteCli\config.json`，密码用 `RemoteCliAgent.exe --set-password` 从标准输入写入。
 
+## Linux 电脑端
+
+Linux 上没有带窗口的程序，电脑端是一个 Python 文件，作为你自己这个用户的后台服务运行。它不自带中转和公网通道：先按上一节在一台手机访问得到的机器上部署中转（可以就是这台 Linux），再让电脑端连过去。需要 Python 3.9 及以上，没有其他依赖。
+
+```bash
+git clone https://github.com/KangWang42/remote-cli && cd remote-cli/agent-linux
+mkdir -p ~/.local/share/remote-cli-agent ~/.local/state/remote-cli-agent ~/.config/systemd/user
+cp agent.py ~/.local/share/remote-cli-agent/
+cp remote-cli-agent.service ~/.config/systemd/user/
+
+# 中转的密码，从标准输入读入，保存为只有自己可读的文件
+echo '中转的密码' | python3 ~/.local/share/remote-cli-agent/agent.py --set-password
+```
+
+在 `~/.local/state/remote-cli-agent/config.json` 里写上中转地址和允许手机使用的项目文件夹：
+
+```json
+{"Server": "https://relay.example.com", "RemoteEnabled": true, "Name": "ubuntu-server",
+ "RemoteDirs": ["演示=/home/you/演示"]}
+```
+
+| 设置 | 含义 |
+| --- | --- |
+| `Server` | 中转的地址 |
+| `RemoteEnabled` | `true` 才接受手机的操作；改成 `false` 会结束所有手机终端 |
+| `Name` | 手机上显示的电脑名称，不写用主机名 |
+| `RemoteDirs` | 项目文件夹，写成 `名称=完整路径`。终端只能在这些文件夹里启动；手机上添加的项目另存在同一目录的 `terminal-projects.json` |
+| `Shell` | 普通终端用的 shell，不写用 `$SHELL` |
+| `RemoteMaxMode` | 从手机启动 Claude Code、Codex 时的权限上限：`read` 只读，`edit` 可改文件，不写用它们自己的默认 |
+
+改动随时生效，不用重启服务。然后启动，并在终端里显示配对二维码给手机扫：
+
+```bash
+systemctl --user daemon-reload && systemctl --user enable --now remote-cli-agent
+sudo loginctl enable-linger $USER      # 没有人登录时也保持运行
+python3 ~/.local/share/remote-cli-agent/agent.py --pair    # 地址、密码和二维码；二维码需要装有 qrencode
+```
+
+地址和密码只在终端里显示，不写进服务日志。运行情况看 `journalctl --user -u remote-cli-agent`。
+
+和 Windows 电脑端相比：
+
+| | Linux 电脑端 |
+| --- | --- |
+| 普通终端 | 有，用你的 shell。手机上这个终端的名称目前仍显示为“PowerShell” |
+| Claude Code、Codex | 装在这个用户下（`PATH`、`~/.local/bin`、`~/.npm-global/bin`、nvm 等位置）就会出现在手机上；可以新建对话，也可以继续项目里保存的对话 |
+| 查看文件、保存到手机 | 有，只给出项目文件夹之内的内容 |
+| 接管电脑上正在使用的对话、Codex 副本 | 没有。正在别处使用的对话会标为占用，请先在电脑上结束使用它的程序 |
+| 从手机更新电脑端 | 没有，用 `git pull` 后重新复制 `agent.py` 并重启服务 |
+| 发现电脑上其它用过的文件夹 | 没有，项目写在 `RemoteDirs` 里或从手机添加 |
+
 ## 自己构建
 
 ```powershell
@@ -332,6 +384,7 @@ powershell -ExecutionPolicy Bypass -File android\build.ps1 -Jdk <JDK 目录> -Sd
 ```powershell
 # 测试
 python -m unittest discover -s relay -p "test_*.py"
+python3 -m unittest discover -s agent-linux -p "test_*.py"   # Linux 电脑端，在 Linux 上运行：真实中转、真实终端，Claude Code 用替身程序
 python tests\e2e_windows.py
 node tests\bridge_check.js                                # 传输选择、连续输入和断线重试
 node tests\terminal_scroll_check.js                       # 拖动、惯性、反向和停止
@@ -354,7 +407,7 @@ java -cp .cache\zxing-core-3.5.3.jar tests\QrDecodeCheck.java <二维码.png> <�
 
 ## 已知限制
 
-- 电脑端目前只有 Windows。macOS 和 Linux 的电脑端还没有写；接口在 `docs/PROTOCOL.md`。
+- 带窗口、自带中转和公网通道的电脑端只有 Windows。Linux 有后台服务形式的电脑端（见“Linux 电脑端”），需要自己部署中转；它在 Ubuntu 24.04、Python 3.12 上测试过，Claude Code 和 Codex 的启动与对话列表是用替身程序和按真实格式编写的对话文件测试的，没有在装有这两个工具的 Linux 上实际使用过。macOS 的电脑端还没有写；接口在 `docs/PROTOCOL.md`。
 - 没有 iOS App。
 - 界面只有中文。
 - App 在后台时不会推送通知；任务是否需要你，要打开 App 才能看到。
