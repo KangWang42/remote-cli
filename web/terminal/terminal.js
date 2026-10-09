@@ -68,7 +68,7 @@
   // size. The program is drawn for one size only: that of whoever typed last. `theirs` is the size the computer
   // reports; `sized` is when this page last asked for its own, so that a report still on its way is not taken for
   // someone else's wish.
-  let theirs = '', sized = 0;
+  let theirs = '', sized = 0, elsewhere = false;
 
   function send(data) {
     if (!bridge) return false;
@@ -248,7 +248,12 @@
       const t = payload.terminal, device = payload.device;
       const live = t.state === 'running' && device.online && device.enabled;
       tool = t.tool; ended = t.state === 'closed';
-      theirs = t.cols && t.rows ? `${t.cols}x${t.rows}` : '';
+      // The size changing to one this page did not ask for means the terminal is open in another place too. A size
+      // that merely has not caught up with this page's own request says nothing.
+      const reported = t.cols && t.rows ? `${t.cols}x${t.rows}` : '';
+      if (reported && theirs && reported !== theirs && reported !== lastSize && Date.now() - sized > 2500) elsewhere = true;
+      if (reported === `${term.cols}x${term.rows}`) elsewhere = false;
+      theirs = reported;
       slash.hidden = !(COMMANDS[tool] || []).length;
       if ($('files').hidden) $('files').hidden = false;        // the folder this terminal works in is known now
       if (!initialized || payload.reset) {
@@ -262,7 +267,7 @@
       const plain = device.shell || 'PowerShell';      // what the computer calls its plain terminal
       const where = (tool === 'codex' ? 'Codex' : tool === 'shell' ? plain : 'Claude Code') + ' · ' + t.dir;
       // Someone else's size on the screen means the terminal is open in another place too.
-      $('shared').hidden = !(running && theirs && theirs !== `${term.cols}x${term.rows}` && Date.now() - sized > 2500);
+      $('shared').hidden = !(running && elsewhere);
       const loading = restoring && more ? `载入输出 ${Math.round(100 * (payload.after - start) / Math.max(1, t.seq - start))}%` : '';
       show($('title'), t.title);
       show(status, where + ' · ' + (loading || (!device.online ? '电脑离线，等待重连' : !device.enabled ? '电脑远控已关闭' : t.state === 'starting' ? '正在启动'

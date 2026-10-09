@@ -45,7 +45,7 @@ import time
 import uuid
 from urllib.parse import quote, urlsplit
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 ID_RE = re.compile(r"\A[a-f0-9]{16,32}\Z")
 TERMINAL_RE = re.compile(r"\A[a-f0-9]{32}\Z")
 SERVER_RE = re.compile(r"\Ahttps?://[^/\s]+\Z")

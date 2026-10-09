@@ -61,6 +61,12 @@ Each terminal also says what it is doing:
 | `idle` | it waits for the next message; `done: true` when it worked before that |
 | `ended`, `failed` | it has ended; `failed` with an exit code other than 0 |
 
+`asks` is given for a terminal whose phase is `confirm`: up to 14 lines from the bottom of its screen, the question
+it waits on, so that a viewer can show it where it offers to answer (`input` with `\r` for yes, `\x1b` for no).
+
+`device.shell` is what the computer calls its plain terminal ("PowerShell", "bash"); a terminal of the tool `shell`
+is titled with it. It is empty from a computer that does not say.
+
 `said` is one line of what a running terminal's program last said or did, read from the screen the relay keeps for it; it is empty for a terminal that is not running and is only part of the list of all terminals.
 
 `phase_at` is when the phase last changed (milliseconds since 1970). A viewer can keep the `phase_at` it last showed for a terminal to tell "finished, not looked at yet" from "waiting".
@@ -161,7 +167,7 @@ the same folder. A locked source cannot be resumed concurrently; choose fork or 
 
 ```json
 {"info": {"instance": "<32 hex, new at each start>", "enabled": true, "tools": ["claude", "shell"], "workspaces": ["demo"],
-          "features": ["files", "update"], "version": "0.7.0", "newer": "", "projects": [...], "candidates": [...]},
+          "features": ["files", "update"], "version": "0.7.0", "newer": "", "shell": "PowerShell", "projects": [...], "candidates": [...]},
  "terminals": [{"id": "...", "state": "running", "status": "idle"}],
  "output": [{"terminal": "...", "seq": 13, "data": "..."}],
  "acks": [{"id": "<operation id>", "error": ""}],

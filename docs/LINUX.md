@@ -62,7 +62,7 @@ remote-cli uninstall   # 停止并移除全部；加 --purge 连设置和密码�
 
 | | Linux 电脑端 |
 | --- | --- |
-| 普通终端 | 有，用你的 shell。手机上这个终端的名称目前仍显示为“PowerShell” |
+| 普通终端 | 有，用你的 shell，手机上显示的就是它的名字（如 bash、zsh）。中转和 App 是 1.0.0 之前的版本时仍显示为“PowerShell” |
 | Claude Code、Codex | 装在这个用户下（`PATH`、`~/.local/bin`、`~/.npm-global/bin`、nvm 等位置）就会出现在手机上；可以新建对话，也可以继续项目里保存的对话 |
 | 查看文件、保存到手机 | 有，只给出项目文件夹之内的内容 |
 | 查看电脑上打开着的对话 | 有，可以先看最近的内容 |
