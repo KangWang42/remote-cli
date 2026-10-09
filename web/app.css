@@ -178,3 +178,18 @@ dialog[open] { animation: rise .18s ease-out; }
 .sizes button[aria-pressed="true"] { background: var(--raised); color: var(--ink); font-weight: 600; }
 #toast { position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 20; max-width: min(88vw, 480px); padding: 10px 16px; border-radius: 14px; background: var(--ink); color: var(--bg); font-size: .9rem; font-weight: 600; box-shadow: 0 8px 28px rgba(0, 0, 0, .35); text-align: center; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* a question answered from the list, and a terminal started without walking to its project */
+.card .ask { grid-column: 1 / -1; display: grid; gap: 8px; padding: 0 12px 12px; }
+.card .ask pre { margin: 0; padding: 10px 12px; max-height: 190px; overflow: auto; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre; }
+.card .ask .answers { display: flex; gap: 8px; }
+.card .ask .answers button { flex: 1; min-height: 42px; border-radius: 12px; font-weight: 600; border: 1px solid var(--line); background: var(--raised); }
+.card .ask .answers .yes { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.card .ask .answers .no { color: var(--bad); }
+.card .ask .answers .see { flex: 0 0 auto; padding: 0 14px; font-weight: 500; color: var(--muted); }
+.card.asking { flex-wrap: wrap; }
+#sheet-form .anywhere { display: grid; gap: 6px; max-height: 56vh; overflow-y: auto; }
+#sheet-form .anywhere .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px 8px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--raised); }
+#sheet-form .anywhere .row b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+#sheet-form .anywhere .row span { display: flex; gap: 6px; flex: none; }
+#sheet-form .anywhere .row button.tool { width: 42px; height: 42px; border-radius: 12px; }

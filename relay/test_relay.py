@@ -380,6 +380,29 @@ class TerminalRelayTests(unittest.TestCase):
         tr.overview(self.path, now=1004 + 601)
         self.assertEqual(len(tr._pending), 0)
 
+    def test_a_question_is_shown_with_the_terminal_so_it_can_be_answered_from_the_list(self):
+        self.start()
+        live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
+        asked = "\x1b[2J\x1b[H Bash command\r\n\r\n   rm -rf build\r\n\r\n Do you want to proceed?\r\n > 1. Yes\r\n   2. No\r\n"
+        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 1, "data": asked}]), now=1004)
+        tr.agent(self.path, live, now=1007)         # quiet for a moment with the question on the screen
+        shown = tr.overview(self.path, now=1007)["terminals"][0]
+        self.assertEqual(shown["phase"], "confirm")
+        self.assertEqual([line.strip() for line in shown["asks"]], ["Bash command", "", "rm -rf build", "", "Do you want to proceed?", "> 1. Yes", "2. No"])
+        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 2, "data": "building " * 150}]), now=1008)      # it went on
+        tr.agent(self.path, live, now=1020)
+        self.assertEqual(tr.overview(self.path, now=1020)["terminals"][0]["asks"], [])      # no question, nothing to answer
+
+    def test_the_plain_terminal_is_called_what_the_computer_calls_it(self):
+        self.assertEqual(tr.overview(self.path, now=1001)["device"].get("shell", ""), "")
+        self.start()
+        self.assertEqual(tr.overview(self.path, now=1004)["terminals"][0]["title"], "Codex")
+        tr.agent(self.path, {"info": dict(self.info, shell="bash\x07" + "x" * 40)}, now=1005)
+        self.assertEqual(tr.overview(self.path, now=1005)["device"]["shell"], ("bash" + "x" * 40)[:24])
+        tr.agent(self.path, {"info": dict(self.info, shell="zsh")}, now=1006)
+        shell = tr.command(self.path, {"id": "d" * 32, "action": "start", "tool": "shell", "dir": "demo"}, now=1006)["terminal"]
+        self.assertEqual(next(t for t in tr.overview(self.path, now=1006)["terminals"] if t["id"] == shell)["title"], "zsh")
+
     def test_a_conversation_is_read_by_the_computer_before_anything_is_done_to_it(self):
         import threading
         sid = "11111111-2222-3333-4444-555555555555"

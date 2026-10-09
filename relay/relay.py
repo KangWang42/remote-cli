@@ -282,6 +282,28 @@ def _said(term):
     return view.text
 
 
+def _question(term):
+    """The question a terminal's program is waiting on, as the last lines of its screen: enough to answer it from
+    the list without opening the terminal, and never answered without having been shown."""
+    _said(term)                         # brings the kept screen up to date
+    kept = _screens.get(term["id"])
+    if not kept:
+        return []
+    lines = [line[:160] for line in kept[1].lines()]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    lines = lines[-14:]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    return lines
+
+
+def _shell(value):
+    """The name the computer gives its plain terminal ("PowerShell", "bash"), for titles and buttons."""
+    value = "".join(c for c in value if c.isprintable()).strip() if isinstance(value, str) else ""
+    return value[:24]
+
+
 def _public(term):
     shown = {k: v for k, v in term.items() if k not in ("output", "instance", "size", "out_at", "touched", "calm_until")}
     # Until the owner names a terminal, it carries the name of the conversation it has open.
@@ -389,7 +411,9 @@ def _overview(path, terminal, after, now):
             for gone in [key for key in _screens if key not in state["threads"]]:
                 del _screens[gone]
             return {"device": _view(now), "terminals": sorted(
-                [dict(_public(t), said=_said(t) if t["state"] == "running" else "") for t in state["threads"].values()], key=lambda t: -t["created"]),
+                [dict(_public(t), said=_said(t) if t["state"] == "running" else "",
+                      asks=_question(t) if t["state"] == "running" and t.get("phase") == "confirm" else [])
+                 for t in state["threads"].values()], key=lambda t: -t["created"]),
                 "sessions": [_public_session(s, attached.get(s["id"], "")) for s in _sessions]}
         term = state["threads"].get(terminal)
         if not term:
@@ -408,7 +432,7 @@ def _overview(path, terminal, after, now):
             if length >= 180_000:
                 break
         # A terminal's page needs to know only whether the computer is there; the lists of folders stay with the list.
-        return {"device": {"online": now - _device["seen"] < 15, "enabled": _device["enabled"]}, "terminal": _public(term), "chunks": out, "reset": reset,
+        return {"device": {"online": now - _device["seen"] < 15, "enabled": _device["enabled"], "shell": _device.get("shell", "")}, "terminal": _public(term), "chunks": out, "reset": reset,
                 "after": out[-1]["seq"] if out else term.get("seq", 0), "tick": _tick[0]}
 
 
@@ -475,7 +499,7 @@ def command(path, payload, now=None):
             if sum(t["state"] in ("starting", "running") for t in state["threads"].values()) >= MAX_TERMINALS:
                 raise RemoteError("最多同时运行 8 个终端，请先结束一个")
             terminal = uuid.uuid4().hex
-            term = {"id": terminal, "tool": tool, "dir": folder, "title": LABELS[tool] + (" · 副本" if fork else ""), "session": "" if fork else session, "status": "",
+            term = {"id": terminal, "tool": tool, "dir": folder, "title": (_device.get("shell") or LABELS[tool] if tool == "shell" else LABELS[tool]) + (" · 副本" if fork else ""), "session": "" if fork else session, "status": "",
                     "created": int(now * 1000), "state": "starting", "error": "", "seq": 0, "output": [], "size": 0, "cols": 80, "rows": 24,
                     "instance": _device["instance"], "previous": previous, "history": bool(payload.get("history")), "touched": False}
             state["threads"][terminal] = term
@@ -643,7 +667,7 @@ def agent(path, payload, now=None):
                 if isinstance(s, dict) and isinstance(s.get("id"), str) and _session.fullmatch(s["id"]) and s.get("tool") in ("claude", "codex")
                 and isinstance(s.get("dir"), str) and isinstance(s.get("title"), str) and s["title"].strip() and type(s.get("updated")) is int]
         _device.update(seen=now, instance=instance, enabled=info.get("enabled") is True,
-                       version=str(info.get("version") or "")[:20], newer=str(info.get("newer") or "")[:20],
+                       version=str(info.get("version") or "")[:20], newer=str(info.get("newer") or "")[:20], shell=_shell(info.get("shell")),
                        features=[x for x in info.get("features", []) if x in ("codex-fork", "codex-takeover", "terminal-exit", "files", "update", "peek")],
                        tools=[x for x in info.get("tools", []) if x in ("claude", "codex", "shell")],
                        workspaces=[x for x in info.get("workspaces", []) if isinstance(x, str) and 0 < len(x) <= 60],

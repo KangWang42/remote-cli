@@ -97,3 +97,12 @@ header .who #status { grid-column: 1 / -1; }
 #attention.confirm { --c: var(--bad, #f7768e); } #attention.done { --c: var(--good); }
 #attention b { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #attention i { font-style: normal; color: var(--accent); font-weight: 600; flex-shrink: 0; }
+
+/* open in two places: said in one quiet line, gone as soon as this side has typed */
+#shared { margin: 0 10px; padding: 6px 12px; border-radius: 10px; font-size: 12px; line-height: 1.5; color: var(--muted); background: var(--panel); }
+/* A window on a computer: the keys are on the keyboard and what is typed goes straight to the terminal, so the row of
+   keys and the message box are in the way. They stay for touch, and come back in a narrow window. */
+@media (hover: hover) and (pointer: fine) and (min-width: 560px) {
+  .keys, #composer { display: none; }
+  #screen { padding-bottom: 8px; }
+}

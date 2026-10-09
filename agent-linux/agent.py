@@ -996,6 +996,7 @@ class Agent:
             payload = {
                 "info": {"instance": self.instance, "enabled": enabled, "tools": self.tools[0],
                          "features": FEATURES, "version": VERSION, "newer": "",
+                         "shell": os.path.basename(self.shell(cfg)),
                          "workspaces": list(dirs.keys()),
                          "projects": self.projects.entries(cfg, dirs)},
                 "terminals": [{"id": live.id, "state": "closed" if live.closed else "running",

@@ -255,7 +255,10 @@
       }
       const more = payload.after < t.seq;
       // Output arrives many times a second: the page around the terminal is touched only where something changed.
-      const where = (tool === 'codex' ? 'Codex' : tool === 'shell' ? 'PowerShell' : 'Claude Code') + ' · ' + t.dir;
+      const plain = device.shell || 'PowerShell';      // what the computer calls its plain terminal
+      const where = (tool === 'codex' ? 'Codex' : tool === 'shell' ? plain : 'Claude Code') + ' · ' + t.dir;
+      // Someone else's size on the screen means the terminal is open in another place too.
+      $('shared').hidden = !(running && theirs && theirs !== `${term.cols}x${term.rows}` && Date.now() - sized > 2500);
       const loading = restoring && more ? `载入输出 ${Math.round(100 * (payload.after - start) / Math.max(1, t.seq - start))}%` : '';
       show($('title'), t.title);
       show(status, where + ' · ' + (loading || (!device.online ? '电脑离线，等待重连' : !device.enabled ? '电脑远控已关闭' : t.state === 'starting' ? '正在启动'
@@ -266,7 +269,7 @@
       if ($('ended').hidden !== (!ended || more)) $('ended').hidden = !ended || more;
       if (ended !== wasEnded) {
         wasEnded = ended;
-        show($('ended-text'), tool === 'shell' ? 'PowerShell 已结束，画面保留到这里' : '终端已结束，对话保存在电脑上');
+        show($('ended-text'), tool === 'shell' ? plain + ' 已结束，画面保留到这里' : '终端已结束，对话保存在电脑上');
         $('again').hidden = tool === 'shell';
         input.disabled = ended; sendButton.disabled = ended; $('voice').disabled = ended;
         drawPalette();

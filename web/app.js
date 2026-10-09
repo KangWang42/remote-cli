@@ -2,7 +2,8 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const TOOLS = { claude: 'Claude Code', codex: 'Codex', shell: 'PowerShell' };
+  // The plain terminal is called what the computer calls it: PowerShell on Windows, the person's shell elsewhere.
+  const TOOLS = { claude: 'Claude Code', codex: 'Codex', shell: '终端' };
   const ABOUT = { claude: 'Anthropic', codex: 'OpenAI', shell: '命令行' };
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
   const native = window.RemoteCliNative || null;
@@ -198,7 +199,7 @@
   }
   // ?take=<conversation> comes from the app's workbench: the question about taking over a conversation that runs on
   // the computer is asked at once, and the terminal that follows leads back to the workbench.
-  let take = new URLSearchParams(location.search).get('take') || '', fromBench = !!take;
+  let take = new URLSearchParams(location.search).get('take') || '', anew = new URLSearchParams(location.search).get('new') === '1', fromBench = !!take || anew;
   function open(terminal) { location.href = 'terminal/?id=' + encodeURIComponent(terminal) + (fromBench ? '&from=bench' : ''); }
   async function start(tool, dir, session, takeover, fork) {
     const payload = { action: 'start', tool, dir, history: false };
@@ -287,6 +288,23 @@
     });
     if (choice) start(session.tool, session.dir, session.id, choice === 'close', choice === 'copy');
   }
+  // ?new=1 comes from the app's workbench: a terminal is started without walking to a project first. The projects
+  // used last come first; each offers the tools the computer has.
+  async function startAnywhere() {
+    if (!usable()) return toast('电脑离线，暂时不能新建');
+    const tools = Object.keys(TOOLS).filter(t => (data.device.tools || []).includes(t));
+    const latest = name => Math.max(0, ...data.terminals.filter(t => t.dir === name).map(t => t.created || 0), ...(data.sessions || []).filter(s => s.dir === name).map(s => s.updated || 0));
+    const names = (data.device.workspaces || []).slice().sort((a, b) => latest(b) - latest(a));
+    if (!names.length || !tools.length) return toast(names.length ? '电脑上没有可用的工具' : '请先添加一个项目');
+    const picked = await openSheet((form, finish) => {
+      form.append(el('h3', { textContent: '新建终端' }), el('p', { textContent: '选一个项目和要用的工具。最近用过的项目在前。' }));
+      const list = el('div', { className: 'anywhere' });
+      names.slice(0, 12).forEach(name => list.append(el('div', { className: 'row' }, el('b', { textContent: name }),
+        el('span', null, ...tools.map(tool => el('button', { type: 'button', className: 'tool ' + tool, ariaLabel: '在 ' + name + ' 新建 ' + TOOLS[tool], html: ICON[tool], onclick: () => finish({ tool, name }) }))))));
+      form.append(list);
+    });
+    if (picked) start(picked.tool, picked.name);
+  }
   async function addProject() {
     const candidates = (data.device.candidates || []).slice(0, 4).map(c => ({ label: '添加 ' + c.name, sub: c.path, value: c.path }));
     const answer = await ask('添加项目', '填写电脑上的完整文件夹路径；下面是电脑上有对话记录的文件夹。',
@@ -311,6 +329,16 @@
     const card = el('li', { className: 'card ' + phase }, el('button', { type: 'button', className: 'open', onclick: () => open(t.id) },
       el('span', { className: 'tool ' + t.tool, html: ICON[t.tool] }), el('span', { className: 'text' }, el('b', { textContent: t.title }), meta, peek)));
     if (running(t)) card.append(el('button', { type: 'button', className: 'side', ariaLabel: '结束这个终端', html: ICON.stop, onclick: () => endTerminal(t) }));
+    // A question the program waits on is answered here, under what it asks: the question is on the card, so nothing
+    // is allowed unseen. The two keys are the ones Claude Code and Codex take for "yes" and "no".
+    if (phase === 'confirm' && (t.asks || []).length) {
+      const answer = (key, done) => async () => { if (await run({ action: 'input', terminal: t.id, data: key }, '')) { toast(done); refresh(); } };
+      card.classList.add('asking');
+      card.append(el('div', { className: 'ask' }, el('pre', { textContent: t.asks.join('\n') }), el('div', { className: 'answers' },
+        el('button', { type: 'button', className: 'yes', textContent: '允许（回车）', onclick: answer('\r', '已允许') }),
+        el('button', { type: 'button', className: 'no', textContent: '拒绝（Esc）', onclick: answer('\x1b', '已拒绝') }),
+        el('button', { type: 'button', className: 'see', textContent: '进去看', onclick: () => open(t.id) }))));
+    }
     return card;
   }
   // A writer lock means the conversation is held, not that a computer window is showing it.
@@ -414,7 +442,7 @@
       launch.dataset.signature = tools.join() + ready;
       launch.replaceChildren(...tools.map(tool => el('button', { type: 'button', disabled: !ready, onclick: () => start(tool, project) },
         el('span', { className: 'tool ' + tool, html: ICON[tool] }), el('span', null, '新建 ' + TOOLS[tool], el('small', { textContent: ABOUT[tool] })))));
-      if (ready && !tools.length) launch.append(el('p', { textContent: '电脑上没有找到 claude、codex 或 PowerShell。' }));
+      if (ready && !tools.length) launch.append(el('p', { textContent: '电脑上没有找到 claude、codex 或命令行终端。' }));
     }
     const own = mine.filter(t => t.dir === project).sort((a, b) => a.rank - b.rank || b.at - a.at);
     $('p-active').hidden = !own.length;
@@ -454,7 +482,13 @@
   async function refresh() {
     clearTimeout(timer);
     try {
-      data = await api('/api/terminal'); draw(); peeks();
+      data = await api('/api/terminal');
+      if (data.device.shell) TOOLS.shell = data.device.shell;
+      draw(); peeks();
+      if (anew) {
+        anew = false; history.replaceState(history.state, '', location.pathname + (project ? '?project=' + encodeURIComponent(project) : ''));
+        startAnywhere();
+      }
       if (take) {
         const wanted = (data.sessions || []).find(s => s.id === take && !s.terminal);
         take = ''; history.replaceState(history.state, '', location.pathname + (project ? '?project=' + encodeURIComponent(project) : ''));
