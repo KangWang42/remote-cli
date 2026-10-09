@@ -45,17 +45,16 @@ import time
 import uuid
 from urllib.parse import quote, urlsplit
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 ID_RE = re.compile(r"\A[a-f0-9]{16,32}\Z")
 TERMINAL_RE = re.compile(r"\A[a-f0-9]{32}\Z")
 SERVER_RE = re.compile(r"\Ahttps?://[^/\s]+\Z")
 UUID_RE = re.compile(r"\A[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
 PROJECT_ACTIONS = ("project_add", "project_remove", "project_rename")
-FILE_ACTIONS = ("file_list", "file_read", "file_render")
+FILE_ACTIONS = ("file_list", "file_read")
 FILE_PIECE = 737280     # bytes of a file in one answer, as the Windows agent cuts them
 FILE_ENTRIES = 3000     # entries of a folder in one answer
 FEATURES = ["terminal-exit", "files", "peek"]
-RENDERED = (".docx", ".doc", ".pptx", ".ppt")       # shown as they look when LibreOffice is there to write a PDF
 SAID_MESSAGES = 40      # of a conversation, the last this many things said are shown on the phone
 SAID_CHARS = 1500       # and of each, this much
 # where the tools' own installers put them; a service's PATH seldom has these
@@ -223,87 +222,6 @@ def files(root, relative, action, offset):
         raise OpError("没有权限读取")
     except OSError:
         raise OpError("读取失败")
-
-
-def office():
-    """LibreOffice's program, or None: it writes Word and PowerPoint files out as they look."""
-    for name in ("soffice", "libreoffice"):
-        for folder in os.environ.get("PATH", "").split(os.pathsep) + ["/usr/bin", "/usr/local/bin", "/opt/libreoffice/program", "/snap/bin"]:
-            path = os.path.join(folder, name)
-            if folder and os.path.isfile(path) and os.access(path, os.X_OK):
-                return path
-    return None
-
-
-class Renders:
-    """Word and PowerPoint files as they look: LibreOffice writes a PDF, kept beside the settings and named after
-    the file's place, size and date. The first question starts the work and is answered "pending"; the phone asks
-    again until the PDF is there, so no terminal waits behind a document."""
-
-    def __init__(self, data):
-        self.folder = os.path.join(data, "render")
-        self.lock = threading.Lock()
-        self.working = {}               # pdf -> None while it is made, else what went wrong
-
-    def piece(self, root, relative, offset):
-        files(root, relative, "file_read", 0)       # the same refusals as for reading it
-        full = os.path.normpath(os.path.join(os.path.normpath(root), str(relative or "").replace("\\", "/").strip("/")))
-        if not full.lower().endswith(RENDERED):
-            raise OpError("这种文件没有原样预览")
-        program = office()
-        if program is None:
-            raise OpError("电脑上没有安装 LibreOffice，不能原样预览")
-        info = os.stat(full)
-        if info.st_size > 150 * 1024 * 1024:
-            raise OpError("文件太大，不做原样预览")
-        import hashlib
-        name = hashlib.sha1(("%s|%d|%d" % (full, info.st_size, info.st_mtime_ns)).encode("utf-8")).hexdigest() + ".pdf"
-        pdf = os.path.join(self.folder, name)
-        with self.lock:
-            if pdf in self.working:
-                problem = self.working[pdf]
-                if problem is None:
-                    return {"pending": True}
-                del self.working[pdf]
-                raise OpError(problem)
-            if not os.path.isfile(pdf):
-                os.makedirs(self.folder, mode=0o700, exist_ok=True)
-                for old in os.listdir(self.folder):
-                    try:
-                        if time.time() - os.path.getmtime(os.path.join(self.folder, old)) > 86400:
-                            os.remove(os.path.join(self.folder, old))
-                    except OSError:
-                        pass
-                self.working[pdf] = None
-                threading.Thread(target=self._make, args=(program, full, pdf), daemon=True).start()
-                return {"pending": True}
-        answer = files(self.folder, name, "file_read", offset)
-        answer["path"] = str(relative or "").replace("\\", "/").strip("/")
-        return answer
-
-    def _make(self, program, full, pdf):
-        import subprocess
-        import tempfile
-        problem = "这个文件没有转换成功，可能有密码保护或已损坏"
-        try:
-            with tempfile.TemporaryDirectory(dir=self.folder) as out:
-                # a profile of its own: a LibreOffice the person has open is left alone
-                subprocess.run([program, "-env:UserInstallation=file://" + os.path.join(out, "profile"), "--headless", "--norestore",
-                                "--convert-to", "pdf", "--outdir", out, full],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
-                made = [f for f in os.listdir(out) if f.lower().endswith(".pdf")]
-                if made:
-                    os.replace(os.path.join(out, made[0]), pdf)
-                    problem = ""
-        except subprocess.TimeoutExpired:
-            problem = "转换超过两分钟，已放弃"
-        except OSError:
-            pass
-        with self.lock:
-            if problem:
-                self.working[pdf] = problem
-            else:
-                self.working.pop(pdf, None)
 
 
 def read_part(path, tail, limit):
@@ -969,8 +887,6 @@ class Agent:
         self.instance = secrets.token_hex(16)
         self.projects = Projects(data)
         self.sessions = Sessions()
-        self.renders = Renders(data)
-        self.features = FEATURES + (["render"] if office() else [])
         self.sessions_at = 0.0          # when the conversations were last looked up
         self.sessions_sent = ("", 0.0)  # what the relay was last told, and when
         self.tools = (["shell"], 0.0)
@@ -1079,7 +995,7 @@ class Agent:
                 self.sessions.scan(dirs, list(self.terminals.values()))
             payload = {
                 "info": {"instance": self.instance, "enabled": enabled, "tools": self.tools[0],
-                         "features": self.features, "version": VERSION, "newer": "",
+                         "features": FEATURES, "version": VERSION, "newer": "",
                          "shell": os.path.basename(self.shell(cfg)),
                          "workspaces": list(dirs.keys()),
                          "projects": self.projects.entries(cfg, dirs)},
@@ -1163,10 +1079,7 @@ class Agent:
                 root = dirs.get(str(op.get("dir") or ""))
                 if root is None:
                     raise OpError("没有这个项目")
-                if action == "file_render":
-                    result = self.renders.piece(root, op.get("path", ""), op.get("offset", 0))
-                else:
-                    result = files(root, op.get("path", ""), action, op.get("offset", 0))
+                result = files(root, op.get("path", ""), action, op.get("offset", 0))
             elif action == "session_read":
                 result = self.sessions.read(str(op.get("session") or ""), str(op.get("tool") or ""),
                                             str(op.get("dir") or ""), dirs)

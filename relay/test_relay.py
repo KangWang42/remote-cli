@@ -429,25 +429,6 @@ class TerminalRelayTests(unittest.TestCase):
         self.assertEqual(answers["got"]["messages"], said)
         self.assertNotIn(ask["id"], tr._pending)        # nothing of it is kept
 
-    def test_a_document_is_asked_for_as_it_looks_only_where_the_computer_can_write_it_out(self):
-        import threading
-        ask = {"id": "9" * 32, "action": "file_render", "dir": "demo", "path": "报告/总结.DOCX"}
-        tr.agent(self.path, {"info": dict(self.info, features=["files"])}, now=1001)
-        with self.assertRaisesRegex(RemoteError, "原样预览"):
-            tr.files(self.path, ask, now=1001, wait=0)
-        info = dict(self.info, features=["files", "render"])
-        tr.agent(self.path, {"info": info}, now=1001)
-        with self.assertRaisesRegex(RemoteError, "原样预览"):
-            tr.files(self.path, dict(ask, path="notes.txt"), now=1001, wait=0)
-        answers = {}
-        waiting = threading.Thread(target=lambda: answers.update(got=tr.files(self.path, ask, now=1001, wait=5)))
-        waiting.start()
-        asked = tr.pull(self.path, {"instance": self.info["instance"], "wait": 3})["operations"]
-        self.assertEqual([(o["action"], o["path"]) for o in asked], [("file_render", "报告/总结.DOCX")])
-        tr.agent(self.path, {"info": info, "acks": [{"id": ask["id"], "error": "", "result": {"pending": True}}]}, now=1002)
-        waiting.join(5)
-        self.assertEqual(answers["got"], {"pending": True})
-
     def test_files_are_asked_of_the_computer_and_answered_once(self):
         import threading
         ask = {"id": "f" * 32, "action": "file_list", "dir": "demo", "path": "src"}

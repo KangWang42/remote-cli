@@ -138,11 +138,6 @@ to the project folder, with `/`.
 - `file_read` → `{"path", "size", "modified", "offset", "data" (base64), "end"}`; one piece is at most 737,280 bytes,
   the next is asked for with `offset` advanced by the bytes received.
 
-- `file_render` (capability `render`; `.docx`, `.doc`, `.pptx`, `.ppt`) → the file as it looks, written out as a PDF by
-  an office program on the computer. The first answers are `{"pending": true}` while that program works; ask again
-  every second or two. Then the answer is that of `file_read` for the PDF, read on with `offset` in the same way.
-  The computer keeps the PDF for a day, by the file's place, size and date.
-
 A refusal is `400 {"error": "..."}`. The computer answers only for paths inside the project folder and refuses a
 path whose real location, after links and junctions, is outside it. The relay keeps nothing of an answer.
 

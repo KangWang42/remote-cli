@@ -305,40 +305,13 @@ def main():
                 view = lambda path: base + "/files/?dir=cohort-study" + ("&path=" + quote(path.rsplit("/", 1)[0]) if "/" in path else "") + "&file=" + quote(path.rsplit("/", 1)[-1])
                 drawn = {"pdf": "document.querySelectorAll('.sheet-of-paper canvas').length > 0", "image": "!!document.querySelector('.picture img') && document.querySelector('.picture img').naturalWidth > 0",
                          "markdown": "Array.from(document.querySelectorAll('.doc img')).every(i => i.naturalWidth > 0) && !!document.querySelector('.doc h1')",
-                         "word": "!!document.querySelector('.doc.paper table')", "sheet": "document.querySelectorAll('.grid td').length > 8", "sheet_csv": "document.querySelectorAll('.grid td').length > 8",
-                         "slides": "document.querySelectorAll('.slide').length === 2", "notebook": "!!document.querySelector('.notebook .code')", "code": "!!document.querySelector('.code .hljs-keyword')",
+                         "word": "document.querySelectorAll('.word-looks section.docx table').length > 0", "sheet": "document.querySelectorAll('.grid td').length > 8", "sheet_csv": "document.querySelectorAll('.grid td').length > 8",
+                         "slides": "document.querySelectorAll('.slide-looks .pptx-preview-wrapper > *').length >= 2", "notebook": "!!document.querySelector('.notebook .code')", "code": "!!document.querySelector('.code .hljs-keyword')",
                          "unknown": "!!document.querySelector('.unknown')"}
                 shot(base + "/?project=cohort-study", "project.png", "!document.getElementById('project').hidden")
                 shot(base + "/files/?dir=cohort-study", "folder.png", "document.querySelectorAll('#entries li').length > 5")
-                def tab(label, ready, name, seconds=40):
-                    """Chooses another way of showing the file that is open, waits for it and saves a picture."""
-                    del said[:]
-                    ask("Runtime.evaluate", expression="Array.from(document.querySelectorAll('#tabs button')).find(b => b.textContent === %s).click()" % json.dumps(label))
-                    deadline = time.time() + seconds
-                    while time.time() < deadline:
-                        time.sleep(0.4)
-                        if ask("Runtime.evaluate", expression=ready, returnByValue=True).get("result", {}).get("value") is True:
-                            break
-                    else:
-                        (out / ("failed-" + name)).write_bytes(base64.b64decode(ask("Page.captureScreenshot", format="png")["data"]))      # what the page shows instead
-                        raise AssertionError("%s did not finish: %s" % (name, said[:3]))
-                    time.sleep(1.2)
-                    (out / name).write_bytes(base64.b64decode(ask("Page.captureScreenshot", format="png")["data"]))
-                    assert not said, (name, said[:3])
-
-                exact = "render" in features
-                report["exact_look"] = exact
                 for kind, path in sorted(made.items()):
-                    if kind not in ("word", "slides"):
-                        shot(view(path), kind + ".png", drawn[kind])
-                        continue
-                    # Word and PowerPoint: with their formatting as this page lays them out, then as plain text, then, where
-                    # the computer has an office program and only when asked for, exactly as that program writes them.
-                    laid = "document.querySelectorAll('.word-looks section.docx table').length > 0" if kind == "word" else "document.querySelectorAll('.slide-looks .pptx-preview-wrapper > *').length >= 2"
-                    shot(view(path), kind + ".png", laid, seconds=60)
-                    tab("纯文字", drawn[kind], kind + "-text.png")
-                    if exact:
-                        tab("原样", drawn["pdf"], kind + "-exact.png", seconds=120)
+                    shot(view(path), kind + ".png", drawn[kind], seconds=60 if kind in ("word", "slides") else 20)
                 # Saving inside the app: the page hands the file to the phone piece by piece. A stand-in for the app
                 # collects the pieces; together they must be the file.
                 stand_in = ask("Page.addScriptToEvaluateOnNewDocument", source="window.RemoteCliNative = { got: [], saveStart(n) { this.name = n; this.got = []; return ''; }, "

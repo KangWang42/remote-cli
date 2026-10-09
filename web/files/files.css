@@ -97,13 +97,10 @@
 .doc li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
 .doc .front { font-size: .8rem; color: var(--muted); }
 /* Word: the document lies on a sheet, as it does on a desk */
-.doc.paper { margin: 4px 12px 28px; padding: 22px 20px 30px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: 0 6px 22px rgba(0, 0, 0, .06); font-family: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", serif; }
-.doc.paper h1, .doc.paper h2 { border: 0; }
-.doc.paper p { text-align: justify; }
 
 /* a notebook */
 .notebook .cell { position: relative; margin: 14px 0; }
-.notebook .count, .slide .count { display: block; padding: 0 16px 4px; color: var(--c-faint); font: 400 11.5px/1.4 var(--mono); }
+.notebook .count { display: block; padding: 0 16px 4px; color: var(--c-faint); font: 400 11.5px/1.4 var(--mono); }
 .printed { margin: 0; padding: 10px 16px; font: 400 12.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
 .printed.failed { color: var(--bad); }
 .notebook img { display: block; max-width: calc(100% - 32px); margin: 8px 16px; border-radius: 8px; background: #fff; }
@@ -120,15 +117,6 @@
 .grid tbody tr:first-child td { font-weight: 600; }
 
 /* slides */
-.slides { display: grid; gap: 12px; padding: 0 12px 28px; }
-.slide { padding: 14px 4px 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); overflow: hidden; }
-.slide h2 { margin: 2px 16px 10px; font-size: 1.15rem; line-height: 1.4; }
-.slide p { margin: 5px 16px; line-height: 1.6; }
-.slide p.level-1 { margin-left: 32px; color: var(--muted); } .slide p.level-2 { margin-left: 48px; color: var(--muted); } .slide p.level-3 { margin-left: 64px; color: var(--muted); }
-.slide img { display: block; max-width: calc(100% - 32px); max-height: 60vh; margin: 12px 16px 0; border-radius: 8px; }
-.slide table { border-collapse: collapse; margin: 10px 16px; font-size: .86rem; }
-.slide td { padding: 5px 9px; border: 1px solid var(--line); }
-.slide .note { text-align: left; margin: 4px 16px; }
 
 /* a PDF: its pages one below the other */
 .pages { display: grid; gap: 10px; padding: 0 12px 28px; }

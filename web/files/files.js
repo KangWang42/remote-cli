@@ -86,43 +86,6 @@
     for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
     return bytes;
   }
-  // A Word or PowerPoint file as it looks: the computer has the program that made it write a PDF. The first
-  // question starts that work; the answer is "pending" until the PDF is there, and then it comes in pieces.
-  const LOOKS = ['docx', 'doc', 'pptx', 'ppt'];
-  let features = null;
-  async function canRender() {
-    if (!features) {
-      try { features = ((await (await fetch('/api/terminal', { credentials: 'same-origin' })).json()).device || {}).features || []; } catch (error) { features = []; }
-    }
-    return features.includes('render');
-  }
-  async function rendered(path, mine) {
-    let piece, waited = 0;
-    for (;;) {
-      piece = await ask('file_render', path, 0);
-      if (!piece.pending) break;
-      if (mine !== run) throw new Error('left');
-      if ((waited += 1500) > 150000) throw new Error('电脑转换得太久，已放弃');
-      $('progress').hidden = false; $('progress-bar').style.width = '0%';
-      $('progress-text').textContent = '电脑正在把它转成原样预览…';
-      await new Promise(done => setTimeout(done, 1500));
-    }
-    const whole = new Uint8Array(piece.size);
-    let at = 0;
-    for (;;) {
-      const part = bytesOf(piece.data);
-      whole.set(part.subarray(0, Math.min(part.length, whole.length - at)), at);
-      at += part.length;
-      if (piece.end || !part.length || at >= whole.length) break;
-      if (mine !== run) throw new Error('left');
-      $('progress').hidden = false;
-      $('progress-text').textContent = '正在读取 ' + K.size(at) + ' / ' + K.size(piece.size);
-      $('progress-bar').style.width = Math.round(100 * at / piece.size) + '%';
-      piece = await ask('file_render', path, at);
-    }
-    $('progress').hidden = true;
-    return whole;
-  }
   // A Word file with its formatting (headings, emphasis, colours, tables, pictures, lists), flowing to the width
   // of the screen like any page of text; a PowerPoint file as its slides, each the width of the screen.
   async function wordLooks(bytes) {
@@ -314,11 +277,6 @@
     });
     return page;
   }
-  async function word(bytes) {
-    await Promise.all([need('mammoth.browser.min.js'), need('purify.min.js')]);
-    const made = await mammoth.convertToHtml({ arrayBuffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) });
-    return documentOf(made.value || '<p>这份文档里没有文字。</p>', true);
-  }
   function table(rows) {
     const shown = rows.slice(0, 2000), columns = Math.min(80, shown.reduce((most, row) => Math.max(most, row.length), 0));
     const letters = n => { let s = ''; for (n++; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };
@@ -341,39 +299,6 @@
       while (rows.length && rows[rows.length - 1].every(v => v === '')) rows.pop();
       return rows.length ? table(rows) : el('p', { className: 'note', textContent: '这张表是空的。' });
     } }));
-  }
-  // A presentation is a zip of XML: each slide gives its title, its text in reading order and its pictures.
-  async function slides(bytes) {
-    await need('xlsx.full.min.js');
-    const zip = XLSX.CFB.read(bytes, { type: 'array' }), files = {};
-    zip.FullPaths.forEach((name, at) => { files[name.replace(/^[^/]*\//, '')] = zip.FileIndex[at]; });
-    const xml = name => files[name] && files[name].content ? new DOMParser().parseFromString(new TextDecoder().decode(new Uint8Array(files[name].content)), 'application/xml') : null;
-    const links = name => { const map = {}, rels = xml(name.replace(/([^/]+)$/, '_rels/$1.rels')); if (rels) Array.from(rels.getElementsByTagName('Relationship')).forEach(r => { map[r.getAttribute('Id')] = r.getAttribute('Target'); }); return map; };
-    const main = xml('ppt/presentation.xml'), order = links('ppt/presentation.xml');
-    const names = main ? Array.from(main.getElementsByTagName('p:sldId')).map(s => 'ppt/' + order[s.getAttribute('r:id')]).filter(n => files[n]) : [];
-    if (!names.length) throw new Error('这份演示文稿里没有找到幻灯片');
-    const page = el('div', { className: 'slides' });
-    names.forEach((name, at) => {
-      const slide = xml(name), rels = links(name), card = el('section', { className: 'slide' }, el('span', { className: 'count', textContent: (at + 1) + ' / ' + names.length }));
-      Array.from(slide.getElementsByTagName('p:sp')).forEach(shape => {
-        const holder = shape.getElementsByTagName('p:ph')[0], title = holder && /title/i.test(holder.getAttribute('type') || '');
-        Array.from(shape.getElementsByTagName('a:p')).forEach(paragraph => {
-          const said = Array.from(paragraph.getElementsByTagName('a:t')).map(t => t.textContent).join('');
-          if (!said.trim()) return;
-          const level = Number(((paragraph.getElementsByTagName('a:pPr')[0] || { getAttribute: () => 0 }).getAttribute('lvl')) || 0);
-          card.append(title ? el('h2', { textContent: said }) : el('p', { textContent: said, className: 'level-' + Math.min(3, level) }));
-        });
-      });
-      Array.from(slide.getElementsByTagName('a:tbl')).forEach(grid => card.append(el('div', { className: 'wide' }, el('table', null, ...Array.from(grid.getElementsByTagName('a:tr')).map(row =>
-        el('tr', null, ...Array.from(row.getElementsByTagName('a:tc')).map(cell => el('td', { textContent: Array.from(cell.getElementsByTagName('a:t')).map(t => t.textContent).join('') }))))))));
-      Array.from(slide.getElementsByTagName('a:blip')).forEach(picture => {
-        const target = rels[picture.getAttribute('r:embed')] || '', file = files[('ppt/slides/' + target).replace(/[^/]+\/\.\.\//g, '')], type = K.kind(target).type;
-        if (file && file.content && type.startsWith('image/')) card.append(el('img', { src: hand(new Uint8Array(file.content), type), alt: '' }));
-      });
-      if (card.children.length === 1) card.append(el('p', { className: 'note', textContent: '这一页没有文字' }));
-      page.append(card);
-    });
-    return el('div', null, el('p', { className: 'note', textContent: '这里显示每一页的文字、表格和图片，不是原来的版式。' }), page);
   }
   async function pdf(bytes, mine) {
     await need('pdf.min.js');
@@ -435,27 +360,6 @@
       if (!view && K.readable(bytesOf(first.data))) { view = 'code'; language = 'plaintext'; }
       if (!view) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '这种文件不能在这里预览。')); }
       const limit = kind.limit || 3e6;
-      // Word and PowerPoint are shown with their formatting, laid out by this page: light, at once, and with nothing
-      // to install on the computer. A Word file flows to the width of the screen, so it reads without zooming; its
-      // pages are not kept. The exact look, as a PDF written by an office program on the computer, is one tap away
-      // where the computer has such a program, and made only when asked for: it takes a while.
-      if (LOOKS.includes(kind.ext)) {
-        const modern = kind.ext === 'docx' || kind.ext === 'pptx', exact = first.size <= 150e6 && await canRender();
-        if (mine !== run) return;
-        if (!modern && !exact) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '旧格式的文件需要电脑上装有 Word、PowerPoint、WPS 或 LibreOffice 才能预览。')); }
-        if (modern && !exact && first.size > limit) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '文件有 ' + K.size(first.size) + '，超过了预览的上限 ' + K.size(limit) + '。')); }
-        let whole = null;
-        const bytes = async () => { if (!whole) { whole = (await read(path, limit, mine, first)).bytes; current.bytes = whole; } return whole; };
-        const list = [];
-        if (modern && first.size <= limit) {
-          list.push({ label: '预览', draw: async () => kind.ext === 'docx' ? wordLooks(await bytes()) : slideLooks(await bytes()) });
-          list.push({ label: '纯文字', draw: async () => kind.ext === 'docx' ? word(await bytes()) : slides(await bytes()) });
-        }
-        if (exact) list.push({ label: '原样', draw: async () => pdf(await rendered(path, mine), mine) });
-        await tabs(list, 0);
-        $('loading').hidden = true;
-        return;
-      }
       if (first.size > limit) { $('loading').hidden = true; return $('view').replaceChildren(unknown(first.size, '文件有 ' + K.size(first.size) + '，超过了预览的上限 ' + K.size(limit) + '。')); }
       const got = await read(path, limit, mine, first);
       if (mine !== run) return;
@@ -467,9 +371,9 @@
       else if (view === 'code' && kind.ext === 'ipynb') list = [{ label: '笔记本', draw: () => notebook(text()) }, source];
       else if (view === 'code') list = [Object.assign({}, source, { label: '' })];
       else if (view === 'image') list = kind.ext === 'svg' ? [{ label: '图片', draw: () => picture(got.bytes, kind.type) }, Object.assign({}, source, { draw: async () => { await need('highlight.min.js'); return code(text(), 'xml'); } })] : [{ label: '', draw: () => picture(got.bytes, kind.type) }];
-      else if (view === 'word') list = [{ label: '', draw: () => word(got.bytes) }];
+      else if (view === 'word') list = [{ label: '', draw: () => wordLooks(got.bytes) }];
       else if (view === 'sheet') list = await workbook(got.bytes, kind.ext);
-      else if (view === 'slides') list = [{ label: '', draw: () => slides(got.bytes) }];
+      else if (view === 'slides') list = [{ label: '', draw: () => slideLooks(got.bytes) }];
       else if (view === 'pdf') list = [{ label: '', draw: () => pdf(got.bytes, mine) }];
       if (mine !== run) return;
       await tabs(list, 0);
