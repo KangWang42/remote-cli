@@ -251,7 +251,7 @@
     rendered(cursor) { if (socketMode || streamed) return; after = Number(cursor) || after; setTimeout(read, 0); },
     close: leave,
     voice,
-    skin: () => store.get('skin', 'night'),
+    skin: () => store.get('skin', 'paper'),
     renderer: () => store.get('renderer', 'webgl'),
     spacing: () => store.get('spacing', 'cozy'),
     chrome(color) {

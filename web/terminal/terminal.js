@@ -7,7 +7,7 @@
   const screen = $('screen'), holder = $('terminal'), dot = $('dot'), slash = $('slash'), latest = $('latest');
 
   const SKINS = window.RemoteCliSkins;      // skins.js
-  let skin = bridge && SKINS[bridge.skin()] ? bridge.skin() : 'night';
+  let skin = bridge && SKINS[bridge.skin()] ? bridge.skin() : 'paper';
   const FAMILY = '"Terminal Mono", "Noto Sans Mono CJK SC", "Droid Sans Mono", monospace';
   // The typeface must be ready before the terminal measures a character, or every cell gets the wrong width.
   try { await Promise.race([Promise.all([document.fonts.load('13px "Terminal Mono"'), document.fonts.load('bold 13px "Terminal Mono"')]), new Promise(done => setTimeout(done, 900))]); } catch (error) { /* system monospace */ }

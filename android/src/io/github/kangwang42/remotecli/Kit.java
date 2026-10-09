@@ -31,7 +31,8 @@ final class Kit {
         {0xfbfbfc, 0xf0f1f4, 0xe4e6eb, 0xd5d8df, 0x2b2f3a, 0x666b78, 0x2f6fe4, 0xffffff, 0x3d8a3a, 0xa36a00, 0xc93c37},
         {0xfaf4ed, 0xf4ede4, 0xebe1d5, 0xddd3c6, 0x4a4566, 0x7a7089, 0x286983, 0xffffff, 0x3b7d5c, 0xb9781a, 0xb4506a}
     };
-    static final int NIGHT = 0xff1a1b26, PAPER = 0xfffbfbfc;
+    /** The skin a new installation starts with. */
+    static final int PAPER = 0xfffbfbfc;
     private final Activity activity;
     int BG, PANEL, RAISED, LINE, INK, MUTED, ACCENT, ON_ACCENT, GOOD, BUSY, BAD;
 

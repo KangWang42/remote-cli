@@ -1,5 +1,5 @@
-/* The list pages. Colours come from the chosen skin (terminal/skins.js sets them on :root); these are the first skin's, for the first frame. */
-:root { --bg: #1a1b26; --panel: #222436; --raised: #2c2f47; --line: #2f334d; --ink: #c0caf5; --muted: #8189ad; --accent: #7aa2f7; --on-accent: #10121c; --good: #9ece6a; --busy: #e0af68; --bad: #f7768e; color-scheme: dark; }
+/* The list pages. Colours come from the chosen skin (terminal/skins.js sets them on :root); these are the default skin's, for the first frame. */
+:root { --bg: #fbfbfc; --panel: #f0f1f4; --raised: #e4e6eb; --line: #d5d8df; --ink: #2b2f3a; --muted: #666b78; --accent: #2f6fe4; --on-accent: #ffffff; --good: #3d8a3a; --busy: #a36a00; --bad: #c93c37; color-scheme: light; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 [hidden] { display: none !important; }
 html { font-size: 15.5px; }

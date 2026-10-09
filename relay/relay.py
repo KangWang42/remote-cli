@@ -424,6 +424,7 @@ def agent(path, payload, now=None):
         for term in state["threads"].values():
             if term.get("instance") != instance and term["state"] in ("starting", "running"):
                 term.update(state="closed", error="电脑后台已重启，请从历史对话恢复")
+                _track(term, now)       # or it would keep the phase it had, and be listed as still working
                 _trim(term)
                 dirty = True
         for ack in payload.get("acks", [])[:200]:

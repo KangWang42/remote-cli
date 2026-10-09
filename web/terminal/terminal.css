@@ -1,5 +1,5 @@
-/* Colours come from the chosen skin (terminal.js sets them on :root); these are the first skin's, for the first frame. */
-:root { color-scheme: dark; --bg: #1a1b26; --panel: #222436; --raised: #2c2f47; --ink: #c0caf5; --muted: #8189ad; --line: #2f334d; --accent: #7aa2f7; --on-accent: #10121c; --good: #9ece6a; --busy: #e0af68; --warn-ink: #e0af68; --warn-bg: #2d2a22; }
+/* Colours come from the chosen skin (terminal.js sets them on :root); these are the default skin's, for the first frame. */
+:root { color-scheme: light; --bg: #fbfbfc; --panel: #f0f1f4; --raised: #e4e6eb; --ink: #2b2f3a; --muted: #666b78; --line: #d5d8df; --accent: #2f6fe4; --on-accent: #ffffff; --good: #3d8a3a; --busy: #a36a00; --warn-ink: #a36a00; --warn-bg: #e4e6eb; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; width: 100%; height: 100%; background: var(--bg); color: var(--ink); font-family: system-ui, sans-serif; overflow: hidden; }
 main { height: 100%; height: 100dvh; display: flex; flex-direction: column; min-width: 0; }

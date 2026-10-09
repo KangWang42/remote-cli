@@ -55,7 +55,7 @@ public final class MainActivity extends Activity {
         if (shade != prefs.getInt("shade", 0)) prefs.edit().putInt("shade", shade).putBoolean("light", light).apply();
     }
     /** The app's own screens follow the skin last chosen in the pages. */
-    private void repaint() { kit.palette(prefs.contains("shade") ? prefs.getInt("shade", 0) : prefs.getBoolean("light", false) ? Kit.PAPER : Kit.NIGHT); }
+    private void repaint() { kit.palette(prefs.contains("shade") ? prefs.getInt("shade", 0) : Kit.PAPER); }
 
     SharedPreferences prefs;
     TextView message;

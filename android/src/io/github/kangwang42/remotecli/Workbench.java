@@ -432,10 +432,11 @@ final class Workbench {
     /** One project. A tap unfolds its conversations here, so that one of them is opened without a trip through that computer's pages. */
     private View projectRow(JSONObject computer, AggregateSessions.Project project, Map<String, Long> looked) {
         final String url = computer.optString("url"), key = url + '\n' + project.name;
-        int need = 0, work = 0;
+        int need = 0, done = 0, work = 0;
         for (AggregateSessions.Entry entry : project.active) {
             String kind = entry.kind(looked);
-            if ("confirm".equals(kind) || "done".equals(kind)) need++;
+            if ("confirm".equals(kind)) need++;
+            else if ("done".equals(kind)) done++;
             else if ("busy".equals(kind) || "starting".equals(kind) || "pc-busy".equals(kind)) work++;
         }
         boolean open = unfolded.contains(key);
@@ -445,9 +446,18 @@ final class Workbench {
         TextView name = kit.line(project.name, 15, kit.INK, open);
         name.setPadding(kit.dp(12), 0, kit.dp(8), 0);
         row.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-        if (need > 0) row.addView(kit.pill(need + " 个等你处理", kit.BAD));
-        if (work > 0) { TextView pill = kit.pill(work + " 个在执行", kit.BUSY); LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(-2, -2); gap.leftMargin = need > 0 ? kit.dp(6) : 0; row.addView(pill, gap); }
-        if (need == 0 && work == 0) row.addView(kit.text(!project.active.isEmpty() ? project.active.size() + " 个终端开着" : project.history.isEmpty() ? "还没有对话" : project.history.size() + " 段对话", 12.5f, kit.MUTED));
+        // each state keeps its own colour here too: red asks for a decision, green is finished work not yet looked at
+        int[] counts = { need, done, work }, shades = { kit.BAD, kit.GOOD, kit.BUSY };
+        String[] says = { " 个等你确认", " 个已完成", " 个在执行" };
+        boolean first = true;
+        for (int i = 0; i < 3; i++) {
+            if (counts[i] == 0) continue;
+            LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(-2, -2);
+            gap.leftMargin = first ? 0 : kit.dp(6);
+            row.addView(kit.pill(counts[i] + says[i], shades[i]), gap);
+            first = false;
+        }
+        if (first) row.addView(kit.text(!project.active.isEmpty() ? project.active.size() + " 个终端开着" : project.history.isEmpty() ? "还没有对话" : project.history.size() + " 段对话", 12.5f, kit.MUTED));
         View chevron = kit.icon(R.drawable.ic_chevron, Kit.tint(kit.MUTED, 150), 16);
         ((LinearLayout.LayoutParams) chevron.getLayoutParams()).leftMargin = kit.dp(6);
         chevron.setRotation(open ? 90 : 0);

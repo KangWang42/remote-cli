@@ -24,9 +24,9 @@
         brightBlack: '#6e6a86', brightRed: '#c2607a', brightGreen: '#4a8d6b', brightYellow: '#c98820', brightBlue: '#357793', brightMagenta: '#907aa9', brightCyan: '#56949f', brightWhite: '#4a4566' } }
   };
   window.RemoteCliSkins = SKINS;
-  /* Sets the page colours of a skin and returns it; an unknown name gives the first skin. */
+  /* Sets the page colours of a skin and returns it; an unknown name gives the default, the light paper skin. */
   window.RemoteCliPaint = name => {
-    const s = SKINS[name] || SKINS.night, style = document.documentElement.style;
+    const s = SKINS[name] || SKINS.paper, style = document.documentElement.style;
     const vars = { bg: s.t.background, panel: s.panel, raised: s.raised, line: s.line, ink: s.t.foreground, muted: s.muted, accent: s.accent, 'on-accent': s.onAccent,
       good: s.t.green, busy: s.t.yellow, bad: s.t.red, 'warn-ink': s.t.yellow, 'warn-bg': s.raised };
     Object.keys(vars).forEach(key => style.setProperty('--' + key, vars[key]));

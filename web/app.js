@@ -46,7 +46,7 @@
   const asked = new URLSearchParams(location.search).get('skin');
   if (asked && window.RemoteCliSkins[asked]) keep('skin', asked);
   function paint() {
-    const skin = window.RemoteCliPaint(saved('skin', 'night'));
+    const skin = window.RemoteCliPaint(saved('skin', 'paper'));
     document.documentElement.style.fontSize = (TEXT[saved('text', 'normal')] || TEXT.normal)[1];
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.content = skin.t.background;
@@ -98,7 +98,7 @@
     form.append(el('h3', { textContent: '外观' }), el('p', { textContent: '配色同时用于列表和终端。' }));
     const grid = el('div', { className: 'swatches' }), sizes = el('div', { className: 'sizes' });
     const mark = () => {
-      grid.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.key === saved('skin', 'night'))));
+      grid.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.key === saved('skin', 'paper'))));
       sizes.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.key === saved('text', 'normal'))));
     };
     Object.keys(skins).forEach(key => {
@@ -146,7 +146,9 @@
   // A terminal you have looked at since it finished is "waiting"; one you have not is "done".
   function seen() { try { return JSON.parse(saved('seen', '{}')) || {}; } catch (error) { return {}; } }
   function phaseOf(t) {
-    const phase = t.phase || (t.state === 'starting' ? 'starting' : t.state !== 'running' ? 'ended' : t.status === 'busy' ? 'busy' : 'idle');
+    // A terminal that has ended is never shown as working, whatever phase it was last recorded in.
+    if (t.state !== 'running' && t.state !== 'starting') return t.phase === 'failed' ? 'failed' : 'ended';
+    const phase = t.phase || (t.state === 'starting' ? 'starting' : t.status === 'busy' ? 'busy' : 'idle');
     if (phase === 'idle' && t.done && seen()[t.id] !== t.phase_at) return 'done';
     return phase;
   }
@@ -281,7 +283,7 @@
       $('active').hidden = !cards.length;
       fill($('active-list'), cards, JSON.stringify([order.map(t => [t.id, phaseOf(t), t.title, t.phase_at]), live.map(s => [s.id, s.status, s.title, s.host, s.origin]), stamp(1), ready]));
       $('background').hidden = !background.length;
-      $('background-summary').textContent = background.length + ' 段历史会话仍被锁定；不计入电脑运行中';
+      $('background-summary').textContent = background.length + ' 段 · 不计入运行中';
       fill($('background-list'), background.map(s => sessionCard(s, true)), JSON.stringify([background.map(s => [s.id, s.status, s.title, s.host, s.origin]), stamp(1), ready]));
       const parts = [];
       if (waiting) parts.push(waiting + ' 个等你确认'); if (done) parts.push(done + ' 个已完成'); if (working) parts.push(working + ' 个在执行');
@@ -289,14 +291,15 @@
       const list = names.map(name => {
         const folder = (device.projects || []).find(p => p.name === name) || {};
         const own = mine.filter(t => t.dir === name), count = sessions.filter(s => s.dir === name).length;
-        const need = own.filter(t => ['confirm', 'done'].includes(phaseOf(t))).length, work = own.filter(t => phaseOf(t) === 'busy').length;
+        const need = own.filter(t => phaseOf(t) === 'confirm').length, done = own.filter(t => phaseOf(t) === 'done').length, work = own.filter(t => phaseOf(t) === 'busy').length;
         const meta = el('span', { className: 'meta' });
-        if (need) { const c = el('span', { className: 'count', textContent: need + ' 个等你处理' }); c.prepend(el('i')); c.style.setProperty('--c', 'var(--bad)'); c.style.color = 'var(--bad)'; meta.append(c); }
+        if (need) { const c = el('span', { className: 'count', textContent: need + ' 个等你确认' }); c.prepend(el('i')); c.style.setProperty('--c', 'var(--bad)'); c.style.color = 'var(--bad)'; meta.append(c); }
+        if (done) { const c = el('span', { className: 'count', textContent: done + ' 个已完成' }); c.prepend(el('i')); c.style.setProperty('--c', 'var(--good)'); c.style.color = 'var(--good)'; meta.append(c); }
         if (work) { const c = el('span', { className: 'count', textContent: work + ' 个在执行' }); c.prepend(el('i')); c.style.setProperty('--c', 'var(--busy)'); c.style.color = 'var(--busy)'; meta.append(c); }
-        if (own.length && !need && !work) meta.append(el('span', { textContent: own.length + ' 个终端开着' }));
+        if (own.length && !need && !done && !work) meta.append(el('span', { textContent: own.length + ' 个终端开着' }));
         meta.append(el('span', { textContent: count ? count + ' 段对话' : '还没有对话' }));
         return { name, card: el('li', { className: 'card' }, el('button', { type: 'button', className: 'open', onclick: () => enter(name) },
-          el('span', { className: 'tool folder', html: ICON.folder }), el('span', { className: 'text' }, el('b', { textContent: name }), meta), el('span', { className: 'chev', html: ICON.chev }))), sign: [name, need, work, own.length, count, folder.path] };
+          el('span', { className: 'tool folder', html: ICON.folder }), el('span', { className: 'text' }, el('b', { textContent: name }), meta), el('span', { className: 'chev', html: ICON.chev }))), sign: [name, need, done, work, own.length, count, folder.path] };
       });
       const cardsP = list.map(x => x.card);
       if (ready) cardsP.push(el('li', { className: 'card add' }, el('button', { type: 'button', className: 'open', onclick: addProject, html: ICON.plus + '<span>添加项目</span>' })));
@@ -322,7 +325,7 @@
     $('p-live').hidden = !open2.length;
     fill($('p-live').querySelector('ul'), open2.map(s => sessionCard(s, false)), JSON.stringify([open2.map(s => [s.id, s.status, s.title, s.host, s.origin]), stamp(1)]));
     $('p-background').hidden = !held.length;
-    $('p-background-summary').textContent = held.length + ' 段历史会话仍被锁定；不计入电脑运行中';
+    $('p-background-summary').textContent = held.length + ' 段 · 不计入运行中';
     fill($('p-background').querySelector('ul'), held.map(s => sessionCard(s, false)), JSON.stringify([held.map(s => [s.id, s.status, s.title, s.host, s.origin]), stamp(1)]));
     const all = here.filter(s => !s.live).sort((a, b) => b.updated - a.updated), wanted = $('search').value.trim().toLowerCase();
     const found = wanted ? all.filter(s => s.title.toLowerCase().includes(wanted)) : all;
