@@ -112,7 +112,11 @@ public final class MainActivity extends Activity {
         if (!single.isEmpty() && computers().length() == 0) remember("", single);
         updater = new GithubUpdater(this, new GithubUpdater.Listener() {
             @Override public void found(GithubUpdater.Release release) { new AlertDialog.Builder(MainActivity.this).setTitle("发现 Remote CLI 新版本").setMessage("GitHub 上有 v" + release.version + "，现在下载并安装吗？").setPositiveButton("更新", (d, w) -> updater.install(release)).setNegativeButton("稍后", null).show(); }
-            @Override public void message(String text) { if (text != null && !text.isEmpty() && message != null) message.setText(text); }
+            @Override public void message(String text) {
+                if (text == null || text.isEmpty()) return;
+                // Inside a computer's pages there is no line of the app's own to write on.
+                if ("web".equals(screen) || message == null) android.widget.Toast.makeText(MainActivity.this, text, android.widget.Toast.LENGTH_LONG).show(); else { message.setTextColor(MUTED); message.setText(text); }
+            }
         });
         palette(prefs.getBoolean("light", false));
         root = new FrameLayout(this);
@@ -262,6 +266,10 @@ public final class MainActivity extends Activity {
         column.addView(button("手动输入地址", 1, () -> add("")), below(10));
         if (problem.isEmpty()) column.addView(message, below(12));
         column.addView(text("地址和密码相当于电脑的钥匙，不要发给别人。长按一台电脑可以改名或移除。", 12.5f, MUTED), below(18));
+        TextView version = text("版本 " + versionName() + " · 检查更新", 13, ACCENT);
+        version.setGravity(Gravity.CENTER); version.setMinHeight(dp(44));
+        press(version, () -> { message.setTextColor(MUTED); message.setText("正在检查新版本…"); updater.check(true); });
+        column.addView(version, below(10));
         show(column, "home");
         lookAtAll();
     }
@@ -361,6 +369,8 @@ public final class MainActivity extends Activity {
         }
         ticker.postDelayed(look, 6000);
     }
+
+    private String versionName() { try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception unknown) { return ""; } }
 
     // ---- adding a computer by typing
     private void add(String problem) {
@@ -472,6 +482,9 @@ public final class MainActivity extends Activity {
             final int shade = Color.parseColor(color);
             runOnUiThread(() -> { if (web == null) return; bars(shade); web.setBackgroundColor(shade); });
         }
+        /** Looks for a newer version of the app now; the answer comes as a short notice or a question. */
+        @JavascriptInterface public void update() { runOnUiThread(() -> { android.widget.Toast.makeText(MainActivity.this, "正在检查新版本…", android.widget.Toast.LENGTH_SHORT).show(); updater.check(true); }); }
+        @JavascriptInterface public String version() { return versionName(); }
         /** Back to the list of computers. */
         @JavascriptInterface public void disconnect() { runOnUiThread(() -> home("")); }
     }

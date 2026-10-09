@@ -117,10 +117,12 @@
     const choices = [];
     if (ready) choices.push({ label: '添加项目', sub: '把电脑上的一个文件夹加进来', value: 'add' });
     if (native) choices.push({ label: '换一台电脑', sub: '回到电脑列表，这台电脑保留在列表里', value: 'switch' });
+    if (native && native.update) choices.push({ label: '检查 App 更新', sub: '当前版本 ' + (native.version ? native.version() : ''), value: 'update' });
     choices.push({ label: '退出登录', sub: '下次需要重新扫码或输入密码', value: 'out', kind: 'danger' });
     const choice = await ask('更多', '', choices);
     if (choice === 'add') addProject();
     else if (choice === 'switch') native.disconnect();
+    else if (choice === 'update') native.update();
     else if (choice === 'out') { try { await api('/api/logout', {}); } catch (error) { /* signed out anyway */ } if (native) native.disconnect(); else showLogin(); }
   });
 
