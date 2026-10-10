@@ -119,6 +119,10 @@ public sealed class TerminalAgent {
     readonly string dataDir;
     public TerminalAgent(string dataFolder = null) {
         dataDir = dataFolder ?? DefaultData;
+        // A program built without a target framework starts with TLS 1.0 only, which a relay of one's own behind
+        // https refuses. TLS 1.3 is asked for where this Windows has it.
+        try { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12 | (SecurityProtocolType)12288; }
+        catch (NotSupportedException) { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; }
         // A program that restarted for an update left word of its terminals: it comes back as the same computer and
         // opens them again, so the phone's pages go on where they were.
         try {
@@ -687,6 +691,40 @@ public sealed class TerminalAgent {
     }
     // The address or the password changed: sign in again at once instead of after the usual pause.
     public void Reset() { nextLogin = DateTime.MinValue; client = null; }
+    /// Whether a relay of one's own can be used: reached at this address, and taking this password. Says nothing
+    /// when it can, and otherwise what is wrong and what to do about it.
+    public static string CheckRelay(string server, string password) {
+        Func<string, string, HttpWebResponse> ask = (path, body) => {
+            var request = (HttpWebRequest)WebRequest.Create(server + path);
+            request.Timeout = 10000; request.ReadWriteTimeout = 10000; request.AllowAutoRedirect = false;
+            if (body != null) {
+                byte[] bytes = Encoding.UTF8.GetBytes(body);
+                request.Method = "POST"; request.ContentType = "application/json"; request.ContentLength = bytes.Length;
+                using (var stream = request.GetRequestStream()) stream.Write(bytes, 0, bytes.Length);
+            }
+            try { return (HttpWebResponse)request.GetResponse(); }
+            catch (WebException refused) { if (refused.Response is HttpWebResponse) return (HttpWebResponse)refused.Response; throw; }
+        };
+        try {
+            using (var reply = ask("/api/session", null)) {
+                string text; using (var reader = new StreamReader(reply.GetResponseStream(), Encoding.UTF8)) text = reader.ReadToEnd();
+                if ((int)reply.StatusCode != 200 || !text.Contains("\"signed_in\"")) return "这个地址上没有 Remote CLI 中转，请核对地址和端口";
+            }
+            using (var reply = ask("/api/login", new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "password", password } }))) {
+                int code = (int)reply.StatusCode;
+                if (code == 200) return "";
+                if (code == 401) return "中转不接受这个密码。点“换一个密码”，填中转服务器上设置的密码";
+                if (code == 429) return "密码错了太多次，中转暂时不再接受登录，请 15 分钟后再试";
+                return "中转没有正常回应（" + code + "），请检查服务器上的中转和反向代理";
+            }
+        } catch (WebException error) {
+            if (error.Status == WebExceptionStatus.TrustFailure) return "中转的 https 证书无效或已过期，请在服务器上更新证书";
+            if (error.Status == WebExceptionStatus.SecureChannelFailure) return "和中转建立 https 连接失败，请检查服务器的证书和 TLS 设置";
+            if (error.Status == WebExceptionStatus.NameResolutionFailure) return "找不到这个地址，请核对域名";
+            if (error.Status == WebExceptionStatus.Timeout || error.Status == WebExceptionStatus.ConnectFailure) return "连不上中转。请确认服务器开着，端口已在防火墙或安全组放行";
+            return "连不上中转：" + error.Message;
+        } catch (Exception error) { return "连不上中转：" + error.Message; }
+    }
     /// Same session inventory as the phone: tool, project, status, time, title, origin, host.
     public List<string[]> Running() {
         try {

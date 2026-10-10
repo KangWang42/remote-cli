@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "1.0.6";
+    const string Version = "1.0.7";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -193,7 +193,11 @@ public sealed class App : Form {
                 config["Server"] = server; Save();
                 if (agent != null) agent.Reset();
                 ShowAddress(server);
-                Say("使用自有中转。手机 App 扫码或输入地址连接");
+                // Whether it works is found out here and said: the address, the certificate or the password.
+                Say("正在连接自有中转…");
+                string wrong = TerminalAgent.CheckRelay(server, password);
+                if (mine != generation) return;
+                Say(wrong.Length == 0 ? "已连上自有中转，地址固定不变。手机 App 扫码或输入地址连接" : wrong, wrong.Length > 0);
                 return;
             }
             string python = Path.Combine(appDir, "python", "python.exe");
