@@ -195,6 +195,21 @@ final class Workbench {
         row.addView(kit.text(note, 12.5f, kit.MUTED));
         return row;
     }
+    /** The heading of a section that folds away: the whole row is pressed, and the line beside the title stays. */
+    private View heading(String title, String note, boolean folded, Runnable toggle) {
+        LinearLayout row = (LinearLayout) heading(title, note);
+        row.setMinimumHeight(kit.dp(40));
+        View chevron = kit.icon(R.drawable.ic_chevron, Kit.tint(kit.MUTED, 150), 16);
+        ((LinearLayout.LayoutParams) chevron.getLayoutParams()).leftMargin = kit.dp(6);
+        chevron.setRotation(folded ? 0 : 90);
+        row.addView(chevron);
+        row.setContentDescription((folded ? "展开" : "收起") + title + "，" + note);
+        kit.press(row, toggle);
+        return row;
+    }
+    // A folded section stays folded the next time the app is opened.
+    private boolean folded(String section) { return activity.prefs.getBoolean("fold-" + section, false); }
+    private void fold(String section) { activity.prefs.edit().putBoolean("fold-" + section, !folded(section)).apply(); draw(); }
     private void addComputer() {
         kit.sheet("添加电脑", "", new String[]{"扫码添加", "手动输入地址"}, new String[]{"对准电脑端窗口里的二维码", "填写电脑端窗口里显示的地址和密码"}, -1,
             which -> { if (which == 0) activity.scan(); else activity.add(""); });
@@ -340,7 +355,7 @@ final class Workbench {
         Collections.sort(recentTasks, (a, b) -> Long.compare(AggregateSessions.recent(b.entry), AggregateSessions.recent(a.entry)));
         for (Task task : tasks) mark.append(task.url).append('\n').append(task.entry.id).append('\n').append(task.kind).append('\n').append(task.entry.shownTitle()).append('\n').append(task.computer).append('\n').append(ending.contains(task.url + '\n' + task.entry.id)).append('\n');
         for (Task task : recentTasks) mark.append(task.url).append('\n').append(task.entry.id).append('\n').append(task.kind).append('\n').append(task.entry.shownTitle()).append('\n').append(task.computer).append('\n').append(AggregateSessions.ago(AggregateSessions.recent(task.entry), System.currentTimeMillis())).append('\n');
-        mark.append(recentOpen);
+        mark.append(recentOpen).append(folded("active")).append(folded("recent"));
         if (mark.toString().equals(attentionMark)) {
             // the cards stay; only what each terminal last said is written anew
             List<Task> all = new ArrayList<>(tasks); all.addAll(recentTasks);
@@ -361,22 +376,25 @@ final class Workbench {
             if (total[0] > 0) parts.add(total[0] + " 个等你确认");
             if (total[1] > 0) parts.add(total[1] + " 个已完成");
             if (total[2] > 0) parts.add(total[2] + " 个在执行");
-            attention.addView(heading("进行中", parts.isEmpty() ? tasks.size() + " 个终端在运行" : android.text.TextUtils.join(" · ", parts)), kit.below(24));
-            for (int i = 0; i < Math.min(TASKS, tasks.size()); i++) attention.addView(taskCard(tasks.get(i), several), kit.below(i == 0 ? 10 : 8));
-            if (tasks.size() > TASKS) attention.addView(kit.text("另外 " + (tasks.size() - TASKS) + " 个在各自的项目里。", 12.5f, kit.MUTED), kit.below(8));
+            // Folded, the heading still says how many ask for a decision, are finished or at work.
+            boolean folded = folded("active");
+            attention.addView(heading("进行中", parts.isEmpty() ? tasks.size() + " 个终端在运行" : android.text.TextUtils.join(" · ", parts), folded, () -> fold("active")), kit.below(14));
+            for (int i = 0; !folded && i < Math.min(TASKS, tasks.size()); i++) attention.addView(taskCard(tasks.get(i), several), kit.below(i == 0 ? 0 : 8));
+            if (!folded && tasks.size() > TASKS) attention.addView(kit.text("另外 " + (tasks.size() - TASKS) + " 个在各自的项目里。", 12.5f, kit.MUTED), kit.below(8));
         }
         recent.removeAllViews();
         if (!recentTasks.isEmpty()) {
-            recent.addView(heading("最近使用", recentTasks.size() + " 个历史终端"), kit.below(tasks.isEmpty() ? 24 : 22));
-            int shown = Math.min(recentOpen ? RECENT_ALL : RECENT, recentTasks.size());
-            for (int i = 0; i < shown; i++) recent.addView(taskCard(recentTasks.get(i), several), kit.below(i == 0 ? 10 : 8));
-            if (recentTasks.size() > RECENT) {
-                TextView toggle = kit.text(recentOpen ? "收起" : "其余 " + (recentTasks.size() - shown) + " 个", 13, kit.MUTED);
+            boolean folded = folded("recent");
+            recent.addView(heading("最近使用", recentTasks.size() + " 个历史终端", folded, () -> fold("recent")), kit.below(tasks.isEmpty() ? 14 : folded("active") ? 0 : 12));
+            int shown = folded ? 0 : Math.min(recentOpen ? RECENT_ALL : RECENT, recentTasks.size());
+            for (int i = 0; i < shown; i++) recent.addView(taskCard(recentTasks.get(i), several), kit.below(i == 0 ? 0 : 8));
+            if (!folded && recentTasks.size() > RECENT) {
+                TextView toggle = kit.text(recentOpen ? "只显示前 " + RECENT + " 个" : "其余 " + (recentTasks.size() - shown) + " 个", 13, kit.MUTED);
                 toggle.setGravity(Gravity.CENTER); toggle.setMinHeight(kit.dp(44));
                 kit.press(toggle, () -> { recentOpen = !recentOpen; draw(); });
                 recent.addView(toggle, kit.below(2));
             }
-            if (recentOpen && recentTasks.size() > shown) recent.addView(kit.text("另外 " + (recentTasks.size() - shown) + " 个可在对应项目中查看。", 12.5f, kit.MUTED), kit.below(4));
+            if (!folded && recentOpen && recentTasks.size() > shown) recent.addView(kit.text("另外 " + (recentTasks.size() - shown) + " 个可在对应项目中查看。", 12.5f, kit.MUTED), kit.below(4));
         }
     }
     private View taskCard(Task task, boolean several) {

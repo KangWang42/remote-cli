@@ -145,6 +145,7 @@
     mode: () => scrollRouter.mode(),
     visible: () => !document.hidden,
     reduced: () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    owing: () => scrollRouter.owing(),
     scroll(lines, mode) {
       const moved = scrollRouter.scroll(lines, mode); follow(); return moved;
     }

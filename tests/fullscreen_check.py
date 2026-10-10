@@ -222,7 +222,7 @@ def main():
         assert page_value("document.getElementById('latest').hidden") is False
         drag(-4)                    # a whole row is sent once the finger has passed it: the last one may still be under way
         assert moved - 4 <= top - page_value(TOP) <= moved - 3, (top, page_value(TOP), moved)
-        # a quick flick goes on for a moment after the finger lifts, and stops
+        # a quick flick of about ten rows glides on after the finger lifts, comes to rest, and a touch stops a glide at once
         was = page_value(TOP)
         box = page_value("(() => { const r = document.getElementById('screen').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()")
         ask("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": box[0], "y": box[1]}])
@@ -230,12 +230,25 @@ def main():
             time.sleep(0.016)
             ask("Input.dispatchTouchEvent", type="touchMove", touchPoints=[{"x": box[0], "y": box[1] + step * 30}])
         ask("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
-        time.sleep(1.2)
+        time.sleep(2.8)
         report["rows_moved_by_a_flick"] = was - page_value(TOP)
-        assert report["rows_moved_by_a_flick"] >= 8, report
+        assert 25 <= report["rows_moved_by_a_flick"] <= 70, report
         still = page_value(TOP)
         time.sleep(0.6)
         assert page_value(TOP) == still
+        ask("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": box[0], "y": box[1]}])
+        for step in range(1, 7):
+            time.sleep(0.016)
+            ask("Input.dispatchTouchEvent", type="touchMove", touchPoints=[{"x": box[0], "y": box[1] - step * 30}])
+        ask("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+        time.sleep(0.15)
+        ask("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": box[0], "y": box[1]}])        # a finger put down on the moving picture
+        time.sleep(0.3)
+        held = page_value(TOP)
+        time.sleep(0.8)
+        ask("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+        report["rows_of_a_flick_stopped_by_a_touch"] = held - still
+        assert page_value(TOP) == held and 0 < held - still < report["rows_moved_by_a_flick"], (still, held, page_value(TOP))
         picture("dragged.png")
         ask("Runtime.evaluate", expression="document.getElementById('latest').click()")
         until(TOP + " === %d" % top, 10, "back at the end")

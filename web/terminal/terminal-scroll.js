@@ -1,6 +1,13 @@
 /* Touch scrolling is paced by display frames; network and terminal rendering stay independent. */
 (function (root) {
   'use strict';
+  // One glide for every kind of terminal. The speed at lift-off fades with this time constant (ms): a flick of two
+  // pixels a millisecond carries on for about forty rows and has come to rest within a second and a half.
+  const GLIDE = 325;
+  // Claude Code moves three lines for a wheel step on its own, four for two steps written together and six for four.
+  // Steps that follow one another within about 80 ms move further each time (3, 7, 10, 13 ...), so they are sent
+  // SLOT ms apart, where every step moves what it says here. Measured on Claude Code 2.1.
+  const SLOT = 110, MOVES = [[6, 4], [4, 2], [3, 1]], OWED = 45;
   class TerminalScroller {
     constructor(options) {
       this.options = options;
@@ -41,25 +48,29 @@
       const remote = this.kind !== 'local', dt = Math.max(0, Math.min(32, at - this.lastFrame));
       this.lastFrame = at;
       if (!this.dragging && this.velocity) {
-        const decay = Math.exp(-dt / (remote ? 70 : 180));
-        this.pending += this.velocity * (remote ? 70 : 180) * (1 - decay);
+        const decay = Math.exp(-dt / GLIDE);
+        this.pending += this.velocity * GLIDE * (1 - decay);
         this.velocity *= decay;
-        if (at - this.released > (remote ? 180 : 900) || Math.abs(this.velocity) < .025) this.velocity = 0;
+        if (at - this.released > 2500 || Math.abs(this.velocity) < .03) this.velocity = 0;
       }
       const cell = Math.max(8, this.options.lineHeight());
       let lines = Math.trunc(this.pending / cell);
       if (remote) lines = Math.max(-12, Math.min(12, lines));
-      if (lines) {
+      // A program that is sent fewer wheel steps than rows may still be owed one when the finger has stopped.
+      const owing = () => !!this.options.owing && this.options.owing();
+      if (lines || owing()) {
         this.pending -= lines * cell;
         if (this.options.scroll(lines, this.kind) === false) { this.stop(); return; }
       }
-      if ((!this.dragging && this.velocity) || Math.abs(this.pending) >= cell) this.schedule();
+      if ((!this.dragging && this.velocity) || Math.abs(this.pending) >= cell || owing()) this.schedule();
     }
   }
   class TerminalScrollRouter {
-    constructor(term, send, tool) {
+    constructor(term, send, tool, clock) {
       this.term = term; this.send = send; this.tool = tool;
+      this.clock = clock || (() => performance.now());
       this.remoteUp = 0; this.pageLines = 0; this.sgr = false;
+      this.owed = 0; this.way = 0; this.wheelAt = -1e9;
       // Mouse tracking and mouse encoding are independent terminal modes.
       for (const [final, enabled] of [['h', true], ['l', false]]) {
         term.parser.registerCsiHandler({ prefix: '?', final }, params => {
@@ -76,8 +87,21 @@
       // screenful at a time, and are only for a program whose mouse mode never reached this terminal.
       return this.term.modes.mouseTrackingMode !== 'none' ? 'mouse' : alternate ? 'page' : 'local';
     }
-    reset() { this.remoteUp = 0; this.pageLines = 0; }
-    start() { this.pageLines = 0; }
+    reset() { this.remoteUp = 0; this.pageLines = 0; this.owed = 0; }
+    start() { this.pageLines = 0; this.owed = 0; }
+    // The wheel steps that make Claude Code follow the finger by `lines` more rows: the largest move that does not
+    // run more than a row and a half ahead of the finger. What the finger is ahead by is kept, up to OWED rows,
+    // and paid off in the slots that follow.
+    paced(lines) {
+      const now = this.clock(), way = Math.sign(lines) || this.way || 0;
+      if (way !== this.way) { this.owed = 0; this.way = way; }       // nothing is owed in the direction that was left
+      this.owed = Math.max(-OWED, Math.min(OWED, this.owed + lines));
+      const move = now - this.wheelAt >= SLOT && MOVES.find(([rows]) => this.owed * way >= rows - 1.5);
+      if (!way || !move) return { steps: 0, moved: 0 };
+      this.owed -= way * move[0]; this.wheelAt = now;
+      return { steps: way * move[1], moved: way * move[0] };
+    }
+    owing() { return this.tool() === 'claude' && this.owed * (this.way || 0) >= 1.5 && this.mode() === 'mouse'; }
     wheel(lines) {
       const column = Math.max(1, Math.floor(this.term.cols / 2)), row = Math.max(1, Math.floor(this.term.rows / 2));
       const button = lines > 0 ? 64 : 65;
@@ -101,8 +125,10 @@
         this.remoteUp = Math.max(0, this.remoteUp + pages * 8);
         return true;
       }
-      if (!this.send(this.wheel(lines))) return false;
-      this.remoteUp = Math.max(0, this.remoteUp + lines);
+      const sent = this.tool() === 'claude' ? this.paced(lines) : { steps: lines, moved: lines };
+      if (!sent.steps) return true;
+      if (!this.send(this.wheel(sent.steps))) return false;
+      this.remoteUp = Math.max(0, this.remoteUp + sent.moved);
       return true;
     }
     latest() {
