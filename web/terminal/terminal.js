@@ -3,7 +3,7 @@
   'use strict';
   const bridge = window.ProjectTerminal;
   const $ = id => document.getElementById(id);
-  const input = $('input'), status = $('status-text'), notice = $('notice'), palette = $('palette'), sendButton = $('send');
+  const input = $('input'), status = $('status-text'), connection = $('connection'), connectionText = $('connection-text'), connectionDetail = $('connection-detail'), notice = $('notice'), palette = $('palette'), sendButton = $('send');
   const screen = $('screen'), holder = $('terminal'), dot = $('dot'), slash = $('slash'), latest = $('latest');
 
   const SKINS = window.RemoteCliSkins;      // skins.js
@@ -106,54 +106,30 @@
 
   function follow() {
     const buffer = term.buffer.active;
-    const atBottom = buffer.viewportY >= buffer.baseY && remoteUp <= 0;
+    const atBottom = buffer.viewportY >= buffer.baseY && scrollRouter.remoteUp <= 0;
     if (latest.hidden !== atBottom) latest.hidden = atBottom;
   }
   term.onScroll(follow);
-  // Claude Code and Codex scroll their own screen. How far up the wheel has taken them is counted here, so that
-  // "back to the newest" can take them down again; a few steps too many do no harm.
-  let remoteUp = 0;
+  const scrollRouter = new TerminalScrollRouter(term, send, () => tool);
   latest.addEventListener('click', () => {
     scroller.stop();
-    if (remoteUp > 0 && term.modes.mouseTrackingMode !== 'none') {
-      const column = Math.max(1, Math.floor(term.cols / 2)), row = Math.max(1, Math.floor(term.rows / 2));
-      send(`\x1b[<65;${column};${row}M`.repeat(Math.min(600, remoteUp + 12)));
-    }
-    remoteUp = 0;
-    term.scrollToBottom(); follow();
+    scrollRouter.latest(); follow();
   });
   term.onData(data => { if (!restoring) send(data); });
 
-  // Dragging a finger over the screen scrolls it. Claude Code and Codex draw a full screen of their own and keep the
-  // earlier lines themselves, so for them the drag is passed on as mouse-wheel steps; a plain shell keeps its lines
-  // here and is scrolled directly.
-  let pageLines = 0;
+  // Touch movement scrolls local history or the program's fullscreen view, according to the active terminal mode.
   const scroller = new TerminalScroller({
     request: callback => requestAnimationFrame(callback), cancel: id => cancelAnimationFrame(id),
     lineHeight: () => tall / Math.max(1, term.rows),
-    mode: () => term.modes.mouseTrackingMode !== 'none' ? 'mouse' : term.buffer.active.type === 'alternate' ? 'page' : 'local',
+    mode: () => scrollRouter.mode(),
     visible: () => !document.hidden,
     reduced: () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     scroll(lines, mode) {
-      if (mode === 'mouse') {
-        const column = Math.max(1, Math.floor(term.cols / 2)), row = Math.max(1, Math.floor(term.rows / 2));
-        const sent = send(`\x1b[<${lines > 0 ? 64 : 65};${column};${row}M`.repeat(Math.abs(lines)));
-        if (sent) { remoteUp = Math.max(0, remoteUp + lines); follow(); }
-        return sent;
-      }
-      if (mode === 'page') {
-        pageLines += lines;
-        const pages = Math.trunc(pageLines / 8);
-        if (pages) { pageLines -= pages * 8; return send((pages > 0 ? KEYS.pageup : KEYS.pagedown).repeat(Math.abs(pages))); }
-        return true;
-      }
-      const before = term.buffer.active.viewportY;
-      term.scrollLines(-lines);
-      return term.buffer.active.viewportY !== before;
+      const moved = scrollRouter.scroll(lines, mode); follow(); return moved;
     }
   });
   screen.addEventListener('touchstart', event => {
-    pageLines = 0;
+    scrollRouter.start();
     if (event.touches.length === 1 && !latest.contains(event.target)) scroller.start(event.touches[0].clientY, performance.now());
     else scroller.stop();
   }, { capture: true, passive: true });
@@ -166,6 +142,7 @@
   screen.addEventListener('touchend', () => scroller.end(performance.now()), { capture: true, passive: true });
   screen.addEventListener('touchcancel', () => scroller.stop(), { capture: true, passive: true });
   document.addEventListener('visibilitychange', () => { if (document.hidden) scroller.stop(); });
+  term.buffer.onBufferChange(() => { scroller.stop(); scrollRouter.reset(); follow(); });
 
   // Buttons act on the terminal without taking the keyboard away from the message box.
   function keepFocus(element) { element.addEventListener('mousedown', event => event.preventDefault()); }
@@ -223,7 +200,7 @@
     const text = input.value;
     if (!text) { send('\r'); return; }
     if (!text.trim()) return;
-    if (send(paste(text) + '\r')) { input.value = ''; paletteOpen = false; grow(); drawPalette(); remoteUp = 0; term.scrollToBottom(); follow(); }
+    if (send(paste(text) + '\r')) { input.value = ''; paletteOpen = false; grow(); drawPalette(); scrollRouter.reset(); term.scrollToBottom(); follow(); }
   });
   $('font').addEventListener('click', () => {
     fontSize = sizes[(sizes.indexOf(fontSize) + 1) % sizes.length];
@@ -243,7 +220,19 @@
 
   let wasEnded = null;
   function show(element, text) { if (element.textContent !== text) element.textContent = text; }
+  const transportNames = { websocket: 'WebSocket', sse: 'SSE', http: 'HTTP 长轮询' };
+  const connectionStates = { connecting: '连接中', connected: '已连接', reconnecting: '重连中', offline: '已断开', paused: '后台暂停' };
   window.TerminalUI = {
+    connection(info) {
+      if (!info || !connectionText) return;
+      const transport = transportNames[info.transport] || info.transport || '未知传输';
+      const state = connectionStates[info.state] || info.state || '未知状态';
+      const latency = Number.isFinite(info.lastLatency) ? `中转延迟 ${Math.round(Math.max(0, info.lastLatency))} ms` : '中转延迟待测';
+      const reconnects = Number.isFinite(info.reconnects) ? Math.max(0, info.reconnects) : 0;
+      show(connectionText, `${transport} · ${state}`);
+      show(connectionDetail, `${latency} · 重连 ${reconnects} 次`);
+      connection.className = info.state || '';
+    },
     receive(payload) {
       const t = payload.terminal, device = payload.device;
       const live = t.state === 'running' && device.online && device.enabled;
@@ -259,6 +248,7 @@
       if (!initialized || payload.reset) {
         restoring = true; running = false;
         scroller.stop();
+        scrollRouter.reset(); scrollRouter.sgr = false;
         term.reset(); term.resize(t.cols || 80, t.rows || 24);
         start = payload.chunks.length ? payload.chunks[0].seq - 1 : payload.after;
       }

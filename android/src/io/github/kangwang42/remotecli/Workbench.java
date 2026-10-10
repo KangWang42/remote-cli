@@ -9,6 +9,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
@@ -18,6 +20,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -37,17 +40,17 @@ final class Workbench {
         final AggregateSessions.Entry entry;
         Task(String url, String computer, AggregateSessions.Entry entry, String kind) { this.url = url; this.computer = computer; this.entry = entry; this.kind = kind; }
     }
-    private static final int SHOWN = 4, TASKS = 12, TALKS = 8;
+    private static final int SHOWN = 4, TASKS = 12, TALKS = 8, RECENT = 8;
 
     private final MainActivity activity;
     private final Kit kit;
     private final Map<String, Snapshot> snapshots = new HashMap<>();
     private final Map<String, LinearLayout> holders = new HashMap<>();
     private final Map<String, String> marks = new HashMap<>();
-    private final Set<String> pending = new HashSet<>(), expanded = new HashSet<>(), unfolded = new HashSet<>();      // unfolded: address, line break, project
+    private final Set<String> pending = new HashSet<>(), ending = new HashSet<>(), expanded = new HashSet<>(), collapsed = new HashSet<>(), unfolded = new HashSet<>();      // unfolded: address, line break, project
     private final Runnable tick = this::refresh;
     private JSONObject seen;
-    private LinearLayout attention;
+    private LinearLayout attention, recent;
     private TextView summary;
     private String attentionMark;
     private final Map<String, TextView> peeks = new HashMap<>();       // address, line break, terminal -> the line it last said
@@ -87,7 +90,7 @@ final class Workbench {
         activity.prefs.edit().putString("seen", seenAll().toString()).apply();
     }
     void forget(String url) {
-        snapshots.remove(url); expanded.remove(url);
+        snapshots.remove(url); expanded.remove(url); collapsed.remove(url);
         if (seenAll().remove(url) != null) activity.prefs.edit().putString("seen", seenAll().toString()).apply();
     }
 
@@ -116,6 +119,8 @@ final class Workbench {
         holders.clear(); marks.clear(); attentionMark = null;
         attention = kit.column();
         page.addView(attention);
+        recent = kit.column();
+        page.addView(recent);
         if (list.length() == 0) {
             page.addView(welcome(), kit.below(22));
             page.addView(kit.button("扫码添加电脑", 0, activity::scan), kit.below(22));
@@ -273,7 +278,7 @@ final class Workbench {
                     entry.optBoolean("done"), entry.optLong("phase_at"));
                 made.said = entry.optString("said");
                 made.shell = device.optString("shell");
-                if (!terminal) made.used = entry.optLong("updated");
+                made.used = terminal ? (made.at > 0 ? made.at : entry.optLong("created")) : entry.optLong("updated");
                 entries.add(made);
             }
         }
@@ -300,7 +305,7 @@ final class Workbench {
     private void draw() {
         if (attention == null) return;
         JSONArray list = activity.computers();
-        List<Task> tasks = new ArrayList<>();
+        List<Task> tasks = new ArrayList<>(), recentTasks = new ArrayList<>();
         int online = 0, known = 0;
         int[] total = new int[4];
         StringBuilder mark = new StringBuilder();
@@ -316,7 +321,10 @@ final class Workbench {
             Map<String, Long> looked = seen(url);
             int[] counts = AggregateSessions.counts(snapshot.projects, looked);
             for (int k = 0; k < 4; k++) total[k] += counts[k];
-            for (AggregateSessions.Project project : snapshot.projects) for (AggregateSessions.Entry entry : project.active) tasks.add(new Task(url, name, entry, entry.kind(looked)));
+            for (AggregateSessions.Project project : snapshot.projects) {
+                for (AggregateSessions.Entry entry : project.active) tasks.add(new Task(url, name, entry, entry.kind(looked)));
+                for (AggregateSessions.Entry entry : project.ended) recentTasks.add(new Task(url, name, entry, "ended"));
+            }
         }
         if (known > 0) {
             List<String> parts = new ArrayList<>();
@@ -328,10 +336,13 @@ final class Workbench {
             summary.setTextColor(total[0] > 0 ? kit.BAD : kit.MUTED);
         }
         Collections.sort(tasks, (a, b) -> AggregateSessions.rank(a.kind) != AggregateSessions.rank(b.kind) ? AggregateSessions.rank(a.kind) - AggregateSessions.rank(b.kind) : Long.compare(b.entry.at, a.entry.at));
-        for (Task task : tasks) mark.append(task.url).append('\n').append(task.entry.id).append('\n').append(task.kind).append('\n').append(task.entry.shownTitle()).append('\n').append(task.computer).append('\n');
+        Collections.sort(recentTasks, (a, b) -> Long.compare(AggregateSessions.recent(b.entry), AggregateSessions.recent(a.entry)));
+        for (Task task : tasks) mark.append(task.url).append('\n').append(task.entry.id).append('\n').append(task.kind).append('\n').append(task.entry.shownTitle()).append('\n').append(task.computer).append('\n').append(ending.contains(task.url + '\n' + task.entry.id)).append('\n');
+        for (Task task : recentTasks) mark.append(task.url).append('\n').append(task.entry.id).append('\n').append(task.kind).append('\n').append(task.entry.shownTitle()).append('\n').append(task.computer).append('\n').append(AggregateSessions.ago(AggregateSessions.recent(task.entry), System.currentTimeMillis())).append('\n');
         if (mark.toString().equals(attentionMark)) {
-            // the cards stay; only what each task last said is written anew
-            for (Task task : tasks) {
+            // the cards stay; only what each terminal last said is written anew
+            List<Task> all = new ArrayList<>(tasks); all.addAll(recentTasks);
+            for (Task task : all) {
                 TextView peek = peeks.get(task.url + '\n' + task.entry.id);
                 if (peek == null) continue;
                 if (!task.entry.said.contentEquals(peek.getText())) peek.setText(task.entry.said);
@@ -342,15 +353,22 @@ final class Workbench {
         attentionMark = mark.toString();
         peeks.clear();
         attention.removeAllViews();
-        if (tasks.isEmpty()) return;
-        List<String> parts = new ArrayList<>();
-        if (total[0] > 0) parts.add(total[0] + " 个等你确认");
-        if (total[1] > 0) parts.add(total[1] + " 个已完成");
-        if (total[2] > 0) parts.add(total[2] + " 个在执行");
-        attention.addView(heading("进行中", parts.isEmpty() ? tasks.size() + " 个终端在运行" : android.text.TextUtils.join(" · ", parts)), kit.below(24));
         boolean several = list.length() > 1;
-        for (int i = 0; i < Math.min(TASKS, tasks.size()); i++) attention.addView(taskCard(tasks.get(i), several), kit.below(i == 0 ? 10 : 8));
-        if (tasks.size() > TASKS) attention.addView(kit.text("另外 " + (tasks.size() - TASKS) + " 个在各自的项目里。", 12.5f, kit.MUTED), kit.below(8));
+        if (!tasks.isEmpty()) {
+            List<String> parts = new ArrayList<>();
+            if (total[0] > 0) parts.add(total[0] + " 个等你确认");
+            if (total[1] > 0) parts.add(total[1] + " 个已完成");
+            if (total[2] > 0) parts.add(total[2] + " 个在执行");
+            attention.addView(heading("进行中", parts.isEmpty() ? tasks.size() + " 个终端在运行" : android.text.TextUtils.join(" · ", parts)), kit.below(24));
+            for (int i = 0; i < Math.min(TASKS, tasks.size()); i++) attention.addView(taskCard(tasks.get(i), several), kit.below(i == 0 ? 10 : 8));
+            if (tasks.size() > TASKS) attention.addView(kit.text("另外 " + (tasks.size() - TASKS) + " 个在各自的项目里。", 12.5f, kit.MUTED), kit.below(8));
+        }
+        recent.removeAllViews();
+        if (!recentTasks.isEmpty()) {
+            recent.addView(heading("最近使用", recentTasks.size() + " 个历史终端"), kit.below(tasks.isEmpty() ? 24 : 22));
+            for (int i = 0; i < Math.min(RECENT, recentTasks.size()); i++) recent.addView(taskCard(recentTasks.get(i), several), kit.below(i == 0 ? 10 : 8));
+            if (recentTasks.size() > RECENT) recent.addView(kit.text("另外 " + (recentTasks.size() - RECENT) + " 个可在对应项目中查看。", 12.5f, kit.MUTED), kit.below(8));
+        }
     }
     private View taskCard(Task task, boolean several) {
         final AggregateSessions.Entry entry = task.entry;
@@ -363,11 +381,16 @@ final class Workbench {
         texts.setPadding(kit.dp(12), 0, 0, 0);
         texts.addView(kit.line(entry.shownTitle(), 15.5f, kit.INK, true));
         LinearLayout meta = kit.row();
-        meta.addView(kit.pill(AggregateSessions.label(task.kind), color(task.kind)));
+        boolean closing = ending.contains(task.url + '\n' + entry.id);
+        meta.addView(kit.pill(closing ? "正在结束" : AggregateSessions.label(task.kind), closing ? kit.MUTED : color(task.kind)));
         TextView where = kit.line(entry.project + (several ? " · " + task.computer : ""), 12.5f, kit.MUTED, false);
         where.setPadding(kit.dp(8), 0, 0, 0);
         meta.addView(where, new LinearLayout.LayoutParams(0, -2, 1));
         texts.addView(meta, kit.below(4));
+        if (!entry.running()) {
+            String when = AggregateSessions.ago(AggregateSessions.recent(entry), System.currentTimeMillis());
+            if (!when.isEmpty()) texts.addView(kit.text(when + "结束", 12.5f, kit.MUTED), kit.below(4));
+        }
         if (entry.terminal) {
             TextView peek = kit.text(entry.said, 12.5f, kit.MUTED);
             peek.setMaxLines(2); peek.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -376,12 +399,84 @@ final class Workbench {
             peeks.put(task.url + '\n' + entry.id, peek);
         }
         card.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+        if (entry.terminal && "running".equals(entry.state)) card.addView(stopButton(task));
         kit.press(card, () -> {
             if (!entry.terminal) { activity.openSession(task.url, entry.project, entry.id); return; }
             markSeen(task.url, entry.id, entry.at);
             activity.openTerminal(task.url, entry.id);
         });
         return card;
+    }
+
+    private View stopButton(Task task) {
+        boolean busy = ending.contains(task.url + '\n' + task.entry.id);
+        View button = kit.iconButton(R.drawable.ic_stop, busy ? "正在结束“" + task.entry.shownTitle() + "”" : "结束“" + task.entry.shownTitle() + "”", () -> stopTask(task));
+        button.setEnabled(!busy); button.setAlpha(busy ? .4f : 1f);
+        return button;
+    }
+
+    private void redraw() {
+        if (!activity.showing("home")) return;
+        JSONArray list = activity.computers();
+        for (int i = 0; i < list.length(); i++) { JSONObject computer = list.optJSONObject(i); if (computer != null) drawComputer(computer); }
+        draw();
+    }
+
+    private void stopTask(Task task) {
+        final String key = task.url + '\n' + task.entry.id;
+        if (ending.contains(key)) return;
+        kit.sheet("结束“" + task.entry.shownTitle() + "”？", "正在执行的任务会被中断，历史终端仍会保留。", new String[]{"结束终端"}, new String[]{"结束后会从进行中移到最近使用。"}, 0,
+            which -> { if (which == 0 && ending.add(key)) { redraw(); closeRemote(task, key); } });
+    }
+    private void closeRemote(Task task, String key) {
+        final String cookie = CookieManager.getInstance().getCookie(task.url);
+        activity.net.execute(() -> {
+            String problem = "";
+            try {
+                JSONObject op = new JSONObject().put("action", "close").put("id", UUID.randomUUID().toString().replace("-", "")).put("terminal", task.entry.id);
+                JSONObject result = null;
+                long deadline = System.nanoTime() + 30_000_000_000L;
+                for (int attempt = 0; attempt < 60 && System.nanoTime() < deadline; attempt++) {
+                    try { result = post(task.url + "/api/terminal", cookie, op); }
+                    catch (IOException unreachable) { Thread.sleep(400); continue; }
+                    String state = result.optString("state");
+                    if ("done".equals(state)) break;
+                    if ("error".equals(state)) throw new Exception(result.optString("error", "终端没有结束"));
+                    if (!"queued".equals(state)) throw new Exception("电脑没有响应");
+                    Thread.sleep(400);
+                }
+                if (result == null || "queued".equals(result.optString("state"))) throw new Exception("电脑没有响应，请稍后重试");
+            } catch (Exception error) { problem = error.getMessage() == null ? "结束终端失败，请稍后重试" : error.getMessage(); }
+            final String message = problem;
+            activity.runOnUiThread(() -> { ending.remove(key); if (!message.isEmpty()) android.widget.Toast.makeText(activity, message, android.widget.Toast.LENGTH_SHORT).show(); redraw(); refresh(); });
+        });
+    }
+    private JSONObject post(String address, String cookie, JSONObject payload) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
+        try {
+            connection.setConnectTimeout(4000); connection.setReadTimeout(8000); connection.setUseCaches(false); connection.setDoOutput(true);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestMethod("POST"); connection.setRequestProperty("Content-Type", "application/json");
+            if (cookie != null) connection.setRequestProperty("Cookie", cookie);
+            byte[] body = payload.toString().getBytes("UTF-8");
+            connection.setFixedLengthStreamingMode(body.length);
+            try (OutputStream output = connection.getOutputStream()) { output.write(body); }
+            int code = connection.getResponseCode();
+            if (code == 401) throw new Exception("登录已过期，请重新连接电脑");
+            InputStream input = code >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            if (input == null) throw new Exception("电脑没有响应（" + code + "）");
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (InputStream stream = input) {
+                byte[] part = new byte[4096]; int n;
+                while ((n = stream.read(part)) > 0) {
+                    if (bytes.size() + n > 1000000) throw new Exception("返回内容过大");
+                    bytes.write(part, 0, n);
+                }
+            }
+            JSONObject result = new JSONObject(bytes.toString("UTF-8"));
+            if (code != 200) throw new Exception(result.optString("error", "请求失败（" + code + "）"));
+            return result;
+        } finally { connection.disconnect(); }
     }
 
     /** One computer: its name and state, then its projects, the ones with running tasks first. */
@@ -392,7 +487,7 @@ final class Workbench {
         Snapshot snapshot = snapshots.get(url);
         Map<String, Long> looked = seen(url);
         String name = computer.optString("name").isEmpty() ? MainActivity.host(url) : computer.optString("name");
-        String mark = name + '\n' + expanded.contains(url) + '\n' + unfolded + '\n' + (snapshot == null ? "" : snapshot.state + '\n' + snapshot.line + '\n' + AggregateSessions.signature(snapshot.projects, looked));
+        String mark = name + '\n' + expanded.contains(url) + '\n' + collapsed.contains(url) + '\n' + unfolded + '\n' + ending + '\n' + (snapshot == null ? "" : snapshot.state + '\n' + snapshot.line + '\n' + AggregateSessions.signature(snapshot.projects, looked));
         if (mark.equals(marks.get(url))) return;
         marks.put(url, mark);
         holder.removeAllViews();
@@ -409,15 +504,20 @@ final class Workbench {
         texts.addView(kit.line(name, 16.5f, kit.INK, true));
         texts.addView(kit.line(snapshot == null ? "正在连接…" : snapshot.line, 12.5f, on && counts[0] > 0 ? kit.BAD : kit.MUTED, false));
         head.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+        boolean folded = collapsed.contains(url);
+        View fold = kit.iconButton(R.drawable.ic_chevron, folded ? "展开" + name : "收起" + name, () -> { if (!collapsed.remove(url)) collapsed.add(url); drawComputer(computer); });
+        ((android.widget.ImageView) ((android.widget.FrameLayout) fold).getChildAt(0)).setRotation(folded ? 0 : 90);
+        head.addView(fold);
         head.addView(kit.iconButton(R.drawable.ic_more, name + " 的选项", () -> activity.manage(url)));
         kit.press(head, () -> activity.open(url, ""));
         head.setOnLongClickListener(v -> { activity.manage(url); return true; });
         card.addView(head);
-        if (on) {
+        if (on && !folded) {
             List<AggregateSessions.Project> order = new ArrayList<>();
             for (AggregateSessions.Project project : snapshot.projects) if (!project.active.isEmpty()) order.add(project);
             int busy = order.size();
-            for (AggregateSessions.Project project : snapshot.projects) if (project.active.isEmpty()) order.add(project);
+            for (AggregateSessions.Project project : snapshot.projects) if (project.active.isEmpty() && !project.ended.isEmpty()) order.add(project);
+            for (AggregateSessions.Project project : snapshot.projects) if (project.active.isEmpty() && project.ended.isEmpty()) order.add(project);
             boolean all = expanded.contains(url);
             int shown = all ? order.size() : Math.max(busy, Math.min(SHOWN, order.size()));
             for (int i = 0; i < shown; i++) { card.addView(rule()); card.addView(projectRow(computer, order.get(i), looked)); }
@@ -437,7 +537,7 @@ final class Workbench {
                 kit.press(toggle, () -> { if (!expanded.remove(url)) expanded.add(url); drawComputer(computer); });
                 card.addView(toggle);
             }
-        } else if (snapshot != null) {
+        } else if (!on && !folded && snapshot != null) {
             card.addView(rule());
             LinearLayout help = kit.row();
             help.setPadding(kit.dp(16), kit.dp(10), kit.dp(12), kit.dp(12));
@@ -494,7 +594,7 @@ final class Workbench {
             row.addView(kit.pill(counts[i] + says[i], shades[i]), gap);
             first = false;
         }
-        if (first) row.addView(kit.text(!project.active.isEmpty() ? project.active.size() + " 个终端开着" : project.history.isEmpty() ? "还没有对话" : project.history.size() + " 段对话", 12.5f, kit.MUTED));
+        if (first) row.addView(kit.text(!project.active.isEmpty() ? project.active.size() + " 个终端开着" : !project.ended.isEmpty() ? project.ended.size() + " 个历史终端" : project.history.isEmpty() ? "还没有对话" : project.history.size() + " 段对话", 12.5f, kit.MUTED));
         View chevron = kit.icon(R.drawable.ic_chevron, Kit.tint(kit.MUTED, 150), 16);
         ((LinearLayout.LayoutParams) chevron.getLayoutParams()).leftMargin = kit.dp(6);
         chevron.setRotation(open ? 90 : 0);
@@ -506,10 +606,17 @@ final class Workbench {
         LinearLayout inside = kit.column();
         inside.setPadding(kit.dp(8), kit.dp(2), kit.dp(8), kit.dp(8));
         inside.setBackground(kit.shape(kit.BG, 0, 14));
+        if (!project.active.isEmpty()) inside.addView(note("进行中"));
         for (AggregateSessions.Entry entry : project.active) inside.addView(talkRow(url, entry, entry.kind(looked)));
-        for (int i = 0; i < Math.min(TALKS, project.history.size()); i++) inside.addView(talkRow(url, project.history.get(i), project.history.get(i).kind(looked)));
-        int rest = project.history.size() - Math.min(TALKS, project.history.size());
-        TextView enter = kit.bold(rest > 0 ? "新建终端，或查看其余 " + rest + " 段对话" : "新建终端 · 进入项目", 13.5f, kit.ACCENT);
+        int endedShown = Math.min(TALKS, project.ended.size());
+        if (endedShown > 0) inside.addView(note("历史终端"));
+        for (int i = 0; i < endedShown; i++) inside.addView(talkRow(url, project.ended.get(i), "ended"));
+        int remaining = Math.max(0, TALKS - endedShown), historyShown = Math.min(remaining, project.history.size());
+        if (historyShown > 0) inside.addView(note("保存的对话"));
+        for (int i = 0; i < historyShown; i++) inside.addView(talkRow(url, project.history.get(i), project.history.get(i).kind(looked)));
+        int rest = project.history.size() - historyShown, hiddenEnded = project.ended.size() - endedShown;
+        String more = rest + hiddenEnded > 0 ? "新建终端 · 查看更多记录" : "新建终端 · 进入项目";
+        TextView enter = kit.bold(more, 13.5f, kit.ACCENT);
         enter.setGravity(Gravity.CENTER_VERTICAL); enter.setMinHeight(kit.dp(46)); enter.setPadding(kit.dp(8), 0, kit.dp(8), 0);
         kit.press(enter, () -> activity.open(url, "", project.name));
         inside.addView(enter);
@@ -526,9 +633,13 @@ final class Workbench {
         TextView title = kit.line(entry.shownTitle(), 14.5f, "history".equals(kind) ? kit.MUTED : kit.INK, false);
         title.setPadding(kit.dp(10), 0, kit.dp(8), 0);
         row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        String used = AggregateSessions.ago(entry.used, System.currentTimeMillis());
-        if ("history".equals(kind)) row.addView(kit.text(used.isEmpty() ? "继续" : used, 12.5f, kit.MUTED));
-        else row.addView(kit.pill(AggregateSessions.label(kind), color(kind)));
+        String used = AggregateSessions.ago(AggregateSessions.recent(entry), System.currentTimeMillis());
+        if ("history".equals(kind) || "ended".equals(kind)) row.addView(kit.text(used.isEmpty() ? AggregateSessions.label(kind) : used + (entry.terminal ? "结束" : ""), 12.5f, kit.MUTED));
+        else {
+            boolean closing = ending.contains(url + '\n' + entry.id);
+            row.addView(kit.pill(closing ? "正在结束" : AggregateSessions.label(kind), closing ? kit.MUTED : color(kind)));
+        }
+        if (entry.terminal && "running".equals(entry.state)) row.addView(stopButton(new Task(url, "", entry, kind)));
         kit.press(row, () -> {
             if (!entry.terminal) { activity.openSession(url, entry.project, entry.id); return; }
             markSeen(url, entry.id, entry.at);

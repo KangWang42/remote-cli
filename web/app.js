@@ -18,7 +18,7 @@
     if (native && native.setPref && LOOK.includes(key)) native.setPref(key, value);
     try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ }
   };
-  let data = null, project = '', timer = 0, busy = false, shown = 12, toastTimer = 0;
+  let data = null, project = '', timer = 0, busy = false, shown = 12, endedShown = 8, toastTimer = 0;
 
   // ---- drawing helpers
   const svg = (path, size) => `<svg viewBox="0 0 24 24" width="${size || 22}" height="${size || 22}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
@@ -460,15 +460,16 @@
     $('history-count').textContent = wanted ? found.length + ' / ' + all.length + ' 段' : all.length + ' 段';
     fill($('p-history').querySelector('ul'), found.slice(0, shown).map(s => sessionCard(s, false)), JSON.stringify([found.slice(0, shown).map(s => [s.id, s.title]), stamp(5), ready]));
     $('more-history').hidden = found.length <= shown;
-    // An ended terminal whose conversation is listed above would show that conversation a second time.
-    const ended = terminals.filter(t => t.dir === project && !running(t) && !(t.session && here.some(s => s.id === t.session))).sort((a, b) => b.created - a.created).slice(0, 5);
+    // Kept terminal screens and saved conversations have different actions: view a screen or resume a conversation.
+    const ended = terminals.filter(t => t.dir === project && !running(t)).sort((a, b) => (b.phase_at || b.created) - (a.phase_at || a.created));
     $('p-ended').hidden = !ended.length;
-    fill($('p-ended').querySelector('ul'), ended.map(t => terminalCard(t, false)), JSON.stringify(ended.map(t => [t.id, t.phase, t.title])));
+    fill($('p-ended').querySelector('ul'), ended.slice(0, endedShown).map(t => terminalCard(t, false)), JSON.stringify([ended.slice(0, endedShown).map(t => [t.id, t.phase, t.title]), stamp(5)]));
+    $('more-ended').hidden = ended.length <= endedShown;
     $('empty').hidden = own.length + here.length + ended.length > 0;
   }
 
   // ---- moving between the overview and one project; the phone's back key goes back to the overview
-  function enter(name) { project = name; shown = 12; $('search').value = ''; history.pushState({ project: name }, ''); scrollTo(0, 0); draw(); }
+  function enter(name) { project = name; shown = 12; endedShown = 8; $('search').value = ''; history.pushState({ project: name }, ''); scrollTo(0, 0); draw(); }
   window.addEventListener('popstate', event => { project = event.state && event.state.project || ''; if (data) draw(); });
   // A project opened by a link (the workbench does that) has no overview behind it in the history.
   $('back').addEventListener('click', () => {
@@ -478,6 +479,7 @@
   });
   $('search').addEventListener('input', () => { shown = 12; draw(); });
   $('more-history').addEventListener('click', () => { shown += 30; draw(); });
+  $('more-ended').addEventListener('click', () => { endedShown += 30; draw(); });
 
   async function refresh() {
     clearTimeout(timer);

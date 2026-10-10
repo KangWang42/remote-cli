@@ -56,6 +56,66 @@
       if ((!this.dragging && this.velocity) || Math.abs(this.pending) >= cell) this.schedule();
     }
   }
-  if (typeof module === 'object' && module.exports) module.exports = TerminalScroller;
-  else root.TerminalScroller = TerminalScroller;
+  class TerminalScrollRouter {
+    constructor(term, send, tool) {
+      this.term = term; this.send = send; this.tool = tool;
+      this.remoteUp = 0; this.pageLines = 0; this.sgr = false;
+      // Mouse tracking and mouse encoding are independent terminal modes.
+      for (const [final, enabled] of [['h', true], ['l', false]]) {
+        term.parser.registerCsiHandler({ prefix: '?', final }, params => {
+          if (params.includes(1006)) this.sgr = enabled;
+          return false;
+        });
+      }
+    }
+    mode() {
+      const alternate = this.term.buffer.active.type === 'alternate';
+      // Codex's inline view uses terminal scrollback; its fullscreen view accepts PageUp/PageDown.
+      // Windows ConPTY does not reliably mirror its native mouse capture as terminal escape modes.
+      if (this.tool() === 'codex') return alternate ? 'page' : 'local';
+      return this.term.modes.mouseTrackingMode !== 'none' ? 'mouse' : alternate ? 'page' : 'local';
+    }
+    reset() { this.remoteUp = 0; this.pageLines = 0; }
+    start() { this.pageLines = 0; }
+    wheel(lines) {
+      const column = Math.max(1, Math.floor(this.term.cols / 2)), row = Math.max(1, Math.floor(this.term.rows / 2));
+      const button = lines > 0 ? 64 : 65;
+      const key = this.sgr ? `\x1b[<${button};${column};${row}M`
+        : '\x1b[M' + String.fromCharCode(button + 32, Math.min(223, column) + 32, Math.min(223, row) + 32);
+      return key.repeat(Math.abs(lines));
+    }
+    scroll(lines, mode = this.mode()) {
+      if (mode === 'local') {
+        const before = this.term.buffer.active.viewportY;
+        this.term.scrollLines(-lines);
+        return this.term.buffer.active.viewportY !== before;
+      }
+      if (mode === 'page') {
+        this.pageLines += lines;
+        const pages = Math.trunc(this.pageLines / 8);
+        if (!pages) return true;
+        this.pageLines -= pages * 8;
+        if (!this.send((pages > 0 ? '\x1b[5~' : '\x1b[6~').repeat(Math.abs(pages)))) return false;
+        this.remoteUp = Math.max(0, this.remoteUp + pages * 8);
+        return true;
+      }
+      if (!this.send(this.wheel(lines))) return false;
+      this.remoteUp = Math.max(0, this.remoteUp + lines);
+      return true;
+    }
+    latest() {
+      const mode = this.mode();
+      if (this.remoteUp > 0 && mode !== 'local') {
+        const keys = mode === 'page' ? '\x1b[6~'.repeat(Math.min(80, Math.ceil(this.remoteUp / 8) + 2))
+          : this.wheel(-Math.min(600, this.remoteUp + 12));
+        if (!this.send(keys)) return false;
+      }
+      this.reset(); this.term.scrollToBottom();
+      return true;
+    }
+  }
+  if (typeof module === 'object' && module.exports) {
+    module.exports = TerminalScroller;
+    module.exports.TerminalScrollRouter = TerminalScrollRouter;
+  } else { root.TerminalScroller = TerminalScroller; root.TerminalScrollRouter = TerminalScrollRouter; }
 })(typeof window === 'undefined' ? globalThis : window);

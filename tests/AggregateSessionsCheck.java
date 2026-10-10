@@ -28,6 +28,7 @@ public final class AggregateSessionsCheck {
         AggregateSessions.Project group = groups.get(0);
         require(group.active.size() == 2, "Shared/unknown locks and duplicate attached histories entered active count");
         require(group.history.size() == 3, "Locked histories were lost");
+        require(group.ended.size() == 1 && "ended".equals(group.ended.get(0).kind(null)), "Closed terminals must remain in their own history section");
         require("等你确认".equals(group.active.get(0).label()), "Confirmation must sort before computer work");
         require("被电脑上的应用占用".equals(group.history.get(0).label()), "Shared busy lock must not display running");
         require("被电脑上的程序占用".equals(group.history.get(1).label()), "Legacy host must not imply computer CLI");
@@ -43,7 +44,7 @@ public final class AggregateSessionsCheck {
             saved("同名项目", "cli", "cli", true, ""), terminal("同名项目", "confirm", "running", "phone-session"),
             saved("同名项目", "phone-session", "remote", true, ""), saved("同名项目", "shared", "shared", true, ""),
             saved("同名项目", "unknown", "", true, ""), saved("同名项目", "past", "", false, ""),
-            terminal("终端独有项目", "busy", "starting", "")));
+            terminal("终端独有项目", "busy", "starting", ""), terminal("同名项目", "idle", "closed", "")));
         require(AggregateSessions.signature(groups).equals(AggregateSessions.signature(copied)), "Unchanged display must retain its views during refresh");
         require(AggregateSessions.terminalPath(TERMINAL).equals("/terminal/?id=" + TERMINAL), "Terminal link must identify the exact terminal");
         boolean refused = false;
@@ -70,9 +71,19 @@ public final class AggregateSessionsCheck {
         older.used = 1_000_000L; newer.used = 9_000_000L;
         List<AggregateSessions.Project> used = AggregateSessions.projects(Collections.singletonList("项目"), Arrays.asList(older, newer));
         require("newer".equals(used.get(0).history.get(0).id), "The conversation used last must come first");
+        AggregateSessions.Entry endedOlder = terminal("项目", "ended", "closed", "old-session"), endedNewer = terminal("项目", "failed", "closed", "new-session");
+        endedOlder.used = 1_000_000L; endedNewer.used = 9_000_000L;
+        List<AggregateSessions.Project> ended = AggregateSessions.projects(Collections.singletonList("项目"), Arrays.asList(endedOlder, endedNewer));
+        require(ended.get(0).active.isEmpty() && ended.get(0).history.isEmpty() && ended.get(0).ended.size() == 2, "Stopped and failed terminals must be separate from active tasks and saved conversations");
+        require(ended.get(0).ended.get(0) == endedNewer, "Recently ended terminals must sort by latest use, rather than creation order");
+        require(AggregateSessions.counts(ended, null)[3] == 0, "History terminals must never add to the running count");
+        require(!AggregateSessions.signature(ended).equals(AggregateSessions.signature(Collections.<AggregateSessions.Project>emptyList())), "History changes must refresh the screen");
+        AggregateSessions.Entry reopened = terminal("项目", "busy", "running", "old-session");
+        List<AggregateSessions.Project> withReopened = AggregateSessions.projects(Collections.singletonList("项目"), Arrays.asList(endedOlder, reopened, saved("项目", "old-session", "remote", true, TERMINAL)));
+        require(withReopened.get(0).active.size() == 1 && withReopened.get(0).ended.size() == 1 && withReopened.get(0).history.isEmpty(), "Reopening a conversation must preserve the previous terminal screen and deduplicate its live session");
         long now = 1_700_000_000_000L;
         require(AggregateSessions.ago(0, now).isEmpty() && "刚刚".equals(AggregateSessions.ago(now - 30_000, now)) && "5 分钟前".equals(AggregateSessions.ago(now - 300_000, now))
             && "3 小时前".equals(AggregateSessions.ago(now - 3 * 3600_000L, now)) && "2 天前".equals(AggregateSessions.ago(now - 2 * 86400_000L, now)), "Last use must read as on the pages");
-        System.out.println("Aggregate checks passed: computer isolation, grouping, lock states, deduplication, sorting, stable refresh and exact terminal route.");
+        System.out.println("Aggregate checks passed: computer isolation, active/history separation, recent ordering, locks, deduplication, stable refresh and exact terminal route.");
     }
 }

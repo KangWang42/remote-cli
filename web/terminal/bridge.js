@@ -25,6 +25,67 @@
   // Quick tunnels buffer SSE; a held JSON response is delivered without that delay.
   let after = 0, terminal = null, loaded = false, streamed = !location.hostname.endsWith('.trycloudflare.com'), failures = 0, reader = null, run = 0, fetching = false, gone = false;
   let socketMode = typeof WebSocket === 'function', socket = null, socketTimer = null;
+  const link = { transport: socketMode ? 'websocket' : streamed ? 'sse' : 'http', state: 'connecting', reconnects: 0, lastLatency: null, everConnected: false };
+  let lastLinkReport = '', latencyTimer = null, latencyReader = null, latencyRun = 0;
+
+  function reportLink() {
+    const target = ui();
+    if (!target || typeof target.connection !== 'function') return;
+    const info = { transport: link.transport, state: link.state, reconnects: link.reconnects, lastLatency: link.lastLatency };
+    const key = JSON.stringify(info);
+    if (key === lastLinkReport) return;
+    lastLinkReport = key;
+    target.connection(info);
+  }
+  function startLink(transport) {
+    link.transport = transport;
+    if (link.state !== 'connected' && link.state !== 'reconnecting') link.state = 'connecting';
+    reportLink();
+  }
+  function connectedLink(transport) {
+    link.transport = transport;
+    link.state = 'connected';
+    link.everConnected = true;
+    reportLink();
+    if (!latencyReader && latencyTimer === null) measureLatency();
+  }
+  function lostLink() {
+    if (link.state === 'connected') link.reconnects++;
+    link.state = link.everConnected ? 'reconnecting' : 'connecting';
+    pauseLatency();
+    reportLink();
+  }
+  function offlineLink() {
+    link.state = 'offline';
+    pauseLatency();
+    reportLink();
+  }
+  function pauseLatency() {
+    latencyRun++;
+    clearTimeout(latencyTimer); latencyTimer = null;
+    if (latencyReader) { latencyReader.abort(); latencyReader = null; }
+  }
+  // This endpoint responds immediately. Output long-polls deliberately wait and cannot measure a round trip.
+  async function measureLatency() {
+    if (gone || document.hidden || link.state !== 'connected') return;
+    const mine = latencyRun, startedAt = Date.now(), control = new AbortController();
+    latencyReader = control;
+    const timer = setTimeout(() => control.abort(), 5000);
+    try {
+      const reply = await fetch('/api/session', { credentials: 'same-origin', cache: 'no-store', signal: control.signal });
+      const result = await reply.json();
+      if (mine !== latencyRun) return;
+      if (reply.ok && result.signed_in) { link.lastLatency = Math.max(0, Date.now() - startedAt); reportLink(); }
+      else if (reply.ok && result.signed_in === false) { offlineLink(); home(); }
+    } catch (error) { /* the output connection, not a measurement, determines whether the terminal is connected */ }
+    finally {
+      clearTimeout(timer);
+      if (mine === latencyRun) {
+        latencyReader = null;
+        latencyTimer = setTimeout(() => { latencyTimer = null; measureLatency(); }, 20000);
+      }
+    }
+  }
 
   async function post(payload) {
     const control = new AbortController(), timer = setTimeout(() => control.abort(), 20000);
@@ -49,6 +110,8 @@
   function connectSocket() {
     if (gone || !loaded || document.hidden || socket) return;
     const mine = ++run;
+    startLink('websocket');
+    const startedAt = Date.now();
     let channel;
     try { channel = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/terminal/ws?terminal=' + id + '&after=' + after); }
     catch (error) { socketMode = false; return read(); }
@@ -57,6 +120,8 @@
     function failed(event) {
       if (mine !== run) return;
       clearTimeout(socketTimer);
+      // The relay renews an established socket after an hour with a normal "going away" close.
+      if (!(got && event && event.code === 1001 && Date.now() - startedAt >= 3500000)) lostLink();
       run++; socket = null; resetPending();
       if (event && event.code === 1008) return home();
       // An older relay or a proxy without WebSocket support uses the HTTP interfaces.
@@ -71,7 +136,7 @@
       if (mine !== run) return;
       let item;
       try { item = JSON.parse(event.data); } catch (error) { channel.close(); return; }
-      if (item.t === 'out') { got = true; clearTimeout(socketTimer); receive(item, true); }
+      if (item.t === 'out') { got = true; clearTimeout(socketTimer); connectedLink('websocket'); receive(item, true); }
       else if (item.t === 'ack') {
         const at = queue.findIndex(op => op.id === item.id);
         if (at < 0) return;
@@ -86,9 +151,11 @@
   }
   function problem() { ui().error('读取失败，正在重连；电脑上的终端会继续运行'); }
   async function stream() {
-    if (gone || !loaded || reader) return;
+    if (gone || !loaded || reader || document.hidden) return;
     const mine = ++run;
-    let got = 0, status = 0;
+    startLink('sse');
+    const startedAt = Date.now();
+    let got = 0, status = 0, completed = false;
     const control = new AbortController();
     reader = control;
     let buffered = false;
@@ -101,12 +168,12 @@
         let rest = '';
         for (;;) {
           const { value, done } = await body.read();
-          if (done || mine !== run) break;
+          if (done || mine !== run) { completed = done; break; }
           rest += text.decode(value, { stream: true });
           let at;
           while ((at = rest.indexOf('\n')) >= 0) {
             const line = rest.slice(0, at); rest = rest.slice(at + 1);
-            if (line.startsWith('data:')) { got++; clearTimeout(firstLineTimer); receive(JSON.parse(line.slice(5))); }
+            if (line.startsWith('data:')) { got++; clearTimeout(firstLineTimer); if (got === 1) connectedLink('sse'); receive(JSON.parse(line.slice(5))); }
           }
         }
       } else if (status === 400) { let body = {}; try { body = await reply.json(); } catch (error) { /* not JSON */ } ui().error(body.error || '终端已不存在'); gone = true; }
@@ -114,9 +181,10 @@
     clearTimeout(firstLineTimer);
     if (mine !== run) return;
     reader = null;
-    if (gone) return;
+    if (gone) { offlineLink(); return; }
     if (status === 401) return home();
     failures = got ? 0 : buffered ? 2 : failures + 1;
+    if (!(got && completed && Date.now() - startedAt >= 50000)) lostLink();
     if (failures >= 2) { streamed = false; return held(); }
     if (!got) problem();
     if (!document.hidden) setTimeout(read, got ? 30 : 1500);
@@ -124,6 +192,7 @@
   async function held() {
     if (gone || !loaded || fetching || document.hidden) return;
     fetching = true;
+    startLink('http');
     const mine = ++run, control = new AbortController();
     reader = control;
     const timer = setTimeout(() => control.abort(), 30000);
@@ -135,12 +204,18 @@
       if (mine !== run) return;
       if (!reply.ok) throw new Error(item.error || '');
       fetching = false; reader = null;
+      connectedLink('http');
       receive(item);
-    } catch (error) { if (mine === run) { fetching = false; reader = null; problem(); setTimeout(read, 1500); } }
+    } catch (error) { if (mine === run) { fetching = false; reader = null; lostLink(); problem(); setTimeout(read, 1500); } }
     finally { clearTimeout(timer); }
   }
   function read() { if (socketMode) connectSocket(); else if (streamed) stream(); else held(); }
-  function hangUp() { run++; fetching = false; clearTimeout(socketTimer); if (socket) { socket.close(); socket = null; resetPending(); } if (reader) { reader.abort(); reader = null; } }
+  function hangUp() {
+    run++; fetching = false; clearTimeout(socketTimer); pauseLatency();
+    if (socket) { socket.close(); socket = null; resetPending(); }
+    if (reader) { reader.abort(); reader = null; }
+    if (document.hidden) { link.state = 'paused'; reportLink(); }
+  }
   document.addEventListener('visibilitychange', () => { if (document.hidden) hangUp(); else read(); });
 
   // ---- input: ordered WebSocket messages; HTTP fallback sends one request at a time
@@ -266,7 +341,7 @@
   }
 
   window.ProjectTerminal = {
-    ready() { loaded = true; if (!/^[a-f0-9]{16,32}$/.test(id)) return home(); read(); },
+    ready() { loaded = true; reportLink(); if (!/^[a-f0-9]{16,32}$/.test(id)) return home(); read(); },
     rendered(cursor) { if (socketMode || streamed) return; after = Number(cursor) || after; setTimeout(read, 0); },
     close: leave,
     voice,

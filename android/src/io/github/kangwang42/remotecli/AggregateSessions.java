@@ -17,7 +17,7 @@ final class AggregateSessions {
         final long at;
         final String id, project, title, tool, state, phase, status, host, attached, session;
         String said = "";       // one line of what a running terminal last said; changes often and is left out of signatures
-        long used;              // when a saved conversation was last used, in milliseconds; 0 when not known
+        long used;              // latest terminal phase change or saved conversation update; 0 when not known
         Entry(boolean terminal, String id, String project, String title, String tool, String state,
               String phase, String status, boolean live, String host, String attached, String session) {
             this(terminal, id, project, title, tool, state, phase, status, live, host, attached, session, false, 0);
@@ -89,7 +89,7 @@ final class AggregateSessions {
     }
     static final class Project {
         final String name;
-        final List<Entry> active = new ArrayList<>(), history = new ArrayList<>();
+        final List<Entry> active = new ArrayList<>(), ended = new ArrayList<>(), history = new ArrayList<>();
         Project(String name) { this.name = name; }
     }
     static List<Project> projects(List<String> folders, List<Entry> entries) {
@@ -100,17 +100,19 @@ final class AggregateSessions {
         for (Entry entry : entries) {
             if (entry.project.isEmpty()) continue;
             if (!groups.containsKey(entry.project)) groups.put(entry.project, new Project(entry.project));
-            if (entry.terminal && !entry.running()) continue;
             if (!entry.terminal && (!entry.attached.isEmpty() || phoneSessions.contains(entry.tool + ":" + entry.id))) continue;
             Project group = groups.get(entry.project);
-            if (entry.running()) group.active.add(entry); else group.history.add(entry);
+            if (entry.terminal && !entry.running()) group.ended.add(entry);
+            else if (entry.running()) group.active.add(entry); else group.history.add(entry);
         }
         for (Project group : groups.values()) {
             Collections.sort(group.active, Comparator.comparingInt(Entry::rank));
+            Collections.sort(group.ended, (a, b) -> Long.compare(recent(b), recent(a)));
             Collections.sort(group.history, (a, b) -> Long.compare(b.used, a.used));       // stable: without times the order stays as sent
         }
         return new ArrayList<>(groups.values());
     }
+    static long recent(Entry entry) { return entry.used > 0 ? entry.used : entry.at; }
     /** How many running tasks are confirm, done, busy (starting included) and open in all. */
     static int[] counts(List<Project> projects, Map<String, Long> seen) {
         int[] counts = new int[4];
@@ -132,12 +134,12 @@ final class AggregateSessions {
         StringBuilder key = new StringBuilder();
         for (Project project : projects) {
             add(key, project.name);
-            for (List<Entry> entries : Arrays.asList(project.active, project.history)) {
+            for (List<Entry> entries : Arrays.asList(project.active, project.ended, project.history)) {
                 key.append(entries.size()).append(':');
                 for (Entry entry : entries) {
                     add(key, entry.id); add(key, entry.shownTitle()); add(key, entry.tool);
                     add(key, label(entry.kind(seen))); add(key, entry.host);
-                    if (entries == project.history) add(key, ago(entry.used, System.currentTimeMillis()));
+                    if (entries == project.history || entries == project.ended) add(key, ago(recent(entry), System.currentTimeMillis()));
                 }
             }
         }
