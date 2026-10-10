@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "1.1.0";
+    const string Version = "1.1.1";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -210,7 +210,7 @@ public sealed class App : Form {
                 string server, wrong = "";
                 if (mode == "public") {
                     // A chosen for everyone gave this computer a place of its own; one it removed meanwhile is asked for again.
-                    if (chosen == null) { Say("这个公共中转已经不在列表里了，请在“中转”里换一个", true); return; }
+                    if (chosen == null) { Say("该公共中转已从列表中移除，请在“中转”中另选一个", true); return; }
                     Say("正在连接公共中转…");
                     string secret;
                     wrong = relays.Space(chosen, out server, out secret);
@@ -219,7 +219,7 @@ public sealed class App : Form {
                     if (secret != password) SetPassword(secret);
                 } else {
                     server = Relays.Clean(Convert.ToString(config["OwnServer"]), true);
-                    if (server.Length == 0) { Say("还没有选中转，请在“中转”里选一个，或添加自己的", true); return; }
+                    if (server.Length == 0) { Say("尚未选择中转，请在“中转”中选择或添加", true); return; }
                 }
                 Keep("Server", server);
                 if (agent != null) agent.Reset();
@@ -251,12 +251,12 @@ public sealed class App : Form {
             if (agent != null) agent.Reset();
             if (mode == "lan") {
                 string ip = LanAddress();
-                if (ip.Length == 0) { Say("没有找到局域网地址，请先连上 Wi-Fi 或网线", true); return; }
+                if (ip.Length == 0) { Say("未找到局域网地址，请先连接 Wi-Fi 或网线", true); return; }
                 ShowAddress("http://" + ip + ":" + port);
                 Say("局域网直连已就绪。手机连同一个 Wi-Fi，用 App 扫码");
                 return;
             }
-            if (!File.Exists(TunnelFile)) { Say("还没有隧道程序，点下面的“下载隧道程序”", true); return; }
+            if (!File.Exists(TunnelFile)) { Say("尚未下载隧道程序，请点下方的“下载隧道程序”", true); return; }
             EventHandler lost = (s, e) => { if (mine == generation && !quitting) { ShowAddress(""); Say("公网隧道断开了，点“重新连接”。经常断开时到“设置”把隧道协议改为 HTTP/2", true); } };
             if (held != null && !held.HasExited && !Gone(keptUrl)) {
                 if (mine != generation) return;
@@ -367,7 +367,7 @@ public sealed class App : Form {
     Relay Remembered() { string id = Convert.ToString(config["Relay"]); return id.Length == 0 ? null : Known().FirstOrDefault(r => r.Id == id); }
     // The relay the field shows: the one in use, or while one is being chosen the one chosen last, else the first there is.
     Relay Showing() {
-        if (RelayMode && !relayTab) return Remembered() ?? new Relay { Public = Mode == "public", Name = Mode == "public" ? "已不在列表里" : Convert.ToString(config["OwnServer"]), Url = Mode == "public" ? "" : Convert.ToString(config["OwnServer"]), Password = password };
+        if (RelayMode && !relayTab) return Remembered() ?? new Relay { Public = Mode == "public", Name = Mode == "public" ? "已从列表中移除" : Convert.ToString(config["OwnServer"]), Url = Mode == "public" ? "" : Convert.ToString(config["OwnServer"]), Password = password };
         var all = Known();
         if (shown != null) { Relay now = all.FirstOrDefault(r => r.Id == shown.Id); if (now != null) shown = now; }
         return shown ?? Remembered() ?? all.FirstOrDefault();
@@ -392,7 +392,7 @@ public sealed class App : Form {
         string inUse = RelayMode ? Convert.ToString(config["Relay"]) : "";
         foreach (bool everyone in new[] { true, false }) {
             if (!all.Any(r => r.Public == everyone)) continue;
-            menu.Items.Add(new ToolStripMenuItem(everyone ? "公共中转 · 不用配置" : "我的中转") { Enabled = false });
+            menu.Items.Add(new ToolStripMenuItem(everyone ? "公共中转 · 无需配置" : "我的中转") { Enabled = false });
             foreach (Relay each in all.Where(r => r.Public == everyone)) {
                 Relay relay = each;
                 var item = new ToolStripMenuItem(relay.Name) { Checked = relay.Id == inUse, ShortcutKeyDisplayString = Took(relay), ShowShortcutKeys = true };
@@ -403,7 +403,7 @@ public sealed class App : Form {
         if (menu.Items.Count > 0) menu.Items.Add(new ToolStripSeparator());
         var add = new ToolStripMenuItem("添加自己的中转…");
         add.Click += (s, e) => {
-            var typed = Dialog("添加自己的中转", "填服务器上中转的地址和密码。先检查，能连上才保存并切换过去。", "添加并连接", false,
+            var typed = Dialog("添加自己的中转", "填写服务器上中转的地址和密码。检查通过后保存并切换。", "添加并连接", false,
                 new[] { "地址，例如 https://cli.example.com 或 https://1.2.3.4:8443", "密码（服务器上 sudo bash install.sh password 显示的）", "名称（可不填）" }, draft);
             if (typed != null) { draft = typed; AddRelay(typed[0], typed[1], typed[2]); }
         };
@@ -427,13 +427,13 @@ public sealed class App : Form {
         string url = Relays.Clean(address, true);
         secret = (secret ?? "").Trim(); name = TerminalAgent.Tidy(name);
         relayTab = !RelayMode;
-        if (url.Length == 0) { RelaySays("地址要写完整，以 https:// 开头，例如 https://cli.example.com 或 https://1.2.3.4:8443", true); return; }
-        if (secret.Length == 0) { RelaySays("要填中转的密码：服务器上运行 sudo bash install.sh password 可以看到", true); return; }
+        if (url.Length == 0) { RelaySays("地址需完整填写，以 https:// 开头，例如 https://cli.example.com 或 https://1.2.3.4:8443", true); return; }
+        if (secret.Length == 0) { RelaySays("请填写中转的密码：在服务器上运行 sudo bash install.sh password 可以查看", true); return; }
         Use(new Relay { Url = url, Name = name.Length > 0 && name.Length <= 20 ? name : new Uri(url).Authority, Password = secret });
     }
     void RemoveRelay(Relay relay) {
-        if (Mode == "own" && Convert.ToString(config["Relay"]) == relay.Id) { Toast("正在用这个中转，先换到别的连接方式再移除"); return; }
-        if (!Confirm("移除“" + relay.Name + "”？", "只是不再记着它的地址和密码，服务器上的中转不受影响。", "移除", true)) return;
+        if (Mode == "own" && Convert.ToString(config["Relay"]) == relay.Id) { Toast("该中转正在使用，请先切换到其他连接方式再移除"); return; }
+        if (!Confirm("移除“" + relay.Name + "”？", "仅删除本机保存的地址和密码，服务器上的中转不受影响。", "移除", true)) return;
         relays.Remove(relay.Url);
         if (shown != null && shown.Id == relay.Id) shown = null;
         ShowMode();
@@ -448,7 +448,7 @@ public sealed class App : Form {
             else { server = relay.Url; secret = relay.Password; wrong = TerminalAgent.CheckRelay(server, secret); }
             BeginInvoke(new Action(() => {
                 relayBusy = false;
-                if (wrong.Length > 0) { RelaySays(wrong + (RelayMode ? "。还在用原来的中转" : "。现在的连接方式没有变"), true); if (RelayMode) shown = null; return; }
+                if (wrong.Length > 0) { RelaySays(wrong + (RelayMode ? "。仍在使用原来的中转" : "。当前连接方式未改变"), true); if (RelayMode) shown = null; return; }
                 if (!relay.Public) { relays.Save(relay); draft = null; }
                 lock (saving) { if (!relay.Public) config["OwnServer"] = relay.Url; config["Relay"] = relay.Id; Keep("Mode", relay.Public ? "public" : "own"); }
                 relayTab = false; relayNote = ""; shown = null;
@@ -476,18 +476,18 @@ public sealed class App : Form {
         modeAbout.Text = tab == 0 ? "手机和电脑连同一个 Wi-Fi 时用，速度最快。第一次使用时 Windows 防火墙会询问，请选“允许”。"
             : tab == 1 ? "不需要服务器和账号，手机在任何网络都能连。更新程序后地址不变；退出程序或重启电脑后地址会变，手机需要重新扫码。"
             : relayNote.Length > 0 ? relayNote
-            : relay == null ? "还没有中转。点下面添加自己服务器上的中转，装法见文档“自己部署中转”。"
-            : RelayMode && !relayTab ? (relay.Public ? "正在用公共中转，地址固定。终端内容会经过这台中转服务器；介意时请用自己的中转。" : "正在用自己的中转，地址固定。点下面可以换一个，或再添加。")
-            : "选一个中转再点“连接”。公共中转不用配置，也可以添加自己的。连上之前，现在的连接方式不变。";
+            : relay == null ? "尚未添加中转。可在下方添加自己服务器上的中转，部署方法见文档“自己部署中转”。"
+            : RelayMode && !relayTab ? (relay.Public ? "正在使用公共中转，地址固定。终端内容经由该中转服务器传输；如有顾虑，请使用自己的中转。" : "正在使用自己的中转，地址固定。可在下方切换或添加中转。")
+            : "选择一个中转后点“连接”。公共中转无需配置，也可以添加自己的中转。连接成功之前，当前连接方式保持不变。";
         tunnelButton.Visible = tab == 1; relayPick.Visible = relayGo.Visible = tab == 2; changePassword.Visible = tab != 2;
         relayPick.Set(relay == null ? "添加自己的中转…" : relay.Name + (relay.Public ? " · 公共" : ""), relay == null ? "" : Took(relay), relay != null && relay.Ms == -1 ? 2 : 0);
         relayGo.Enabled = !relayBusy;
         // The two boxes show what the phone is to use; of a relay for everyone they show neither.
         if (tab != 2) Put(address, password);
         else if (relay == null) Put("", "");
-        else if (relay.Public) Put("公共中转 · " + relay.Name, "不显示，手机扫码连接");
+        else if (relay.Public) Put("公共中转 · " + relay.Name, "不显示，请用手机扫码连接");
         else Put(relay.Url, relay.Password);
-        codeAbout.Text = Mode == "public" ? "公共中转只能用扫码连接" : "或在 App 里输入右边的地址和密码";
+        codeAbout.Text = Mode == "public" ? "公共中转仅支持扫码连接" : "或在 App 里输入右边的地址和密码";
         tunnelButton.Text = File.Exists(TunnelFile) ? "重新建立隧道" : "下载隧道程序（约 60 MB）";
         tunnelButton.Glyph = File.Exists(TunnelFile) ? Theme.IconRefresh : Theme.IconDownload;
     }
@@ -547,7 +547,7 @@ public sealed class App : Form {
             return new Row { Glyph = Theme.IconTerminal, Title = (r[4].Length > 0 ? r[4] : tool) + " · " + r[1], About = (r[5].Length > 0 ? r[5] + " · " : "") + tool + (r[6] == "phone" ? " · 双击在电脑上打开 · " + Since(started.ToUniversalTime()) : ""), Value = r,
                              Tag = tag, TagColour = r[6] == "phone" || r[6] == "cli" ? Theme.Good : Theme.Busy };
         }));
-        activityNote.Text = running.Count == 0 ? "" : phones + " 个共用终端 · " + cli + " 个电脑自己的窗口。共用终端在手机和电脑上是同一个画面，谁输入都行。";
+        activityNote.Text = running.Count == 0 ? "" : phones + " 个共用终端 · " + cli + " 个电脑独立窗口。共用终端在手机和电脑上显示同一画面，两端均可输入。";
     }
     // A window on this computer for the very pages the phone uses. The terminals in it are the same ones the phone
     // shows, so a terminal can be looked at and typed into from both at once, and nothing has to be handed over.
@@ -588,17 +588,17 @@ public sealed class App : Form {
     }
     void OpenActivity() {
         var row = activity.Selected; var raw = row == null ? null : row.Value as string[];
-        if (raw == null || raw.Length < 8) { Toast("先在上面选一个终端"); return; }
-        if (raw[6] != "phone") { Toast("这个对话开在电脑自己的窗口里，直接去那个窗口用就行"); return; }
+        if (raw == null || raw.Length < 8) { Toast("请先在列表中选择一个终端"); return; }
+        if (raw[6] != "phone") { Toast("这段对话在电脑的独立窗口中运行，请在该窗口中使用"); return; }
         OpenWindow(raw[7]);
     }
     void TakeoverActivity() {
         var row = activity.Selected; var raw = row == null ? null : row.Value as string[];
-        if (raw == null || raw.Length < 8 || raw[6] != "phone") { Toast("先在上面选一个手机和电脑共用的终端"); return; }
+        if (raw == null || raw.Length < 8 || raw[6] != "phone") { Toast("请先在列表中选择一个手机和电脑共用的终端"); return; }
         if (agent == null) { Toast("电脑后台还没有准备好，请稍后再试"); return; }
         string tool = raw[0] == "claude" ? "Claude Code" : raw[0] == "codex" ? "Codex" : "PowerShell";
-        if (raw[0] == "shell") { Toast("PowerShell 没有可恢复的会话，不能转成独立窗口；用“在电脑上打开”就能直接用它"); return; }
-        if (!Confirm("转成电脑上的独立窗口？", "这个终端会先结束，然后在电脑的命令行窗口里接着同一段对话，正在执行的任务会中断，手机上不再能看到它。\n只是想在电脑上用它，选“在电脑上打开”就行，不用转。", "结束它并转成独立窗口", true)) return;
+        if (raw[0] == "shell") { Toast("PowerShell 没有可恢复的会话，不能转为独立窗口；可通过“在电脑上打开”直接使用"); return; }
+        if (!Confirm("转成电脑上的独立窗口？", "这个终端会先结束，然后在电脑的命令行窗口里接着同一段对话，正在执行的任务会中断，手机上不再能看到它。\n仅需在电脑上使用时，选“在电脑上打开”即可，无需转换。", "结束它并转成独立窗口", true)) return;
         activity.Enabled = false;
         Task.Run(() => {
             try {
@@ -652,7 +652,7 @@ public sealed class App : Form {
         Place(tile, qrHint, 10, 84, 188, 40); qrHint.BackColor = Color.White; qrHint.ForeColor = Color.FromArgb(120, 124, 140); qrHint.TextAlign = ContentAlignment.MiddleCenter; qrHint.Text = "正在准备…";
         var caption = Note(code, "用手机 App 扫码", 12, 242, 228, 22, Theme.Ink, 10f, true); caption.TextAlign = ContentAlignment.MiddleCenter;
         codeAbout = Note(code, "或在 App 里输入右边的地址和密码", 12, 266, 228, 18, Theme.Muted, 8.5f); codeAbout.TextAlign = ContentAlignment.MiddleCenter;
-        var keys = Note(code, Theme.IconLock + "  地址和密码不要发给别人", 12, 288, 228, 18, Theme.Faint, 8.25f); keys.TextAlign = ContentAlignment.MiddleCenter; keys.Font = new Font(Theme.Icons, 8.25f);
+        var keys = Note(code, Theme.IconLock + "  请勿向他人提供地址和密码", 12, 288, 228, 18, Theme.Faint, 8.25f); keys.TextAlign = ContentAlignment.MiddleCenter; keys.Font = new Font(Theme.Icons, 8.25f);
         keys.Paint += (s, e) => { };
 
         var way = Place(connect, new Card(), 296, 122, 384, 318);
@@ -675,17 +675,17 @@ public sealed class App : Form {
         };
         Note(way, "地址", 20, 172, 200, 18, Theme.Muted, 8.5f, true);
         Place(way, addressField, 20, 194, 256, 34); addressBox.ReadOnly = true;
-        Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 194, 80, 34, (s, e) => { if (Hidden) Toast("公共中转的地址和密码不显示，手机扫码连接"); else Copy(addressBox.Text, "地址"); });
+        Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 194, 80, 34, (s, e) => { if (Hidden) Toast("公共中转的地址和密码不显示，请用手机扫码连接"); else Copy(addressBox.Text, "地址"); });
         Note(way, "密码", 20, 238, 200, 18, Theme.Muted, 8.5f, true);
         Place(way, passwordField, 20, 260, 256, 34); passwordBox.ReadOnly = true; passwordBox.Font = new Font("Consolas", 10f);
-        Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 260, 80, 34, (s, e) => { if (Hidden) Toast("公共中转的地址和密码不显示，手机扫码连接"); else Copy(passwordBox.Text, "密码"); });
+        Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 260, 80, 34, (s, e) => { if (Hidden) Toast("公共中转的地址和密码不显示，请用手机扫码连接"); else Copy(passwordBox.Text, "密码"); });
         Action(connect, "重新连接", Theme.IconRefresh, ButtonKind.Normal, 28, 456, 116, 34, (s, e) => Again());
         // A relay decides its password itself: this button is for the program's own relay, on the local network and through the tunnel.
         changePassword = Action(connect, "换一个密码", Theme.IconLock, ButtonKind.Ghost, 152, 456, 124, 34, (s, e) => {
             if (!Confirm("换一个密码？", "换密码后，已连接的手机需要重新扫码。", "换密码", false)) return;
             SetPassword(NewPassword()); Reconnect(); Toast("密码已更新");
         });
-        Note(connect, "手机只能在“项目”里添加的文件夹中开终端；终端开起来后和你坐在电脑前一样，可以访问整台电脑。", 28, 506, 652, 36, Theme.Faint, 8.5f);
+        Note(connect, "手机只能在“项目”中添加的文件夹内启动终端；终端启动后拥有与本机操作相同的权限，可以访问整台电脑。", 28, 506, 652, 36, Theme.Faint, 8.5f);
 
         // ---- page: projects
         var projects = Page("项目文件夹", "手机只能在这些文件夹里新建终端和继续对话。可以把文件夹直接拖进来。");
@@ -698,7 +698,7 @@ public sealed class App : Form {
         var rename = Action(projects, "重命名", Theme.IconEdit, ButtonKind.Normal, 164, 518, 100, 36, (s, e) => {
             int at = folders.SelectedIndex; if (at < 0) return;
             var list = Dirs(); string path = list[at].Substring(list[at].IndexOf('=') + 1);
-            string name = Ask("项目名称", "手机上显示的名字，不会改动文件夹本身。", folders.Rows[at].Title).Trim().Replace("=", " ");
+            string name = Ask("项目名称", "手机上显示的名称，不改动文件夹本身。", folders.Rows[at].Title).Trim().Replace("=", " ");
             if (name.Length == 0 || name.Length > 40) return;
             if (list.Where((line, i) => i != at).Any(line => line.StartsWith(name + "="))) { Toast("已有同名项目"); return; }
             list[at] = name + "=" + path; Keep("RemoteDirs", list.ToArray()); ShowProjects();
@@ -709,7 +709,7 @@ public sealed class App : Form {
         });
         var remove = Action(projects, "移除", Theme.IconDelete, ButtonKind.Danger, 588, 518, 92, 36, (s, e) => {
             int at = folders.SelectedIndex; if (at < 0) return;
-            if (!Confirm("移除“" + folders.Rows[at].Title + "”？", "只是不再让手机访问这个文件夹，文件夹和里面的对话都不会被删除。", "移除", true)) return;
+            if (!Confirm("移除“" + folders.Rows[at].Title + "”？", "仅取消手机对该文件夹的访问，文件夹及其中的对话不会被删除。", "移除", true)) return;
             var list = Dirs(); list.RemoveAt(at); Keep("RemoteDirs", list.ToArray()); ShowProjects();
         });
         EventHandler chosen = (s, e) => { rename.Enabled = open.Enabled = remove.Enabled = folders.SelectedIndex >= 0; };
@@ -723,7 +723,7 @@ public sealed class App : Form {
         ShowProjects();
 
         // ---- page: activity
-        var activityPage = Page("活动", "手机和电脑用的是同一批终端。双击一个终端，在电脑上打开它：手机上照常能看、能输入，不用交接。");
+        var activityPage = Page("活动", "手机和电脑使用同一批终端。双击终端可在电脑上打开，手机端仍可查看和输入，无需交接。");
         var liveCard = Place(activityPage, new Card(), 28, 92, 652, 362);
         Place(liveCard, activity, 8, 8, 636, 346);
         activity.EmptyTitle = "没有正在运行的终端"; activity.EmptyAbout = "点下面的“新建或查看全部”，或在手机上选一个项目新建终端，\n它就会出现在这里，两边都能用。";
@@ -740,7 +740,7 @@ public sealed class App : Form {
         autoUpdateSwitch.On = Convert.ToString(config["AutoUpdate"]) == "True";
         autoUpdateSwitch.Changed += (s, e) => { Keep("AutoUpdate", autoUpdateSwitch.On); if (autoUpdateSwitch.On) CheckForUpdate(false); };
         enabledSwitch.On = Convert.ToString(config["RemoteEnabled"]) == "True";
-        enabledSwitch.Changed += (s, e) => { Keep("RemoteEnabled", enabledSwitch.On); RefreshActivity(); Toast(enabledSwitch.On ? "已允许手机访问" : "已暂停，手机立即不能操作"); };
+        enabledSwitch.Changed += (s, e) => { Keep("RemoteEnabled", enabledSwitch.On); RefreshActivity(); Toast(enabledSwitch.On ? "已允许手机访问" : "已暂停手机访问，立即生效"); };
         using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) autostartSwitch.On = key != null && key.GetValue("RemoteCli") != null;
         autostartSwitch.Changed += (s, e) => {
             using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) {
@@ -784,7 +784,7 @@ public sealed class App : Form {
             new SettingRow("公网隧道的协议", "隧道经常断开或出现 1033 时改用 HTTP/2", protocol, 170, 34),
             new SettingRow("本机端口", "局域网直连和公网隧道使用，被占用时换一个", portBox, 96, 32),
             new SettingRow("外观", "和手机 App 相同的几种配色，默认与 App 一致", skinPick, 170, 34),
-            new SettingRow("自动更新", "关闭时由你在这里或手机上发起；打开后在终端空闲时自己装好", autoUpdateSwitch, 46, 26),
+            new SettingRow("自动更新", "关闭时需在此处或手机上手动发起；开启后在终端空闲时自动安装", autoUpdateSwitch, 46, 26),
             new SettingRow("版本 " + Version, "从 GitHub 发布页检查并安装新版本；手机上也可以发起", updateButton, 150, 34) };
         for (int i = 0; i < all.Length; i++) Place(rows, all[i], 2, 6 + i * 53, 648, 53);
         Action(settings, "打开数据文件夹", Theme.IconOpen, ButtonKind.Normal, 28, 544, 150, 36, (s, e) => { try { Process.Start(new ProcessStartInfo("explorer.exe", "\"" + dataDir + "\"")); } catch (Exception) { } });
@@ -807,7 +807,7 @@ public sealed class App : Form {
         FormClosing += (s, e) => {
             if (quitting || e.CloseReason != CloseReason.UserClosing) { Shutdown(); return; }
             e.Cancel = true; Hide();
-            if (!hinted) { hinted = true; tray.ShowBalloonTip(4000, "Remote CLI 仍在运行", "手机可以继续连接。要停止，请在托盘图标上点右键选“退出”。", ToolTipIcon.Info); }
+            if (!hinted) { hinted = true; tray.ShowBalloonTip(4000, "Remote CLI 仍在运行", "手机仍可连接。如需停止，请在托盘图标上点右键选“退出”。", ToolTipIcon.Info); }
         };
         ShowMode();
         Go(Dirs().Count == 0 ? 1 : 0);        // a first start begins where something has to be done

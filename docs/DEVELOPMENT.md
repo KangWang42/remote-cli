@@ -14,7 +14,7 @@
 | --- | --- |
 | `agent-windows/` | 电脑端：`RemoteCliApp.cs`（窗口、托盘、连接方式）、`RemoteCliAgent.cs`（终端与对话扫描）、`Relays.cs`（公共中转清单和保存的中转）、`Controls.cs`（外观和控件）、`QrCode.cs`、`Setup.cs`（安装程序）。C#，用 Windows 自带的编译器构建 |
 | `agent-linux/` | Linux 电脑端：`agent.py`（终端、对话扫描、查看文件），一个文件，只用 Python 标准库；`install.sh` 一条命令装好中转和电脑端；`remote-cli-agent.service` 是 systemd 用户服务 |
-| `relay/` | 中转：`server.py`（登录、HTTP，以及公共中转里每台电脑各自的空间）、`relay.py`（终端状态与输出的转发）。只用 Python 标准库；`install.sh` 把它装成服务器上的系统服务 |
+| `relay/` | 中转：`server.py`（登录、HTTP，以及公共中转里每台电脑各自的空间）、`relay.py`（终端状态与输出的转发：一台电脑一个 `Relay` 对象）。只用 Python 标准库；`install.sh` 把它装成服务器上的系统服务 |
 | `android/` | 安卓 App：`MainActivity`（各界面之间的跳转、扫码回调、语音识别）、`Workbench`（工作台）、`Kit`（配色和界面部件）、`AggregateSessions`（任务分组与排序，不依赖 Android，可单独检查） |
 | `web/` | App 里一台电脑的列表页和终端页（xterm.js），由中转提供、嵌在 App 内显示；随电脑端一起更新 |
 | `docs/PROTOCOL.md` | 三方之间的接口，想写别的客户端或别的系统的电脑端看这里 |

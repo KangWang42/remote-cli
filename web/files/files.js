@@ -184,7 +184,7 @@
     }));
     const note = $('folder-note');
     note.hidden = found.length > 0 && !listing.more;
-    note.textContent = listing.more ? '这个文件夹里的东西太多，只列出了前 3000 项。' : wanted ? '没有名称里带“' + wanted + '”的。' : skipped ? '这里只有隐藏的文件，可在右上角打开“显示隐藏的文件”。' : '这个文件夹是空的。';
+    note.textContent = listing.more ? '该文件夹内容过多，仅列出前 3000 项。' : wanted ? '没有名称里带“' + wanted + '”的。' : skipped ? '这里只有隐藏的文件，可在右上角打开“显示隐藏的文件”。' : '这个文件夹是空的。';
   }
   function crumbs() {
     const parts = place.path ? place.path.split('/') : [], nav = $('crumbs');

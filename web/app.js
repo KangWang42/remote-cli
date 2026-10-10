@@ -69,7 +69,7 @@
   $('back').innerHTML = ICON.back; $('look').innerHTML = ICON.look; $('more').innerHTML = ICON.more;
   $('project-files-icon').innerHTML = ICON.folder; $('project-files-chev').innerHTML = ICON.chev;
   $('project-files').addEventListener('click', () => {
-    if (!usable()) return toast('电脑离线，暂时看不了文件');
+    if (!usable()) return toast('电脑离线，暂时无法查看文件');
     if (!(data.device.features || []).includes('files')) return toast('电脑端版本不支持查看文件，请更新电脑端');
     location.href = 'files/?dir=' + encodeURIComponent(project);
   });
@@ -134,13 +134,13 @@
   $('more').addEventListener('click', async () => {
     const ready = data && data.device.online && data.device.enabled;
     const choices = [];
-    if (ready) choices.push({ label: '添加项目', sub: '把电脑上的一个文件夹加进来', value: 'add' });
+    if (ready) choices.push({ label: '添加项目', sub: '添加电脑上的一个文件夹', value: 'add' });
     if (native) choices.push({ label: '回到工作台', sub: '查看所有电脑和进行中的任务，或换一台电脑', value: 'switch' });
     if (native && native.update) choices.push({ label: '检查 App 更新', sub: '当前版本 ' + (native.version ? native.version() : ''), value: 'update' });
     const device = data ? data.device : {};
     if (ready && (device.features || []).includes('update')) choices.push(device.newer
       ? { label: '更新电脑端到 v' + device.newer, sub: '当前 v' + device.version + '。更新时会中断几秒，终端随后接回原对话', value: 'computer' }
-      : { label: '检查电脑端更新', sub: '电脑端当前 v' + device.version + '；有新版本会直接装好', value: 'computer' });
+      : { label: '检查电脑端更新', sub: '电脑端当前 v' + device.version + '；有新版本时自动安装', value: 'computer' });
     choices.push({ label: '退出登录', sub: '下次需要重新扫码或输入密码', value: 'out', kind: 'danger' });
     const choice = await ask('更多', '', choices);
     if (choice === 'add') addProject();
@@ -223,13 +223,13 @@
     const host = sessionHost(session), locked = sessionActivity(session) === 'locked';
     const canClose = session.can_takeover === true && !locked;
     const choices = [canClose
-      ? { label: '在手机上继续', sub: '电脑上的那个窗口会关闭，正在执行的任务会中断', value: 'close', kind: 'solid' }
-      : { label: '我已在电脑上关掉它，在手机上继续', sub: '还开着的话不会动它，会告诉你原因', value: 'close', kind: 'solid' }];
+      ? { label: '在手机上继续', sub: '电脑上的对应窗口将关闭，正在执行的任务会中断', value: 'close', kind: 'solid' }
+      : { label: '已在电脑上关闭，在手机上继续', sub: '如仍在运行，不会关闭它，并说明原因', value: 'close', kind: 'solid' }];
     if (session.tool === 'codex' && (data.device.features || []).includes('codex-fork'))
-      choices.push({ label: '另开一份继续', sub: '带着到现在为止的内容新开一段；电脑上的那段不受影响，之后各走各的', value: 'copy' });
+      choices.push({ label: '另开一份继续', sub: '以当前内容新建一段对话；电脑上的原对话不受影响，两者此后相互独立', value: 'copy' });
     const why = canClose ? ''
-      : host === 'shared' ? '这段对话由电脑上的 Codex 应用或编辑器打开着，手机不能替你关掉它。请先在那个应用里结束这段对话。'
-      : session.takeover_reason || '手机不能确定是哪个程序在用这段对话，所以不会去关它。请先在电脑上结束使用它的程序。';
+      : host === 'shared' ? '这段对话正由电脑上的 Codex 应用或编辑器使用，手机无法关闭它。请先在该应用中结束这段对话。'
+      : session.takeover_reason || '无法确定使用这段对话的程序，因此不会关闭它。请先在电脑上结束该程序。';
     return { choices, why };
   }
   // What was said, laid out to be read: the tools answer in Markdown, which is set as text with headings, lists, code
@@ -364,7 +364,7 @@
     }
     if (withProject) meta.append(el('span', { className: 'chip', textContent: s.dir }));
     meta.append(el('span', { textContent: TOOLS[s.tool] + ' · ' + ago(s.updated) }));
-    return el('li', { className: 'card' }, el('button', { type: 'button', className: 'open', onclick: () => { if (!usable()) return toast('电脑离线，暂时打不开'); if (s.live) takeOver(s); else start(s.tool, s.dir, s.id, false); } },
+    return el('li', { className: 'card' }, el('button', { type: 'button', className: 'open', onclick: () => { if (!usable()) return toast('电脑离线，暂时无法打开'); if (s.live) takeOver(s); else start(s.tool, s.dir, s.id, false); } },
       el('span', { className: 'tool ' + s.tool, html: ICON[s.tool] }), el('span', { className: 'text' }, el('b', { textContent: s.title }), meta), el('span', { className: 'chev', html: ICON.chev })));
   }
   // Lists are rebuilt only when what they show has changed, so a press or a scroll is not interrupted every few seconds.
@@ -391,7 +391,7 @@
     const offline = $('offline');
     offline.hidden = ready;
     if (!ready) offline.replaceChildren(el('b', { textContent: device.online ? '电脑端暂停了手机访问' : '电脑离线' }),
-      el('span', { textContent: device.online ? '在电脑上的 Remote CLI“设置”里打开“允许手机访问”。' : '请确认电脑开着、Remote CLI 在运行。用公网隧道时，退出程序或重启电脑后地址会变，需要重新扫码。' }));
+      el('span', { textContent: device.online ? '在电脑上的 Remote CLI“设置”里打开“允许手机访问”。' : '请确认电脑已开机且 Remote CLI 正在运行。使用公网隧道时，退出程序或重启电脑后地址会变更，需要重新扫码。' }));
     if (project && !names.includes(project)) { project = ''; }
     const terminals = data.terminals || [], sessions = (data.sessions || []).filter(s => !s.terminal);
     const mine = terminals.filter(running).map(t => Object.assign({ rank: PHASE[phaseOf(t)][1], at: t.phase_at || t.created }, t));

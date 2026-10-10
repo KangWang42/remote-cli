@@ -271,7 +271,7 @@ public final class MainActivity extends Activity {
             return;
         }
         repaint();
-        LinearLayout page = step("扫码添加电脑", "对准电脑上 Remote CLI 窗口里的二维码，识别到就自动连上。");
+        LinearLayout page = step("扫码添加电脑", "对准电脑端 Remote CLI 窗口中的二维码，识别后自动连接。");
         final int side = Math.min(getResources().getDisplayMetrics().widthPixels - kit.dp(36), kit.dp(380));
         FrameLayout frame = new FrameLayout(this);
         frame.setBackground(kit.shape(Color.BLACK, kit.LINE, 24));
@@ -290,11 +290,11 @@ public final class MainActivity extends Activity {
             aim.addView(bar, params);
         }
         page.addView(kit.button("手动输入地址", 1, () -> { endScan(); add(""); }), kit.below(22));
-        page.addView(kit.text("画面只在手机上用来找二维码，不保存也不上传。", 12.5f, kit.MUTED), kit.below(14));
+        page.addView(kit.text("相机画面仅用于在本机识别二维码，不保存，不上传。", 12.5f, kit.MUTED), kit.below(14));
         show(page, "scan");
         scanner = new Scanner(this, frame, value -> {
             scanner = null;
-            if (!link(Uri.parse(value))) home("这不是 Remote CLI 的二维码。请扫电脑上 Remote CLI 窗口里的那一个。");
+            if (!link(Uri.parse(value))) home("这不是 Remote CLI 的二维码。请扫描电脑端窗口中显示的二维码。");
         }, problem -> { scanner = null; add(problem + "。可以手动输入地址和密码。"); });
         frame.post(() -> { if (scanner != null) { scanner.start(); frame.addView(aim, new FrameLayout.LayoutParams(-1, -1)); } });
     }

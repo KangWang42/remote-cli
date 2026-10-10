@@ -71,11 +71,11 @@ def main():
             # only looking at the tab: the way in use goes on; with no relay known, the field offers to add one
             looked = press(folder, "looked")
             assert (looked["mode"], looked["tab"], looked["own_relay"], looked["saved"]) == ("cloud", "2", "running", "0"), looked
-            assert looked["field"].startswith("添加") and looked["new_password_button"] == "False" and "还没有中转" in looked["about"], looked
+            assert looked["field"].startswith("添加") and looked["new_password_button"] == "False" and "尚未添加中转" in looked["about"], looked
             assert looked["config"]["Mode"] == "cloud" and looked["skin"] == "paper", looked
             # a password the relay refuses: said so, nothing switched or saved, the program's own relay still there
             refused = press(folder, "refused", address, "not-the-password")
-            assert (refused["mode"], refused["own_relay"], refused["saved"]) == ("cloud", "running", "0") and "密码" in refused["about"] and "没有变" in refused["about"], refused
+            assert (refused["mode"], refused["own_relay"], refused["saved"]) == ("cloud", "running", "0") and "密码" in refused["about"] and "未改变" in refused["about"], refused
             assert refused["config"]["Mode"] == "cloud" and not refused["config"].get("OwnServer"), refused["config"]
             # an address without https:// in front, and a relay that is not there
             for typed, word in ((("127.0.0.1:%d" % OWN, relay_password), "https://"), (("http://127.0.0.1:1", relay_password), "连不上中转")):

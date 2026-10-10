@@ -10,64 +10,61 @@ class TerminalRelayTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = self.temp.name + "/terminal.json"
-        tr._cache.clear()
-        tr._pending.clear()
-        tr._unsaved.clear()
-        tr._sessions.clear()
+        self.relay = tr.Relay(self.path)
         self.info = {"instance": "b" * 32, "enabled": True, "tools": ["claude", "codex", "shell"], "workspaces": ["demo"]}
-        tr.agent(self.path, {"info": self.info}, now=1000)
+        self.relay.agent({"info": self.info}, now=1000)
 
     def start(self):
         payload = {"action": "start", "id": "a" * 32, "tool": "codex", "dir": "demo", "history": False}
-        result = tr.command(self.path, payload, now=1001)
-        self.assertEqual(result, tr.command(self.path, payload, now=1002))
+        result = self.relay.command(payload, now=1001)
+        self.assertEqual(result, self.relay.command(payload, now=1002))
         self.terminal = result["terminal"]
-        tr.agent(self.path, {"info": self.info, "acks": [{"id": payload["id"]}], "terminals": [{"id": self.terminal, "state": "running"}]}, now=1003)
+        self.relay.agent({"info": self.info, "acks": [{"id": payload["id"]}], "terminals": [{"id": self.terminal, "state": "running"}]}, now=1003)
         return payload
 
     def test_fresh_start_never_becomes_anonymous_resume(self):
         payload = {"action": "start", "id": "a" * 32, "tool": "claude", "dir": "demo", "history": True}
         with self.assertRaisesRegex(RemoteError, "resume"):
-            tr.command(self.path, payload, now=1001)
-        result = tr.command(self.path, dict(payload, history=False), now=1002)
-        ops = tr.pull(self.path, {"instance": self.info["instance"], "wait": 0})["operations"]
+            self.relay.command(payload, now=1001)
+        result = self.relay.command(dict(payload, history=False), now=1002)
+        ops = self.relay.pull({"instance": self.info["instance"], "wait": 0})["operations"]
         self.assertFalse(ops[0]["history"])
-        self.assertEqual(tr.overview(self.path, result["terminal"], now=1003)["terminal"]["session"], "")
+        self.assertEqual(self.relay.overview(result["terminal"], now=1003)["terminal"]["session"], "")
 
     def test_live_original_requires_explicit_takeover(self):
         sid = "12345678-1234-1234-1234-123456789abc"
         for tool in ("claude", "codex"):
-            tr.agent(self.path, {"info": self.info, "sessions": [{"id": sid, "tool": tool, "dir": "demo", "title": "原对话", "updated": 1, "live": True, "origin": "Positron"}]}, now=1001)
+            self.relay.agent({"info": self.info, "sessions": [{"id": sid, "tool": tool, "dir": "demo", "title": "原对话", "updated": 1, "live": True, "origin": "Positron"}]}, now=1001)
             with self.assertRaisesRegex(RemoteError, "接管"):
-                tr.command(self.path, {"action": "start", "id": "d" * 32, "tool": tool, "dir": "demo", "session": sid}, now=1002)
-            self.assertEqual(tr.overview(self.path, now=1002)["sessions"][0]["origin"], "Positron")
+                self.relay.command({"action": "start", "id": "d" * 32, "tool": tool, "dir": "demo", "session": sid}, now=1002)
+            self.assertEqual(self.relay.overview(now=1002)["sessions"][0]["origin"], "Positron")
 
     def test_codex_fork_preserves_source_and_requires_updated_agent(self):
         sid = "12345678-1234-1234-1234-123456789abc"
         session = {"id": sid, "tool": "codex", "dir": "demo", "title": "电脑会话", "updated": 5000,
                    "live": True, "can_takeover": False, "ownership_known": True, "takeover_reason": "共享后台"}
-        tr.agent(self.path, {"info": self.info, "sessions": [session]}, now=1001)
+        self.relay.agent({"info": self.info, "sessions": [session]}, now=1001)
         op = {"action": "start", "id": "f" * 32, "tool": "codex", "dir": "demo", "session": sid, "fork": True}
         with self.assertRaises(RemoteError):
-            tr.command(self.path, op, now=1002)
+            self.relay.command(op, now=1002)
         self.info["features"] = ["codex-fork", "terminal-exit"]
-        tr.agent(self.path, {"info": self.info}, now=1003)
-        terminal = tr.command(self.path, op, now=1004)["terminal"]
-        current = tr.overview(self.path, terminal, now=1004)["terminal"]
+        self.relay.agent({"info": self.info}, now=1003)
+        terminal = self.relay.command(op, now=1004)["terminal"]
+        current = self.relay.overview(terminal, now=1004)["terminal"]
         self.assertEqual(current["session"], "")
         self.assertIn("副本", current["title"])
-        self.assertEqual(tr.overview(self.path, now=1004)["sessions"][0]["terminal"], "")
+        self.assertEqual(self.relay.overview(now=1004)["sessions"][0]["terminal"], "")
         with self.assertRaises(RemoteError):
-            tr.command(self.path, dict(op, id="e" * 32, takeover=True), now=1004)
+            self.relay.command(dict(op, id="e" * 32, takeover=True), now=1004)
         with self.assertRaises(RemoteError):
-            tr.command(self.path, dict(op, id="e" * 32, fork=1), now=1004)
+            self.relay.command(dict(op, id="e" * 32, fork=1), now=1004)
 
     def test_session_host_is_forwarded_without_claiming_a_visible_window(self):
         for host, expected in [("cli", "cli"), ("shared", "shared"), ("remote", "remote"), ("unknown", "unknown"), (None, ""), (["cli"], "")]:
             session = {"id": "12345678-1234-1234-1234-123456789abc", "tool": "codex", "dir": "demo",
                        "title": "后台保留的旧对话", "updated": 5000, "live": True, "host": host, "can_takeover": False}
-            tr.agent(self.path, {"info": self.info, "sessions": [session]}, now=1001)
-            actual = tr.overview(self.path, now=1002)["sessions"][0]
+            self.relay.agent({"info": self.info, "sessions": [session]}, now=1001)
+            actual = self.relay.overview(now=1002)["sessions"][0]
             self.assertEqual(actual["host"], expected)
             self.assertTrue(actual["live"])
             self.assertFalse(actual["can_takeover"])
@@ -82,135 +79,135 @@ class TerminalRelayTests(unittest.TestCase):
             dict(base, id="42345678-1234-1234-1234-123456789abc", host="unknown"),
             dict(base, id="52345678-1234-1234-1234-123456789abc", live=False, host=""),
         ]
-        tr.agent(self.path, {"info": self.info, "sessions": sessions}, now=1001)
-        activity = {s["host"] or "history": s["activity"] for s in tr.overview(self.path, now=1002)["sessions"]}
+        self.relay.agent({"info": self.info, "sessions": sessions}, now=1001)
+        activity = {s["host"] or "history": s["activity"] for s in self.relay.overview(now=1002)["sessions"]}
         self.assertEqual(activity, {"cli": "active", "shared": "locked", "remote": "locked", "unknown": "locked", "history": "history"})
 
     def test_nonzero_terminal_exit_is_persisted_with_output(self):
         self.start()
-        tr.agent(self.path, {"info": self.info,
+        self.relay.agent({"info": self.info,
                            "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 7}],
                            "output": [{"terminal": self.terminal, "seq": 1, "data": "startup failed"}]}, now=1004)
-        tr._cache.clear()
-        record = tr.overview(self.path, self.terminal, now=1005)
+        self.relay._kept = None
+        record = self.relay.overview(self.terminal, now=1005)
         self.assertEqual(record["terminal"]["exit_code"], 7)
         self.assertIn("代码 7", record["terminal"]["error"])
         self.assertEqual(record["chunks"][0]["data"], "startup failed")
 
     def test_start_retry_and_input_delivery_are_idempotent_and_ordered(self):
         payload = self.start()
-        self.assertEqual(len(tr.overview(self.path, now=1004)["terminals"]), 1)
-        self.assertEqual(tr.command(self.path, payload, now=1004)["state"], "done")
+        self.assertEqual(len(self.relay.overview(now=1004)["terminals"]), 1)
+        self.assertEqual(self.relay.command(payload, now=1004)["state"], "done")
         for n, data in enumerate(("/model", "\r", "\x1b[A", "中文\r"), 1):
             op = {"action": "input", "id": "%032x" % n, "terminal": self.terminal, "data": data}
-            tr.command(self.path, op, now=1005)
-            tr.command(self.path, op, now=1006)
-        operations = tr.agent(self.path, {"info": self.info}, now=1007)["operations"]
+            self.relay.command(op, now=1005)
+            self.relay.command(op, now=1006)
+        operations = self.relay.agent({"info": self.info}, now=1007)["operations"]
         self.assertEqual([o["data"] for o in operations], ["/model", "\r", "\x1b[A", "中文\r"])
-        self.assertEqual(tr.agent(self.path, {"info": self.info}, now=1008)["operations"], operations)
-        tr.agent(self.path, {"info": self.info, "acks": [{"id": o["id"]} for o in operations]}, now=1009)
-        self.assertEqual(tr.agent(self.path, {"info": self.info}, now=1010)["operations"], [])
+        self.assertEqual(self.relay.agent({"info": self.info}, now=1008)["operations"], operations)
+        self.relay.agent({"info": self.info, "acks": [{"id": o["id"]} for o in operations]}, now=1009)
+        self.assertEqual(self.relay.agent({"info": self.info}, now=1010)["operations"], [])
 
     def test_output_retry_split_utf8_terminal_controls_and_reconnect(self):
         self.start()
         output = [{"terminal": self.terminal, "seq": i, "data": text} for i, text in enumerate(("\x1b[2J\x1b[H", "中文 /model", "\r\n完成"), 1)]
         report = {"info": self.info, "output": output}
         for at in (1004, 1007):  # the repeated report also writes the output that was held back for a moment
-            self.assertEqual(tr.agent(self.path, report, now=at)["output_ack"][self.terminal], 3)
-        replay = tr.overview(self.path, self.terminal, now=1005)
+            self.assertEqual(self.relay.agent(report, now=at)["output_ack"][self.terminal], 3)
+        replay = self.relay.overview(self.terminal, now=1005)
         self.assertEqual([c["data"] for c in replay["chunks"]], [c["data"] for c in output])
-        self.assertEqual(tr.overview(self.path, self.terminal, after=2, now=1005)["chunks"], [replay["chunks"][2]])
-        self.assertEqual(tr.overview(self.path, self.terminal, after=3, now=1005)["chunks"], [])
-        tr._cache.clear()
-        self.assertEqual(tr.overview(self.path, self.terminal, now=1005)["chunks"], replay["chunks"])
+        self.assertEqual(self.relay.overview(self.terminal, after=2, now=1005)["chunks"], [replay["chunks"][2]])
+        self.assertEqual(self.relay.overview(self.terminal, after=3, now=1005)["chunks"], [])
+        self.relay._kept = None
+        self.assertEqual(self.relay.overview(self.terminal, now=1005)["chunks"], replay["chunks"])
 
     def test_restart_closes_old_terminal_and_expired_input_is_never_replayed(self):
         self.start()
-        tr.command(self.path, {"action": "input", "id": "c" * 32, "terminal": self.terminal, "data": "danger\r"}, now=1004)
-        self.assertEqual(tr.agent(self.path, {"info": self.info}, now=1300)["operations"], [])
+        self.relay.command({"action": "input", "id": "c" * 32, "terminal": self.terminal, "data": "danger\r"}, now=1004)
+        self.assertEqual(self.relay.agent({"info": self.info}, now=1300)["operations"], [])
         new_info = dict(self.info, instance="d" * 32)
-        tr.agent(self.path, {"info": new_info}, now=1301)
-        self.assertEqual(tr.overview(self.path, self.terminal, now=1302)["terminal"]["state"], "closed")
+        self.relay.agent({"info": new_info}, now=1301)
+        self.assertEqual(self.relay.overview(self.terminal, now=1302)["terminal"]["state"], "closed")
 
     def test_unreceived_start_expiry_and_server_restart_release_capacity(self):
         payload = {"action": "start", "id": "a" * 32, "tool": "codex", "dir": "demo"}
-        terminal = tr.command(self.path, payload, now=1001)["terminal"]
-        tr.overview(self.path, now=1300)
-        tr._cache.clear()
-        self.assertEqual(tr.overview(self.path, terminal, now=1301)["terminal"]["state"], "closed")
-        tr.agent(self.path, {"info": self.info}, now=1302)
-        second = tr.command(self.path, dict(payload, id="c" * 32), now=1303)["terminal"]
-        tr._cache.clear()
-        tr._pending.clear()
-        self.assertEqual(tr.overview(self.path, second, now=1304)["terminal"]["state"], "closed")
-        self.assertEqual(tr.agent(self.path, {"info": self.info}, now=1305)["operations"], [])
+        terminal = self.relay.command(payload, now=1001)["terminal"]
+        self.relay.overview(now=1300)
+        self.relay._kept = None
+        self.assertEqual(self.relay.overview(terminal, now=1301)["terminal"]["state"], "closed")
+        self.relay.agent({"info": self.info}, now=1302)
+        second = self.relay.command(dict(payload, id="c" * 32), now=1303)["terminal"]
+        self.relay._kept = None
+        self.relay._pending.clear()
+        self.assertEqual(self.relay.overview(second, now=1304)["terminal"]["state"], "closed")
+        self.assertEqual(self.relay.agent({"info": self.info}, now=1305)["operations"], [])
 
     def test_invalid_tool_workspace_input_size_and_operation_id_are_refused(self):
         for payload in ([], {"action": "start", "id": "bad"}, {"action": "start", "id": "f" * 32, "tool": "bash", "dir": "demo"},
                         {"action": "start", "id": "f" * 32, "tool": "codex", "dir": "elsewhere"}):
             with self.assertRaises(RemoteError):
-                tr.command(self.path, payload, now=1001)
+                self.relay.command(payload, now=1001)
         payload = self.start()
         with self.assertRaises(RemoteError):
-            tr.command(self.path, dict(payload, tool="claude"), now=1004)
+            self.relay.command(dict(payload, tool="claude"), now=1004)
         for changes in ({"action": "input", "data": ""}, {"action": "input", "data": "x" * 16001},
                         {"action": "resize", "cols": 1, "rows": 20}, {"action": "resize", "cols": "80", "rows": 24}):
             with self.assertRaises(RemoteError):
-                tr.command(self.path, {"id": "e" * 32, "terminal": self.terminal, **changes}, now=1005)
+                self.relay.command({"id": "e" * 32, "terminal": self.terminal, **changes}, now=1005)
         with self.assertRaises(RemoteError):
-            tr.command(self.path, {"id": "e" * 32, "terminal": self.terminal, "action": "close"}, now=2000)
+            self.relay.command({"id": "e" * 32, "terminal": self.terminal, "action": "close"}, now=2000)
 
     def test_close_error_and_cap_do_not_drop_existing_terminals(self):
         self.start()
         op = {"id": "c" * 32, "terminal": self.terminal, "action": "close"}
-        tr.command(self.path, op, now=1004)
-        tr.agent(self.path, {"info": self.info, "acks": [{"id": op["id"]}], "terminals": [{"id": self.terminal, "state": "closed"}]}, now=1005)
-        self.assertEqual(tr.overview(self.path, self.terminal, now=1006)["terminal"]["state"], "closed")
+        self.relay.command(op, now=1004)
+        self.relay.agent({"info": self.info, "acks": [{"id": op["id"]}], "terminals": [{"id": self.terminal, "state": "closed"}]}, now=1005)
+        self.assertEqual(self.relay.overview(self.terminal, now=1006)["terminal"]["state"], "closed")
         for n in range(8):
-            tr.command(self.path, {"id": "%032x" % n, "action": "start", "tool": "claude", "dir": "demo"}, now=1007)
+            self.relay.command({"id": "%032x" % n, "action": "start", "tool": "claude", "dir": "demo"}, now=1007)
         with self.assertRaises(RemoteError):
-            tr.command(self.path, {"id": "d" * 32, "action": "start", "tool": "claude", "dir": "demo"}, now=1008)
+            self.relay.command({"id": "d" * 32, "action": "start", "tool": "claude", "dir": "demo"}, now=1008)
 
     def test_new_terminal_sorts_above_second_precision_history(self):
         old = {"action": "start", "id": "1" * 32, "tool": "shell", "dir": "demo"}
-        tr.command(self.path, old, now=1000)
-        tr.agent(self.path, {"info": self.info, "acks": [{"id": old["id"]}]}, now=1001)
+        self.relay.command(old, now=1000)
+        self.relay.agent({"info": self.info, "acks": [{"id": old["id"]}]}, now=1001)
         new = {"action": "start", "id": "2" * 32, "tool": "shell", "dir": "demo"}
-        new_terminal = tr.command(self.path, new, now=1001.2)["terminal"]
-        self.assertEqual(tr.overview(self.path, now=1002)["terminals"][0]["id"], new_terminal)
+        new_terminal = self.relay.command(new, now=1001.2)["terminal"]
+        self.assertEqual(self.relay.overview(now=1002)["terminals"][0]["id"], new_terminal)
 
     def test_saved_conversations_are_listed_named_and_opened_once(self):
         sid, other = "12345678-1234-1234-1234-123456789abc", "22345678-1234-1234-1234-123456789abc"
         sessions = [{"id": sid, "tool": "claude", "dir": "demo", "title": " 修复面板 ", "updated": 5000, "live": True, "status": "busy"},
                     {"id": other, "tool": "codex", "dir": "demo", "title": "旧对话", "updated": 4000},
                     {"id": "bad", "tool": "claude", "dir": "demo", "title": "x", "updated": 1}, {"id": other, "tool": "bash", "dir": "demo", "title": "x", "updated": 1}]
-        tr.agent(self.path, {"info": self.info, "sessions": sessions}, now=1001)
-        listed = tr.overview(self.path, now=1002)["sessions"]
+        self.relay.agent({"info": self.info, "sessions": sessions}, now=1001)
+        listed = self.relay.overview(now=1002)["sessions"]
         self.assertEqual([(s["id"], s["title"], s["live"], s["status"], s["terminal"]) for s in listed], [(sid, "修复面板", True, "busy", ""), (other, "旧对话", False, "", "")])
         for wrong in ({"session": sid, "tool": "claude", "takeover": "yes"}, {"session": sid, "tool": "codex"}, {"session": "12345678-1234-1234-1234-123456789abd", "tool": "claude"}, {"session": 5, "tool": "claude"}):
             with self.assertRaises(RemoteError):
-                tr.command(self.path, {"action": "start", "id": "1" * 32, "dir": "demo", **wrong}, now=1003)
+                self.relay.command({"action": "start", "id": "1" * 32, "dir": "demo", **wrong}, now=1003)
         start = {"action": "start", "id": "2" * 32, "tool": "claude", "dir": "demo", "session": sid, "takeover": True}
-        terminal = tr.command(self.path, start, now=1004)["terminal"]
-        self.assertEqual(tr.agent(self.path, {"info": self.info, "sessions": sessions}, now=1005)["operations"][0]["takeover"], True)
+        terminal = self.relay.command(start, now=1004)["terminal"]
+        self.assertEqual(self.relay.agent({"info": self.info, "sessions": sessions}, now=1005)["operations"][0]["takeover"], True)
         with self.assertRaises(RemoteError):
-            tr.command(self.path, dict(start, id="3" * 32), now=1006)
-        tr.agent(self.path, {"info": self.info, "sessions": sessions, "acks": [{"id": start["id"]}],
+            self.relay.command(dict(start, id="3" * 32), now=1006)
+        self.relay.agent({"info": self.info, "sessions": sessions, "acks": [{"id": start["id"]}],
                              "terminals": [{"id": terminal, "state": "running", "session": other, "status": "idle"}]}, now=1007)
-        view = tr.overview(self.path, now=1008)
+        view = self.relay.overview(now=1008)
         self.assertEqual((view["terminals"][0]["title"], view["terminals"][0]["status"]), ("旧对话", "idle"))
         self.assertEqual([s["terminal"] for s in view["sessions"]], ["", terminal])
-        tr.command(self.path, {"action": "rename", "id": "4" * 32, "terminal": terminal, "title": "我的名字"}, now=1009)
-        self.assertEqual(tr.overview(self.path, terminal, now=1010)["terminal"]["title"], "我的名字")
+        self.relay.command({"action": "rename", "id": "4" * 32, "terminal": terminal, "title": "我的名字"}, now=1009)
+        self.assertEqual(self.relay.overview(terminal, now=1010)["terminal"]["title"], "我的名字")
 
     def test_ended_terminal_keeps_only_its_final_output_and_long_output_arrives_whole(self):
         self.start()
         pieces = [{"terminal": self.terminal, "seq": i, "data": chr(64 + i % 26) * 12000} for i in range(1, 61)]
         for at in range(0, 60, 30):
-            tr.agent(self.path, {"info": self.info, "output": pieces[at:at + 30]}, now=1004)
+            self.relay.agent({"info": self.info, "output": pieces[at:at + 30]}, now=1004)
         after, received, replies = 0, [], 0
         while True:
-            reply = tr.overview(self.path, self.terminal, after=after, now=1005)
+            reply = self.relay.overview(self.terminal, after=after, now=1005)
             if not reply["chunks"]:
                 break
             self.assertFalse(reply["reset"])
@@ -218,100 +215,100 @@ class TerminalRelayTests(unittest.TestCase):
             after, replies = reply["after"], replies + 1
         self.assertEqual((received, after, reply["terminal"]["seq"]), ([p["data"] for p in pieces], 60, 60))
         self.assertGreater(replies, 3)
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "closed"}],
+        self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "closed"}],
                              "output": [{"terminal": self.terminal, "seq": 61, "data": "最后一行"}]}, now=1006)
-        tr._cache.clear()
-        kept = tr.overview(self.path, self.terminal, after=60, now=1007)
+        self.relay._kept = None
+        kept = self.relay.overview(self.terminal, after=60, now=1007)
         self.assertEqual(([c["data"] for c in kept["chunks"]], kept["terminal"]["state"]), (["最后一行"], "closed"))
-        stored = tr._state(self.path)["threads"][self.terminal]
+        stored = self.relay._state()["threads"][self.terminal]
         self.assertLessEqual(stored["size"], tr.CLOSED_LIMIT)
         self.assertEqual(stored["output"][-1]["data"], "最后一行")
-        self.assertTrue(tr.overview(self.path, self.terminal, after=3, now=1008)["reset"])
+        self.assertTrue(self.relay.overview(self.terminal, after=3, now=1008)["reset"])
     def test_projects_are_listed_and_changed_only_through_the_computer(self):
         info = dict(self.info, workspaces=["demo", "组会"], projects=[
             {"name": "demo", "path": "E:\\01\\demo", "fixed": True, "exists": True}, {"name": "组会", "path": "G:\\06 数据分析", "fixed": False, "exists": True},
             {"name": "", "path": "x"}, "bad"], candidates=[{"name": "EpiAgentKit", "path": "E:\\05\\EpiAgentKit", "updated": 7, "live": True, "tools": "claude codex shell"}])
-        tr.agent(self.path, {"info": info}, now=1001)
-        device = tr.overview(self.path, now=1002)["device"]
+        self.relay.agent({"info": info}, now=1001)
+        device = self.relay.overview(now=1002)["device"]
         self.assertEqual([(x["name"], x["fixed"]) for x in device["projects"]], [("demo", True), ("组会", False)])
         self.assertEqual((device["candidates"][0]["tools"], device["candidates"][0]["live"]), (["claude", "codex"], True))
         for bad in ({"action": "project_add", "path": ""}, {"action": "project_add", "path": "E:\\a", "create": "yes"}, {"action": "project_remove", "name": "没有"},
                     {"action": "project_remove", "name": "demo"}, {"action": "project_rename", "name": "组会", "to": " "}, {"action": "project_rename", "name": "组会", "to": "x" * 41}):
             with self.assertRaises(RemoteError):
-                tr.command(self.path, dict(bad, id="1" * 32), now=1003)
-        started = tr.command(self.path, {"action": "start", "id": "2" * 32, "tool": "shell", "dir": "组会"}, now=1004)["terminal"]
+                self.relay.command(dict(bad, id="1" * 32), now=1003)
+        started = self.relay.command({"action": "start", "id": "2" * 32, "tool": "shell", "dir": "组会"}, now=1004)["terminal"]
         rename = {"action": "project_rename", "id": "3" * 32, "name": "组会", "to": "周会"}
-        self.assertEqual(tr.command(self.path, rename, now=1005)["state"], "queued")
-        sent = [o for o in tr.agent(self.path, {"info": info}, now=1006)["operations"] if o["action"] == "project_rename"]
+        self.assertEqual(self.relay.command(rename, now=1005)["state"], "queued")
+        sent = [o for o in self.relay.agent({"info": info}, now=1006)["operations"] if o["action"] == "project_rename"]
         self.assertEqual((sent[0]["name"], sent[0]["to"], sent[0]["terminal"]), ("组会", "周会", ""))
-        tr.agent(self.path, {"info": info, "acks": [{"id": rename["id"]}]}, now=1007)
-        self.assertEqual(tr.command(self.path, rename, now=1008)["state"], "done")
-        self.assertEqual(tr.overview(self.path, started, now=1009)["terminal"]["dir"], "周会")
+        self.relay.agent({"info": info, "acks": [{"id": rename["id"]}]}, now=1007)
+        self.assertEqual(self.relay.command(rename, now=1008)["state"], "done")
+        self.assertEqual(self.relay.overview(started, now=1009)["terminal"]["dir"], "周会")
         add = {"action": "project_add", "id": "4" * 32, "path": "E:\\没有"}
-        tr.command(self.path, add, now=1010)
-        tr.agent(self.path, {"info": info, "acks": [{"id": add["id"], "error": "电脑上没有这个文件夹"}]}, now=1011)
-        self.assertEqual(tr.command(self.path, add, now=1012)["error"], "电脑上没有这个文件夹")
+        self.relay.command(add, now=1010)
+        self.relay.agent({"info": info, "acks": [{"id": add["id"], "error": "电脑上没有这个文件夹"}]}, now=1011)
+        self.assertEqual(self.relay.command(add, now=1012)["error"], "电脑上没有这个文件夹")
     def test_waiting_requests_answer_when_something_arrives(self):
         import threading
         import time
         self.start()
         instance = self.info["instance"]
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]})  # reported just now
-        self.assertEqual(tr.pull(self.path, {"instance": instance, "wait": 0}), {"operations": []})
+        self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]})  # reported just now
+        self.assertEqual(self.relay.pull({"instance": instance, "wait": 0}), {"operations": []})
         with self.assertRaises(RemoteError):
-            tr.pull(self.path, {"instance": "x"})
+            self.relay.pull({"instance": "x"})
         answers = {}
-        waiting = threading.Thread(target=lambda: answers.update(pull=tr.pull(self.path, {"instance": instance, "wait": 10})))
+        waiting = threading.Thread(target=lambda: answers.update(pull=self.relay.pull({"instance": instance, "wait": 10})))
         began = time.monotonic()
         waiting.start()
         time.sleep(0.2)
-        tr.command(self.path, {"action": "input", "id": "1" * 32, "terminal": self.terminal, "data": "x"})
+        self.relay.command({"action": "input", "id": "1" * 32, "terminal": self.terminal, "data": "x"})
         waiting.join(5)
         self.assertEqual([(o["action"], o["data"], o["terminal"]) for o in answers["pull"]["operations"]], [("input", "x", self.terminal)])
         self.assertLess(time.monotonic() - began, 3)
-        self.assertEqual(len(tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]})["operations"]), 1)
-        self.assertEqual(tr.pull(self.path, {"instance": instance, "wait": 0}), {"operations": []})
-        self.assertEqual(tr.pull(self.path, {"instance": "c" * 32, "wait": 0}), {"operations": []})
+        self.assertEqual(len(self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]})["operations"]), 1)
+        self.assertEqual(self.relay.pull({"instance": instance, "wait": 0}), {"operations": []})
+        self.assertEqual(self.relay.pull({"instance": "c" * 32, "wait": 0}), {"operations": []})
 
-        reading = threading.Thread(target=lambda: answers.update(read=tr.overview(self.path, self.terminal, after=0, wait=10)))
+        reading = threading.Thread(target=lambda: answers.update(read=self.relay.overview(self.terminal, after=0, wait=10)))
         began = time.monotonic()
         reading.start()
         time.sleep(0.2)
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}], "output": [{"terminal": self.terminal, "seq": 1, "data": "回显"}]})
+        self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}], "output": [{"terminal": self.terminal, "seq": 1, "data": "回显"}]})
         reading.join(5)
         self.assertEqual([c["data"] for c in answers["read"]["chunks"]], ["回显"])
         self.assertLess(time.monotonic() - began, 3)
         began = time.monotonic()
-        self.assertEqual(tr.overview(self.path, self.terminal, after=1, wait=0.4)["chunks"], [])
+        self.assertEqual(self.relay.overview(self.terminal, after=1, wait=0.4)["chunks"], [])
         self.assertGreaterEqual(time.monotonic() - began, 0.35)
-        changing = threading.Thread(target=lambda: answers.update(state=tr.overview(self.path, self.terminal, after=1, wait=10)))
+        changing = threading.Thread(target=lambda: answers.update(state=self.relay.overview(self.terminal, after=1, wait=10)))
         changing.start()
         time.sleep(0.2)
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "running", "status": "busy"}]})
+        self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "running", "status": "busy"}]})
         changing.join(5)
         self.assertEqual(answers["state"]["terminal"]["status"], "busy")
 
     def test_output_is_saved_in_intervals_and_a_gap_after_a_restart_does_not_block(self):
         self.start()
-        report = lambda seq, now: tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}],
+        report = lambda seq, now: self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}],
                                                       "output": [{"terminal": self.terminal, "seq": seq, "data": "片%d" % seq}]}, now=now)["output_ack"][self.terminal]
         self.assertEqual(report(1, 2000.0), 1)
         self.assertEqual(report(2, 2000.5), 2)
         self.assertEqual(report(3, 2002.5), 3)
         self.assertEqual(report(4, 2002.6), 4)
-        tr._cache.clear()
-        tr._unsaved.clear()
-        self.assertEqual(tr.overview(self.path, self.terminal, now=2003)["terminal"]["seq"], 3)
+        self.relay._kept = None
+        self.relay._unsaved = None
+        self.assertEqual(self.relay.overview(self.terminal, now=2003)["terminal"]["seq"], 3)
         self.assertEqual(report(4, 2003.1), 4)
         self.assertEqual(report(9, 2003.2), 9)
         self.assertEqual(report(9, 2003.3), 9)
-        self.assertEqual([c["data"] for c in tr.overview(self.path, self.terminal, after=3, now=2004)["chunks"]], ["片4", "片9"])
+        self.assertEqual([c["data"] for c in self.relay.overview(self.terminal, after=3, now=2004)["chunks"]], ["片4", "片9"])
     def test_saving_adds_only_new_output_and_survives_a_restart_an_old_list_and_a_cut_line(self):
         import json
         import os
         self.start()
         live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
-        report = lambda seq, now: tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": seq, "data": "片%d\n" % seq}]), now=now)
+        report = lambda seq, now: self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": seq, "data": "片%d\n" % seq}]), now=now)
         file = os.path.join(tr._folder(self.path), self.terminal + ".jsonl")
         def read(name):
             with open(name, encoding="utf-8") as stream:
@@ -325,16 +322,16 @@ class TerminalRelayTests(unittest.TestCase):
         tr._write = lambda path, text, mode="w": (saved.append((os.path.basename(path), mode, text)), write(path, text, mode))[1]
         self.addCleanup(setattr, tr, "_write", write)
         report(3, 3005.0)
-        tr._save(self.path, tr._state(self.path))
+        self.relay._save(self.relay._state())
         self.assertEqual([s for s in saved if s[0].startswith(self.terminal)], [(self.terminal + ".jsonl", "a", '{"seq": 3, "data": "片3\\n"}\n')])
         self.assertEqual(read(file), before + '{"seq": 3, "data": "片3\\n"}\n')
-        restarted = lambda: (tr._cache.clear(), tr._unsaved.clear(), [c["data"] for c in tr.overview(self.path, self.terminal, now=3006)["chunks"]])[2]
+        restarted = lambda: (setattr(self.relay, "_kept", None), setattr(self.relay, "_unsaved", None), [c["data"] for c in self.relay.overview(self.terminal, now=3006)["chunks"]])[2]
         self.assertEqual(restarted(), ["片1\n", "片2\n", "片3\n"])
         with open(file, "a", encoding="utf-8") as stream:
             stream.write('{"seq": 4, "da')                       # the relay was ended in the middle of a line
         self.assertEqual(restarted(), ["片1\n", "片2\n", "片3\n"])
         report(4, 3010.0)
-        tr._save(self.path, tr._state(self.path))
+        self.relay._save(self.relay._state())
         self.assertEqual(restarted(), ["片1\n", "片2\n", "片3\n", "片4\n"])
         # A list written by an earlier version holds the output itself; it is read and then kept the new way.
         state = json.loads(read(self.path))
@@ -344,10 +341,10 @@ class TerminalRelayTests(unittest.TestCase):
             json.dump(state, stream, ensure_ascii=False)
         self.assertEqual(restarted(), ["旧", "的"])
         report(5, 3020.0)
-        tr._save(self.path, tr._state(self.path))
+        self.relay._save(self.relay._state())
         self.assertEqual(restarted(), ["旧", "的", "片5\n"])
-        del tr._state(self.path)["threads"][self.terminal]
-        tr._save(self.path, tr._state(self.path))
+        del self.relay._state()["threads"][self.terminal]
+        self.relay._save(self.relay._state())
         self.assertFalse(os.path.exists(file))
 
     def test_a_long_history_does_not_slow_new_output(self):
@@ -356,11 +353,11 @@ class TerminalRelayTests(unittest.TestCase):
         live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
         piece = "x" * 60 + "\r\n"
         for n in range(0, 30000, 200):
-            tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": n + i + 1, "data": piece} for i in range(200)]), now=4000 + n / 1000)
+            self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": n + i + 1, "data": piece} for i in range(200)]), now=4000 + n / 1000)
         began = time.perf_counter()
         for n in range(30000, 30100):
-            tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": n + 1, "data": piece}]), now=4100 + (n - 30000) * 0.05)
-            self.assertEqual(len(tr.overview(self.path, self.terminal, after=n, now=4100 + (n - 30000) * 0.05)["chunks"]), 1)
+            self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": n + 1, "data": piece}]), now=4100 + (n - 30000) * 0.05)
+            self.assertEqual(len(self.relay.overview(self.terminal, after=n, now=4100 + (n - 30000) * 0.05)["chunks"]), 1)
         self.assertLess((time.perf_counter() - began) / 100, 0.005)      # it was a tenth of a second and more for each piece
 
     def test_finished_operations_do_not_slow_later_requests(self):
@@ -369,123 +366,123 @@ class TerminalRelayTests(unittest.TestCase):
         live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
         for n in range(6000):       # a few minutes of scrolling a full-screen program
             key = "%032x" % (n + 1)
-            tr.command(self.path, {"action": "input", "id": key, "terminal": self.terminal, "data": "x"}, now=1004)
-            tr.agent(self.path, dict(live, acks=[{"id": key}]), now=1004)
-        self.assertEqual((len(tr._pending), len(tr._pending.queued)), (6001, 0))
+            self.relay.command({"action": "input", "id": key, "terminal": self.terminal, "data": "x"}, now=1004)
+            self.relay.agent(dict(live, acks=[{"id": key}]), now=1004)
+        self.assertEqual((len(self.relay._pending), len(self.relay._pending.queued)), (6001, 0))
         began = time.perf_counter()
         for n in range(200):
-            tr.overview(self.path, self.terminal, after=0, now=1005)
+            self.relay.overview(self.terminal, after=0, now=1005)
         self.assertLess((time.perf_counter() - began) / 200, 0.0005)
-        self.assertEqual(tr.command(self.path, {"action": "input", "id": "%032x" % 1, "terminal": self.terminal, "data": "x"}, now=1006)["state"], "done")
-        tr.overview(self.path, now=1004 + 601)
-        self.assertEqual(len(tr._pending), 0)
+        self.assertEqual(self.relay.command({"action": "input", "id": "%032x" % 1, "terminal": self.terminal, "data": "x"}, now=1006)["state"], "done")
+        self.relay.overview(now=1004 + 601)
+        self.assertEqual(len(self.relay._pending), 0)
 
     def test_a_question_is_shown_with_the_terminal_so_it_can_be_answered_from_the_list(self):
         self.start()
         live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
         asked = "\x1b[2J\x1b[H Bash command\r\n\r\n   rm -rf build\r\n\r\n Do you want to proceed?\r\n > 1. Yes\r\n   2. No\r\n"
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 1, "data": asked}]), now=1004)
-        tr.agent(self.path, live, now=1007)         # quiet for a moment with the question on the screen
-        shown = tr.overview(self.path, now=1007)["terminals"][0]
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": 1, "data": asked}]), now=1004)
+        self.relay.agent(live, now=1007)         # quiet for a moment with the question on the screen
+        shown = self.relay.overview(now=1007)["terminals"][0]
         self.assertEqual(shown["phase"], "confirm")
         self.assertEqual([line.strip() for line in shown["asks"]], ["Bash command", "", "rm -rf build", "", "Do you want to proceed?", "> 1. Yes", "2. No"])
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 2, "data": "building " * 150}]), now=1008)      # it went on
-        tr.agent(self.path, live, now=1020)
-        self.assertEqual(tr.overview(self.path, now=1020)["terminals"][0]["asks"], [])      # no question, nothing to answer
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": 2, "data": "building " * 150}]), now=1008)      # it went on
+        self.relay.agent(live, now=1020)
+        self.assertEqual(self.relay.overview(now=1020)["terminals"][0]["asks"], [])      # no question, nothing to answer
 
     def test_the_plain_terminal_is_called_what_the_computer_calls_it(self):
-        self.assertEqual(tr.overview(self.path, now=1001)["device"].get("shell", ""), "")
+        self.assertEqual(self.relay.overview(now=1001)["device"].get("shell", ""), "")
         self.start()
-        self.assertEqual(tr.overview(self.path, now=1004)["terminals"][0]["title"], "Codex")
-        tr.agent(self.path, {"info": dict(self.info, shell="bash\x07" + "x" * 40)}, now=1005)
-        self.assertEqual(tr.overview(self.path, now=1005)["device"]["shell"], ("bash" + "x" * 40)[:24])
-        tr.agent(self.path, {"info": dict(self.info, shell="zsh")}, now=1006)
-        shell = tr.command(self.path, {"id": "d" * 32, "action": "start", "tool": "shell", "dir": "demo"}, now=1006)["terminal"]
-        self.assertEqual(next(t for t in tr.overview(self.path, now=1006)["terminals"] if t["id"] == shell)["title"], "zsh")
+        self.assertEqual(self.relay.overview(now=1004)["terminals"][0]["title"], "Codex")
+        self.relay.agent({"info": dict(self.info, shell="bash\x07" + "x" * 40)}, now=1005)
+        self.assertEqual(self.relay.overview(now=1005)["device"]["shell"], ("bash" + "x" * 40)[:24])
+        self.relay.agent({"info": dict(self.info, shell="zsh")}, now=1006)
+        shell = self.relay.command({"id": "d" * 32, "action": "start", "tool": "shell", "dir": "demo"}, now=1006)["terminal"]
+        self.assertEqual(next(t for t in self.relay.overview(now=1006)["terminals"] if t["id"] == shell)["title"], "zsh")
 
     def test_a_conversation_is_read_by_the_computer_before_anything_is_done_to_it(self):
         import threading
         sid = "11111111-2222-3333-4444-555555555555"
         ask = {"id": "c" * 32, "session": sid}
         with self.assertRaisesRegex(RemoteError, "更新电脑端"):
-            tr.conversation(self.path, ask, now=1001, wait=0)
+            self.relay.conversation(ask, now=1001, wait=0)
         info = dict(self.info, features=["peek"])
-        tr.agent(self.path, {"info": info}, now=1001)
+        self.relay.agent({"info": info}, now=1001)
         with self.assertRaisesRegex(RemoteError, "没有找到这个对话"):
-            tr.conversation(self.path, ask, now=1001, wait=0)
-        tr.agent(self.path, {"info": info, "sessions": [{"id": sid, "tool": "claude", "dir": "demo", "title": "原对话", "updated": 1, "live": True, "host": "cli"}]}, now=1001)
+            self.relay.conversation(ask, now=1001, wait=0)
+        self.relay.agent({"info": info, "sessions": [{"id": sid, "tool": "claude", "dir": "demo", "title": "原对话", "updated": 1, "live": True, "host": "cli"}]}, now=1001)
         for bad in (dict(ask, session="x"), dict(ask, id="x"), dict(ask, session=None)):
             with self.assertRaises(RemoteError):
-                tr.conversation(self.path, bad, now=1001, wait=0)
+                self.relay.conversation(bad, now=1001, wait=0)
         answers = {}
-        waiting = threading.Thread(target=lambda: answers.update(got=tr.conversation(self.path, ask, now=1001, wait=5)))
+        waiting = threading.Thread(target=lambda: answers.update(got=self.relay.conversation(ask, now=1001, wait=5)))
         waiting.start()
-        asked = tr.pull(self.path, {"instance": self.info["instance"], "wait": 3})["operations"]
+        asked = self.relay.pull({"instance": self.info["instance"], "wait": 3})["operations"]
         # the tool and the folder are what the computer reported, not what the viewer says
         self.assertEqual([(o["action"], o["session"], o["tool"], o["dir"]) for o in asked], [("session_read", sid, "claude", "demo")])
         said = [{"role": "user", "text": "修一下登录"}, {"role": "assistant", "text": "好的"}]
-        tr.agent(self.path, {"info": info, "acks": [{"id": ask["id"], "error": "", "result": {"messages": said, "more": False}}]}, now=1002)
+        self.relay.agent({"info": info, "acks": [{"id": ask["id"], "error": "", "result": {"messages": said, "more": False}}]}, now=1002)
         waiting.join(5)
         self.assertEqual(answers["got"]["messages"], said)
-        self.assertNotIn(ask["id"], tr._pending)        # nothing of it is kept
+        self.assertNotIn(ask["id"], self.relay._pending)        # nothing of it is kept
 
     def test_files_are_asked_of_the_computer_and_answered_once(self):
         import threading
         ask = {"id": "f" * 32, "action": "file_list", "dir": "demo", "path": "src"}
         with self.assertRaisesRegex(RemoteError, "更新电脑端"):
-            tr.files(self.path, ask, now=1001, wait=0)
+            self.relay.files(ask, now=1001, wait=0)
         info = dict(self.info, features=["files", "update"], version="0.7.0", newer="0.7.1")
-        tr.agent(self.path, {"info": info}, now=1001)
+        self.relay.agent({"info": info}, now=1001)
         for bad in (dict(ask, dir="other"), dict(ask, path="a\x00b"), dict(ask, action="file_delete"), dict(ask, offset=-1), dict(ask, id="x")):
             with self.assertRaises(RemoteError):
-                tr.files(self.path, bad, now=1001, wait=0)
+                self.relay.files(bad, now=1001, wait=0)
         answers = {}
-        waiting = threading.Thread(target=lambda: answers.update(got=tr.files(self.path, ask, now=1001, wait=5)))
+        waiting = threading.Thread(target=lambda: answers.update(got=self.relay.files(ask, now=1001, wait=5)))
         waiting.start()
-        asked = tr.pull(self.path, {"instance": self.info["instance"], "wait": 3})["operations"]
+        asked = self.relay.pull({"instance": self.info["instance"], "wait": 3})["operations"]
         self.assertEqual([(o["action"], o["dir"], o["path"], o["offset"]) for o in asked], [("file_list", "demo", "src", 0)])
-        tr.agent(self.path, {"info": info, "acks": [{"id": ask["id"], "error": "", "result": {"path": "src", "entries": [{"name": "a.py"}]}}]}, now=1002)
+        self.relay.agent({"info": info, "acks": [{"id": ask["id"], "error": "", "result": {"path": "src", "entries": [{"name": "a.py"}]}}]}, now=1002)
         waiting.join(5)
         self.assertEqual(answers["got"]["entries"], [{"name": "a.py"}])
-        self.assertNotIn(ask["id"], tr._pending)        # nothing of it is kept
+        self.assertNotIn(ask["id"], self.relay._pending)        # nothing of it is kept
         refused = dict(ask, id="e" * 32)
         failing = threading.Thread(target=lambda: answers.update(error=self.assertRaisesRegex(RemoteError, "不在项目文件夹内", tr.files, self.path, refused, 1003, 5)))
         failing.start()
-        tr.pull(self.path, {"instance": self.info["instance"], "wait": 3})
-        tr.agent(self.path, {"info": info, "acks": [{"id": refused["id"], "error": "路径不在项目文件夹内"}]}, now=1004)
+        self.relay.pull({"instance": self.info["instance"], "wait": 3})
+        self.relay.agent({"info": info, "acks": [{"id": refused["id"], "error": "路径不在项目文件夹内"}]}, now=1004)
         failing.join(5)
         with self.assertRaisesRegex(RemoteError, "没有及时回应"):
-            tr.files(self.path, dict(ask, id="d" * 32), now=1005, wait=0.2)
+            self.relay.files(dict(ask, id="d" * 32), now=1005, wait=0.2)
         # the versions are shown, and the phone may ask for the update
-        device = tr.overview(self.path, now=1006)["device"]
+        device = self.relay.overview(now=1006)["device"]
         self.assertEqual((device["version"], device["newer"]), ("0.7.0", "0.7.1"))
-        self.assertEqual(tr.command(self.path, {"action": "update", "id": "c" * 32}, now=1006)["state"], "queued")
-        tr.agent(self.path, {"info": self.info}, now=1007)
+        self.assertEqual(self.relay.command({"action": "update", "id": "c" * 32}, now=1006)["state"], "queued")
+        self.relay.agent({"info": self.info}, now=1007)
         with self.assertRaisesRegex(RemoteError, "先在电脑上更新一次"):
-            tr.command(self.path, {"action": "update", "id": "b" * 32}, now=1007)
+            self.relay.command({"action": "update", "id": "b" * 32}, now=1007)
 
     def test_output_is_streamed_as_it_arrives_and_a_wake_up_between_look_and_wait_is_not_lost(self):
         import threading
         import time
         self.start()
         live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
-        tr.agent(self.path, live)
+        self.relay.agent(live)
         got, times = [], []
         began = time.monotonic()
 
         def read():
-            for item in tr.stream(self.path, self.terminal, after=0, seconds=2.5, beat=1):
+            for item in self.relay.stream(self.terminal, after=0, seconds=2.5, beat=1):
                 self.assertNotIn("tick", item)
                 got.append(item)
                 times.append(time.monotonic() - began)
         reader = threading.Thread(target=read)
         reader.start()
         time.sleep(0.3)
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 1, "data": "一"}]))
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": 1, "data": "一"}]))
         time.sleep(0.3)
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 2, "data": "二"}, {"terminal": self.terminal, "seq": 3, "data": "三"}]))
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": 2, "data": "二"}, {"terminal": self.terminal, "seq": 3, "data": "三"}]))
         time.sleep(0.3)
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "running", "status": "busy"}]})
+        self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "running", "status": "busy"}]})
         reader.join(6)
         self.assertFalse(reader.is_alive())
         self.assertEqual("".join(c["data"] for item in got for c in item["chunks"]), "一二三")
@@ -497,107 +494,107 @@ class TerminalRelayTests(unittest.TestCase):
         self.assertTrue(any(item["terminal"].get("status") == "busy" for item in got))
         self.assertGreaterEqual(len([item for item in got if not item["chunks"]]), 3, "state line, status change and heartbeats")
         self.assertLess(times[-1], 3.6)
-        self.assertNotIn("tick", tr.overview(self.path, self.terminal, after=3))
-        self.assertNotIn("tick", tr.overview(self.path, self.terminal, after=3, wait=0.2))
+        self.assertNotIn("tick", self.relay.overview(self.terminal, after=3))
+        self.assertNotIn("tick", self.relay.overview(self.terminal, after=3, wait=0.2))
         # A wake-up after the look but before the wait must end the wait at once.
-        seen = tr._overview(self.path, self.terminal, 3, time.time())["tick"]
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 4, "data": "四"}]))
+        seen = self.relay._overview(self.terminal, 3, time.time())["tick"]
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": 4, "data": "四"}]))
         began = time.monotonic()
-        tr._wait(seen, 3)
+        self.relay._wait(seen, 3)
         self.assertLess(time.monotonic() - began, 0.5)
         with self.assertRaises(RemoteError):
-            next(tr.stream(self.path, "0" * 32))
+            next(self.relay.stream("0" * 32))
     def test_phase_tells_working_asking_finished_and_ended_apart(self):
         self.start()
         live = lambda status="", **more: dict({"info": self.info, "terminals": [dict({"id": self.terminal, "state": "running", "status": status}, **more)]})
-        phase = lambda now: tr.overview(self.path, now=now)["terminals"][0]
+        phase = lambda now: self.relay.overview(now=now)["terminals"][0]
         self.assertEqual(phase(1004)["phase"], "idle")
         self.assertFalse(phase(1004).get("done"))                      # it has not worked yet
-        key = lambda n, data, now: tr.command(self.path, {"action": "input", "id": "%032x" % n, "terminal": self.terminal, "data": data}, now=now)
+        key = lambda n, data, now: self.relay.command({"action": "input", "id": "%032x" % n, "terminal": self.terminal, "data": data}, now=now)
         # the banner a program prints when it opens is not work, and neither is the echo of a key
-        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 1, "data": "Welcome\r\n"}]), now=1005)
+        self.relay.agent(dict(live(), output=[{"terminal": self.terminal, "seq": 1, "data": "Welcome\r\n"}]), now=1005)
         self.assertEqual(phase(1005)["phase"], "idle")
         key(1, "n", 1006)
-        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 2, "data": "n"}]), now=1006.5)
+        self.relay.agent(dict(live(), output=[{"terminal": self.terminal, "seq": 2, "data": "n"}]), now=1006.5)
         self.assertEqual(phase(1006.5)["phase"], "idle")
         self.assertFalse(phase(1006.5).get("done"))
         key(2, "pm run build\r", 1008)
-        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 3, "data": "building\r\n"}]), now=1010)
+        self.relay.agent(dict(live(), output=[{"terminal": self.terminal, "seq": 3, "data": "building\r\n"}]), now=1010)
         self.assertEqual(phase(1010)["phase"], "busy")                 # without a status of its own, fresh output means work
-        tr.agent(self.path, live(), now=1016)
+        self.relay.agent(live(), now=1016)
         done = phase(1016)
         self.assertEqual((done["phase"], done["done"]), ("idle", True))
         self.assertNotIn("out_at", done)
         self.assertNotIn("touched", done)
         # opening the terminal on the phone resizes it; the screen drawn again must not look like new work
-        tr.command(self.path, {"action": "resize", "id": "%032x" % 3, "terminal": self.terminal, "cols": 50, "rows": 30}, now=1017)
-        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 4, "data": "\x1b[2Jbuilding\r\n"}]), now=1018)
+        self.relay.command({"action": "resize", "id": "%032x" % 3, "terminal": self.terminal, "cols": 50, "rows": 30}, now=1017)
+        self.relay.agent(dict(live(), output=[{"terminal": self.terminal, "seq": 4, "data": "\x1b[2Jbuilding\r\n"}]), now=1018)
         self.assertEqual(phase(1018)["phase"], "idle")
         self.assertEqual(phase(1018)["phase_at"], done["phase_at"])
         # a question on the screen that stays there
-        tr.agent(self.path, dict(live(), output=[{"terminal": self.terminal, "seq": 5, "data": "\x1b[1mDo you want to proceed?\x1b[0m\r\n\x1b[36m> 1. Yes\x1b[0m\r\n  2. No"}]), now=1020)
+        self.relay.agent(dict(live(), output=[{"terminal": self.terminal, "seq": 5, "data": "\x1b[1mDo you want to proceed?\x1b[0m\r\n\x1b[36m> 1. Yes\x1b[0m\r\n  2. No"}]), now=1020)
         self.assertEqual(phase(1020)["phase"], "busy")                 # just written: still drawing
-        tr.agent(self.path, live(), now=1023)
+        self.relay.agent(live(), now=1023)
         self.assertEqual(phase(1023)["phase"], "confirm")
         # Claude Code reports its own status; a question only counts while it says it is working
-        tr.agent(self.path, live("idle"), now=1030)
+        self.relay.agent(live("idle"), now=1030)
         self.assertEqual(phase(1030)["phase"], "idle")
-        tr.agent(self.path, live("busy"), now=1031)
+        self.relay.agent(live("busy"), now=1031)
         self.assertEqual(phase(1031)["phase"], "confirm")
-        tr.agent(self.path, dict(live("busy"), output=[{"terminal": self.terminal, "seq": 6, "data": "x" * 2000}]), now=1040)
-        tr.agent(self.path, live("busy"), now=1045)
+        self.relay.agent(dict(live("busy"), output=[{"terminal": self.terminal, "seq": 6, "data": "x" * 2000}]), now=1040)
+        self.relay.agent(live("busy"), now=1045)
         self.assertEqual(phase(1045)["phase"], "busy")                 # answered: the question has scrolled out of the last screen
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 3}]}, now=1050)
+        self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 3}]}, now=1050)
         self.assertEqual(phase(1050)["phase"], "failed")
 
     def test_overview_tells_what_a_running_terminal_last_said(self):
         self.start()
         live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running", "cols": 40, "rows": 8}]}
-        said = lambda now: tr.overview(self.path, now=now)["terminals"][0]["said"]
+        said = lambda now: self.relay.overview(now=now)["terminals"][0]["said"]
         self.assertEqual(said(1004), "")
         # a message that wraps, the frame of the prompt under it, and a status line that is drawn over and over
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 1, "data":
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": 1, "data":
             "\x1b[2J\x1b[1;1H\u25cf \x1b[1mold answer\x1b[0m\r\n\r\n\u25cf Updated the README and\r\n  ran the tests\r\n\r\n" + "\u2500" * 40 + "\r\n> \r\n  ? for shortcuts"}]), now=1005)
         self.assertEqual(said(1006), "Updated the README and ran the tests")
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 2, "data": "\x1b[3;1H\x1b[2K\u25cf \u4e2d\u6587\u6d88\u606f\x1b[4;1H\x1b[2K"}]), now=1007)
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": 2, "data": "\x1b[3;1H\x1b[2K\u25cf \u4e2d\u6587\u6d88\u606f\x1b[4;1H\x1b[2K"}]), now=1007)
         self.assertEqual(said(1008), "\u4e2d\u6587\u6d88\u606f")
         # after a restart of the relay the screen is drawn again from the output that was kept
-        tr._screens.clear()
+        self.relay._screens.clear()
         self.assertEqual(said(1009), "\u4e2d\u6587\u6d88\u606f")
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 0}]}, now=1010)
+        self.relay.agent({"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 0}]}, now=1010)
         self.assertEqual(said(1011), "")
 
     def test_a_fullscreen_program_is_read_from_its_last_output_with_the_switches_it_set(self):
         self.start()
-        feed = lambda pieces: [tr.agent(self.path, {"info": self.info, "output": pieces[at:at + 100]}, now=1004) for at in range(0, len(pieces), 100)]
+        feed = lambda pieces: [self.relay.agent({"info": self.info, "output": pieces[at:at + 100]}, now=1004) for at in range(0, len(pieces), 100)]
         piece = lambda seq, data: {"terminal": self.terminal, "seq": seq, "data": data}
         draw = "\x1b[5;1H" + "x" * 994
         # the switches arrive once, the last of them cut in two by the end of a piece
         feed([piece(1, "\x1b[?1049h\x1b[?1003;1006h\x1b[?25l\x1b[?20"), piece(2, "04h" + draw)] + [piece(seq, draw) for seq in range(3, 301)])
         lead = "\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[?2004h"
-        fresh = tr.overview(self.path, self.terminal, after=0, now=1005)
+        fresh = self.relay.overview(self.terminal, after=0, now=1005)
         self.assertTrue(fresh["reset"])
         self.assertGreater(fresh["chunks"][0]["seq"], 150)
         self.assertEqual(fresh["chunks"][0]["data"], lead + draw)
         self.assertEqual((fresh["after"], sum(len(c["data"]) for c in fresh["chunks"]) <= tr.TAIL + len(lead)), (300, True))
         self.assertNotIn("modes", fresh["terminal"])
         # a reader that follows along is given what is new and nothing else
-        self.assertEqual((tr.overview(self.path, self.terminal, after=299, now=1005)["reset"], [c["data"] for c in tr.overview(self.path, self.terminal, after=299, now=1005)["chunks"]]), (False, [draw]))
+        self.assertEqual((self.relay.overview(self.terminal, after=299, now=1005)["reset"], [c["data"] for c in self.relay.overview(self.terminal, after=299, now=1005)["chunks"]]), (False, [draw]))
         # when the history is full the pieces that set the switches are dropped; the switches are not, also over a restart
         limit, tr.OUTPUT_LIMIT = tr.OUTPUT_LIMIT, 200_000
         self.addCleanup(setattr, tr, "OUTPUT_LIMIT", limit)
         feed([piece(301, "\x1b[?1003l\x1b[?1000h" + draw), piece(302, draw)])
-        tr.agent(self.path, {"info": self.info}, now=1010)
-        tr._cache.clear()
-        stored = tr._state(self.path)["threads"][self.terminal]
+        self.relay.agent({"info": self.info}, now=1010)
+        self.relay._kept = None
+        stored = self.relay._state()["threads"][self.terminal]
         self.assertGreater(stored["output"][0]["seq"], 2)
         self.assertEqual(stored["modes"], {"1049": True, "1003": True, "1006": True, "25": False, "2004": True})
-        late = tr.overview(self.path, self.terminal, after=0, now=1011)
+        late = self.relay.overview(self.terminal, after=0, now=1011)
         self.assertEqual((late["reset"], late["chunks"][0]["data"][:len(lead)]), (True, lead))
         self.assertIn("\x1b[?1003l\x1b[?1000h", "".join(c["data"] for c in late["chunks"]))
         # once the program has left the alternate screen its output is history again, and all that is kept is read back
         feed([piece(303, "\x1b[?1049l\x1b[?25hbye\r\n")])
-        whole = tr.overview(self.path, self.terminal, after=0, now=1012)
+        whole = self.relay.overview(self.terminal, after=0, now=1012)
         self.assertEqual((whole["reset"], whole["chunks"][0]["seq"], whole["chunks"][0]["data"][:len(lead)]), (True, stored["output"][0]["seq"], lead))
 
     def test_screen_follows_cursor_erasing_scrolling_and_wide_characters(self):
@@ -619,57 +616,57 @@ class TerminalRelayTests(unittest.TestCase):
         sid, terminal = "12345678-1234-1234-1234-123456789abc", "7" * 32
         sessions = [{"id": sid, "tool": "claude", "dir": "demo", "title": "修复面板", "updated": 5000}]
         mine = {"id": terminal, "state": "running", "tool": "claude", "dir": "demo", "created": 900_000, "session": sid, "title": "我的名字", "cols": 100, "rows": 30}
-        reply = tr.agent(self.path, {"info": self.info, "sessions": sessions, "terminals": [mine]}, now=1001)
+        reply = self.relay.agent({"info": self.info, "sessions": sessions, "terminals": [mine]}, now=1001)
         self.assertEqual((reply["output_ack"], reply["titles"]), ({terminal: 0}, {terminal: "我的名字"}))
-        view = tr.overview(self.path, now=1002)
+        view = self.relay.overview(now=1002)
         shown = view["terminals"][0]
         self.assertEqual((shown["id"], shown["state"], shown["title"], shown["created"], shown["cols"], shown["phase"]), (terminal, "running", "我的名字", 900_000, 100, "idle"))
         self.assertEqual(view["sessions"][0]["terminal"], terminal)        # the conversation is the one that terminal shows, not one to open again
         with self.assertRaisesRegex(RemoteError, "已经在手机终端里打开"):
-            tr.command(self.path, {"action": "start", "id": "1" * 32, "tool": "claude", "dir": "demo", "session": sid}, now=1003)
+            self.relay.command({"action": "start", "id": "1" * 32, "tool": "claude", "dir": "demo", "session": sid}, now=1003)
         # the computer gives what it still has: it begins in the middle, says so, and is not counted as work
         again = [{"terminal": terminal, "seq": 41, "data": "\x1b[?2004hold screen", "old": True, "restart": True}, {"terminal": terminal, "seq": 42, "data": " more", "old": True}]
-        self.assertEqual(tr.agent(self.path, {"info": self.info, "terminals": [mine], "output": again}, now=1004)["output_ack"], {terminal: 42})
-        read = tr.overview(self.path, terminal, after=0, now=1005)
+        self.assertEqual(self.relay.agent({"info": self.info, "terminals": [mine], "output": again}, now=1004)["output_ack"], {terminal: 42})
+        read = self.relay.overview(terminal, after=0, now=1005)
         self.assertEqual(("".join(c["data"] for c in read["chunks"]), read["reset"], read["after"], read["terminal"]["phase"]), ("\x1b[?2004hold screen more", True, 42, "idle"))
-        tr.command(self.path, {"action": "input", "id": "2" * 32, "terminal": terminal, "data": "ls\r"}, now=1006)     # and it is used like any other
-        self.assertEqual(tr.agent(self.path, {"info": self.info, "terminals": [mine]}, now=1007)["operations"][0]["data"], "ls\r")
+        self.relay.command({"action": "input", "id": "2" * 32, "terminal": terminal, "data": "ls\r"}, now=1006)     # and it is used like any other
+        self.assertEqual(self.relay.agent({"info": self.info, "terminals": [mine]}, now=1007)["operations"][0]["data"], "ls\r")
         # what does not say what it is (an older program on the computer) is not listed
-        tr.agent(self.path, {"info": self.info, "terminals": [mine, {"id": "8" * 32, "state": "running"}, {"id": "9" * 32, "state": "running", "tool": "bash", "dir": "demo", "created": 1}]}, now=1008)
-        self.assertEqual([t["id"] for t in tr.overview(self.path, now=1009)["terminals"]], [terminal])
+        self.relay.agent({"info": self.info, "terminals": [mine, {"id": "8" * 32, "state": "running"}, {"id": "9" * 32, "state": "running", "tool": "bash", "dir": "demo", "created": 1}]}, now=1008)
+        self.assertEqual([t["id"] for t in self.relay.overview(now=1009)["terminals"]], [terminal])
 
     def test_history_given_again_replaces_what_no_longer_continues(self):
         self.start()
         live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": n, "data": "early %d " % n} for n in (1, 2)]), now=1004)
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": n, "data": "early %d " % n} for n in (1, 2)]), now=1004)
         # the computer went on through another relay; back here it gives what it kept, which begins later
-        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 9, "data": "late 9 ", "old": True, "restart": True}, {"terminal": self.terminal, "seq": 10, "data": "late 10"}]), now=1005)
-        read = tr.overview(self.path, self.terminal, after=2, now=1006)
+        self.relay.agent(dict(live, output=[{"terminal": self.terminal, "seq": 9, "data": "late 9 ", "old": True, "restart": True}, {"terminal": self.terminal, "seq": 10, "data": "late 10"}]), now=1005)
+        read = self.relay.overview(self.terminal, after=2, now=1006)
         self.assertEqual(("".join(c["data"] for c in read["chunks"]), read["reset"], read["after"]), ("late 9 late 10", True, 10))
 
     def test_running_terminal_the_computer_no_longer_has_is_ended(self):
         self.start()
-        other = tr.command(self.path, {"action": "start", "id": "c" * 32, "tool": "shell", "dir": "demo"}, now=1004)["terminal"]
-        tr.agent(self.path, {"info": self.info}, now=1005)                 # a report without the list says nothing about it
-        tr.agent(self.path, {"info": self.info, "terminals": []}, now=1006)
-        states = {t["id"]: (t["state"], t["phase"]) for t in tr.overview(self.path, now=1007)["terminals"]}
+        other = self.relay.command({"action": "start", "id": "c" * 32, "tool": "shell", "dir": "demo"}, now=1004)["terminal"]
+        self.relay.agent({"info": self.info}, now=1005)                 # a report without the list says nothing about it
+        self.relay.agent({"info": self.info, "terminals": []}, now=1006)
+        states = {t["id"]: (t["state"], t["phase"]) for t in self.relay.overview(now=1007)["terminals"]}
         self.assertEqual(states, {self.terminal: ("closed", "ended"), other: ("starting", "starting")})      # one that has not started yet is still to come
 
     def test_a_conversation_has_one_terminal_in_the_list(self):
         sid = "12345678-1234-1234-1234-123456789abc"
         sessions = [{"id": sid, "tool": "claude", "dir": "demo", "title": "修复面板", "updated": 5000}]
-        tr.agent(self.path, {"info": self.info, "sessions": sessions}, now=1001)
-        ids = lambda: [t["id"] for t in tr.overview(self.path, now=2000)["terminals"]]
+        self.relay.agent({"info": self.info, "sessions": sessions}, now=1001)
+        ids = lambda: [t["id"] for t in self.relay.overview(now=2000)["terminals"]]
         def run(n, close=True, fail=False):
             op = {"action": "start", "id": "%032x" % n, "tool": "claude", "dir": "demo", "session": sid}
-            terminal = tr.command(self.path, op, now=1010 + n)["terminal"]
+            terminal = self.relay.command(op, now=1010 + n)["terminal"]
             if fail:
-                tr.agent(self.path, {"info": self.info, "acks": [{"id": op["id"], "error": "电脑未安装这个工具"}], "terminals": []}, now=1011 + n)
+                self.relay.agent({"info": self.info, "acks": [{"id": op["id"], "error": "电脑未安装这个工具"}], "terminals": []}, now=1011 + n)
                 return terminal
-            tr.agent(self.path, {"info": self.info, "acks": [{"id": op["id"]}], "terminals": [{"id": terminal, "state": "running"}],
+            self.relay.agent({"info": self.info, "acks": [{"id": op["id"]}], "terminals": [{"id": terminal, "state": "running"}],
                                  "output": [{"terminal": terminal, "seq": 1, "data": "screen %d" % n}]}, now=1011 + n)
             if close:
-                tr.agent(self.path, {"info": self.info, "terminals": [{"id": terminal, "state": "closed"}]}, now=1012 + n)
+                self.relay.agent({"info": self.info, "terminals": [{"id": terminal, "state": "closed"}]}, now=1012 + n)
             return terminal
         first = run(1)
         self.assertEqual(ids(), [first])
@@ -677,35 +674,35 @@ class TerminalRelayTests(unittest.TestCase):
         self.assertEqual(ids(), [first])
         second = run(20, close=False)               # running: the ended one of the same conversation goes
         self.assertEqual(ids(), [second])
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": second, "state": "closed"}]}, now=1040)
+        self.relay.agent({"info": self.info, "terminals": [{"id": second, "state": "closed"}]}, now=1040)
         third = run(30)
         self.assertEqual(ids(), [third])
-        shell = [tr.command(self.path, {"action": "start", "id": "%032x" % (100 + n), "tool": "shell", "dir": "demo"}, now=1050 + n)["terminal"] for n in range(2)]
-        tr.agent(self.path, {"info": self.info, "terminals": [{"id": key, "state": "closed"} for key in shell]}, now=1055)
+        shell = [self.relay.command({"action": "start", "id": "%032x" % (100 + n), "tool": "shell", "dir": "demo"}, now=1050 + n)["terminal"] for n in range(2)]
+        self.relay.agent({"info": self.info, "terminals": [{"id": key, "state": "closed"} for key in shell]}, now=1055)
         self.assertEqual(len(ids()), 3)             # terminals without a conversation are each their own
         # lists written by an older relay are tidied when they are read
-        state = tr._state(self.path)
+        state = self.relay._state()
         for n in range(3):
             state["threads"]["%032x" % (200 + n)] = dict(state["threads"][third], id="%032x" % (200 + n), created=n, output=[])
-        tr._save(self.path, state)
-        tr._cache.clear()
+        self.relay._save(state)
+        self.relay._kept = None
         self.assertEqual(sorted(ids()), sorted([third] + shell))
         self.assertNotIn(failed, ids())
 
     def test_ended_terminal_of_another_relay_is_listed_only_where_it_is_kept(self):
         sid = "12345678-1234-1234-1234-123456789abc"
         ended = lambda n, **more: dict({"id": "%032x" % n, "state": "closed", "tool": "codex", "dir": "demo", "created": 1000 + n, "exit_code": 0}, **more)
-        ids = lambda: {t["id"] for t in tr.overview(self.path, now=2000)["terminals"]}
-        reply = tr.agent(self.path, {"info": self.info, "terminals": [ended(5, session=sid)], "output": []}, now=1001)
+        ids = lambda: {t["id"] for t in self.relay.overview(now=2000)["terminals"]}
+        reply = self.relay.agent({"info": self.info, "terminals": [ended(5, session=sid)], "output": []}, now=1001)
         self.assertEqual(reply["output_ack"], {"%032x" % 5: 0})
-        tr.agent(self.path, {"info": self.info, "terminals": [ended(5, session=sid)], "output": [{"terminal": "%032x" % 5, "seq": 3, "data": "last screen", "old": True, "restart": True}]}, now=1002)
-        shown = tr.overview(self.path, "%032x" % 5, now=1003)
+        self.relay.agent({"info": self.info, "terminals": [ended(5, session=sid)], "output": [{"terminal": "%032x" % 5, "seq": 3, "data": "last screen", "old": True, "restart": True}]}, now=1002)
+        shown = self.relay.overview("%032x" % 5, now=1003)
         self.assertEqual((shown["terminal"]["state"], shown["terminal"]["phase"], shown["chunks"][0]["data"]), ("closed", "ended", "last screen"))
-        tr.agent(self.path, {"info": self.info, "terminals": [ended(5, session=sid), ended(6, session=sid)]}, now=1004)       # the same conversation: once
+        self.relay.agent({"info": self.info, "terminals": [ended(5, session=sid), ended(6, session=sid)]}, now=1004)       # the same conversation: once
         self.assertEqual(ids(), {"%032x" % 5})
         many = [ended(5, session=sid)] + [ended(n) for n in range(10, 10 + tr.MAX_HISTORY)]
         for _ in range(2):          # said again and again, the list stays the same: the newest that fit
-            tr.agent(self.path, {"info": self.info, "terminals": many}, now=1005)
+            self.relay.agent({"info": self.info, "terminals": many}, now=1005)
             self.assertEqual(ids(), {"%032x" % n for n in range(10, 10 + tr.MAX_HISTORY)})
 
 

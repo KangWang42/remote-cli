@@ -105,22 +105,19 @@ class FramingTests(unittest.TestCase):
 class WebSocketIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        tr._cache.clear()
-        tr._pending.clear()
-        tr._unsaved.clear()
-        tr._sessions.clear()
         self.server = server.make_server("127.0.0.1", 0, self.temp.name, str(Path(__file__).resolve().parents[1] / "web"), password="test-password-1234")
+        self.relay = self.server.space.relay
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.origin = "http://127.0.0.1:%d" % self.server.server_port
         self.client = Client(self.origin, timeout=3)
         self.client.call("/api/login", {"password": "test-password-1234"})
         self.info = {"instance": "b" * 32, "enabled": True, "tools": ["shell"], "workspaces": ["demo"]}
-        tr.agent(self.server.store, {"info": self.info})
+        self.relay.agent({"info": self.info})
         start = operation("", "start", tool="shell", dir="demo")
-        self.terminal = tr.command(self.server.store, start)["terminal"]
+        self.terminal = self.relay.command(start)["terminal"]
         self.live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
-        tr.agent(self.server.store, dict(self.live, acks=[{"id": start["id"]}]))
+        self.relay.agent(dict(self.live, acks=[{"id": start["id"]}]))
         self.sockets = []
 
     def test_a_ticket_signs_in_once_and_only_for_a_minute(self):
@@ -177,14 +174,14 @@ class WebSocketIntegrationTests(unittest.TestCase):
         self.assertEqual([a["id"] for a in acks], [o["id"] for o in ops])
         ws.send(ops[0])
         self.assertEqual(self.next_type(ws, "ack")["id"], ops[0]["id"])
-        queued = tr.pull(self.server.store, {"instance": self.info["instance"], "wait": 0})["operations"]
+        queued = self.relay.pull({"instance": self.info["instance"], "wait": 0})["operations"]
         self.assertEqual([o["data"] for o in queued], ["a", "中", "\r"])
-        tr.agent(self.server.store, dict(self.live, output=[{"terminal": self.terminal, "seq": 1, "data": "实时输出"}]))
+        self.relay.agent(dict(self.live, output=[{"terminal": self.terminal, "seq": 1, "data": "实时输出"}]))
         self.assertEqual(self.next_type(ws, "out")["chunks"], [{"seq": 1, "data": "实时输出"}])
         resumed = self.connect(after=1)
         self.assertEqual(resumed.receive()["chunks"], [])
         self.client.call("/api/terminal", ops[0])
-        self.assertEqual(len(tr._pending), 4)  # one start and three inputs, across both transports
+        self.assertEqual(len(self.relay._pending), 4)  # one start and three inputs, across both transports
 
     def test_no_auth_or_cross_origin_or_missing_origin_cannot_upgrade(self):
         self.assertEqual(self.connect(cookie="").status, 401)
@@ -207,7 +204,7 @@ class WebSocketIntegrationTests(unittest.TestCase):
         ws.send(operation(self.terminal, "input", data="should not execute"))
         with self.assertRaises(ConnectionError):
             ws.receive(3)
-        self.assertEqual(len(tr._pending), 1)
+        self.assertEqual(len(self.relay._pending), 1)
 
     def test_connection_cannot_target_a_different_terminal(self):
         ws = self.connect()
@@ -215,7 +212,7 @@ class WebSocketIntegrationTests(unittest.TestCase):
         ws.send(operation("c" * 32, "input", data="should not execute"))
         with self.assertRaises(ConnectionError):
             ws.receive(3)
-        self.assertEqual(len(tr._pending), 1)
+        self.assertEqual(len(self.relay._pending), 1)
 
     def test_pages_are_kept_by_the_reader_and_text_is_sent_compressed(self):
         import gzip
@@ -258,7 +255,7 @@ class WebSocketIntegrationTests(unittest.TestCase):
         # a font is compressed already
         self.assertNotIn("content-encoding", get("/terminal/vendor/jetbrains-mono-400.woff2", **{"Accept-Encoding": "gzip"})[1])
         # what a terminal printed is never kept by the reader, and a long answer is compressed for one that asks
-        tr.agent(self.server.store, dict(self.live, output=[{"terminal": self.terminal, "seq": 1, "data": "\x1b[2K\x1b[1Gline of output\r\n" * 400}]))
+        self.relay.agent(dict(self.live, output=[{"terminal": self.terminal, "seq": 1, "data": "\x1b[2K\x1b[1Gline of output\r\n" * 400}]))
         status, headers, body = get("/api/terminal?terminal=%s&after=0" % self.terminal, **{"Accept-Encoding": "gzip"})
         self.assertEqual((status, headers["cache-control"], headers["content-encoding"]), (200, "no-store", "gzip"))
         self.assertEqual(len(json.loads(gzip.decompress(body))["chunks"][0]["data"]), 400 * 24)
@@ -274,7 +271,7 @@ class WebSocketIntegrationTests(unittest.TestCase):
         # a screen drawn again and again, as a fullscreen program does while it is scrolled
         screens = ["".join("\x1b[%d;1H\x1b[2Kline %03d of the picture  中文" % (row + 1, top + row) for row in range(30)) for top in range(40)]
         for seq, screen in enumerate(screens, 1):
-            tr.agent(self.server.store, dict(self.live, output=[{"terminal": self.terminal, "seq": seq, "data": screen}]))
+            self.relay.agent(dict(self.live, output=[{"terminal": self.terminal, "seq": seq, "data": screen}]))
         got = {}
         for name, ws in (("plain", plain), ("packed", packed)):
             text, last = "", 0
@@ -291,7 +288,7 @@ class WebSocketIntegrationTests(unittest.TestCase):
         for ws in (plain, packed):
             ws.send(operation(self.terminal, "input", data="echo " + "long input " * 20))
             self.assertEqual(self.next_type(ws, "ack")["status"], 200)
-        self.assertEqual(len(tr._pending), 3)           # the start of this terminal and the two inputs
+        self.assertEqual(len(self.relay._pending), 3)           # the start of this terminal and the two inputs
 
     def test_invalid_input_returns_ack_and_keeps_connection_open(self):
         ws = self.connect()

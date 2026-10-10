@@ -148,7 +148,7 @@ def main():
             ask("Page.navigate", url=base + "/terminal/?id=" + terminal)
             until(READY, 60, "the page knows the program is fullscreen and reads the mouse")
 
-        def drag(lines, steps=24, pause=0.016):
+        def drag(lines, steps=24, pause=0.016, halfway=None):
             """One finger moves down (lines > 0: towards older output) by that many rows of the terminal, then lifts."""
             box = page_value("(() => { const r = document.getElementById('screen').getBoundingClientRect(), t = TerminalUI.terminal; return [r.left + r.width / 2, r.top + r.height / 2, document.getElementById('terminal').clientHeight / t.rows]; })()")
             x, y, row = box
@@ -156,6 +156,8 @@ def main():
             for step in range(1, steps + 1):
                 time.sleep(pause)
                 ask("Input.dispatchTouchEvent", type="touchMove", touchPoints=[{"x": x, "y": y + lines * row * step / steps}])
+                if halfway and step == steps // 2:
+                    halfway()
             time.sleep(0.25)        # the finger rests before it lifts: no fling
             ask("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
             time.sleep(0.8)
@@ -222,6 +224,22 @@ def main():
         assert page_value("document.getElementById('latest').hidden") is False
         drag(-4)                    # a whole row is sent once the finger has passed it: the last one may still be under way
         assert moved - 4 <= top - page_value(TOP) <= moved - 3, (top, page_value(TOP), moved)
+        # ---- a slow drag is followed by the pixel: between the program's moves the picture is slid under the finger,
+        # the rows the program holds still stay where they are, and at rest the picture is where the terminal draws it
+        ask("Runtime.evaluate", expression="window.__slid = []; (function look() { const m = /,\\s*(-?[\\d.]+)px/.exec(document.getElementById('terminal').style.transform);"
+            " window.__slid.push([m ? parseFloat(m[1]) : 0, !document.getElementById('still').hidden]); if (window.__slid.length < 1200) requestAnimationFrame(look); })()")
+        slow = page_value(TOP)
+        drag(5, steps=75, pause=0.02, halfway=lambda: picture("fullscreen-sliding.png"))
+        time.sleep(0.6)
+        samples = page_value("window.__slid.splice(0)")
+        places = [sample[0] for sample in samples]
+        report["frames_seen"], report["frames_slid"], report["places_between_rows"] = len(places), sum(1 for place in places if place), len(set(places))
+        report["rows_held_still_shown"] = any(sample[1] for sample in samples)
+        report["rows_moved_by_a_slow_5_row_drag"] = slow - page_value(TOP)
+        assert report["places_between_rows"] >= 15 and report["rows_held_still_shown"], report
+        assert places[-1] == 0 and page_value("document.getElementById('terminal').style.transform") == "" and page_value("document.getElementById('still').hidden") is True, places[-5:]
+        assert 4 <= report["rows_moved_by_a_slow_5_row_drag"] <= 5, report
+        drag(-5)
         # a quick flick of about ten rows glides on after the finger lifts, comes to rest, and a touch stops a glide at once
         was = page_value(TOP)
         box = page_value("(() => { const r = document.getElementById('screen').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()")

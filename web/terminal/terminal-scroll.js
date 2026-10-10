@@ -8,6 +8,89 @@
   // Steps that follow one another within about 80 ms move further each time (3, 7, 10, 13 ...), so they are sent
   // SLOT ms apart, where every step moves what it says here. Measured on Claude Code 2.1.
   const SLOT = 110, MOVES = [[6, 4], [4, 2], [3, 1]], OWED = 45;
+  // A terminal moves by whole rows, and a program that scrolls its own view moves it a few rows at a time, a moment
+  // after it was asked. Between those moves the picture is slid by what the finger is ahead of it, so that it
+  // follows the finger by the pixel at every frame. AHEAD: how many rows it may run ahead of what the terminal shows.
+  // WAIT (ms): how long a move that was asked for is waited on. SETTLE (ms): how fast the picture comes back to rest.
+  const AHEAD = { local: 1.5, remote: 3 }, WAIT = 700, SETTLE = 90;
+  class TerminalSlide {
+    // options: cell() the height of a row; viewport() where the terminal's own history is scrolled to; read() the
+    // text of every row on the screen; apply(pixels, rowsStillAtTop, rowsStillAtBottom) moves the picture.
+    constructor(options) {
+      this.options = options;
+      this.offset = 0; this.drain = 0; this.asked = []; this.top = 0; this.bottom = 0;
+      this.active = false; this.kind = 'local'; this.rows = null; this.seen = false; this.last = 0;
+    }
+    begin(kind, at) {
+      if (!this.active || kind !== this.kind) { this.offset = 0; this.drain = 0; this.asked = []; }
+      this.kind = kind; this.active = true; this.seen = false; this.last = at; this.drain = 0;
+      this.viewport = this.options.viewport();
+      this.rows = kind === 'local' ? null : this.options.read();
+    }
+    cancel() {
+      const moved = this.active || this.offset;
+      this.offset = 0; this.drain = 0; this.asked = []; this.active = false;
+      if (moved) this.options.apply(0, 0, 0);
+    }
+    forget() { this.top = 0; this.bottom = 0; }          // another size or another screen: what stood still is not known
+    moved(pixels) { if (this.active) this.offset += pixels; }
+    ask(rows, at) { if (this.active && rows) this.asked.push({ rows, at }); }
+    // By how many rows what is on the screen has moved between two pictures of it (down is positive), and how many
+    // rows at its top and bottom did not move: a program keeps its heading and its message box where they are.
+    shift(before, after) {
+      const n = Math.min(before.length, after.length);
+      let changed = 0;
+      for (let i = 0; i < n; i++) if (before[i] !== after[i]) changed++;
+      if (changed < 2) return 0;
+      const count = k => { let same = 0; for (let i = Math.max(0, -k); i < n - Math.max(0, k); i++) if (before[i] === after[i + k] && before[i].trim()) same++; return same; };
+      let best = 0, most = 0;
+      for (let k = 1; k <= Math.min(12, n - 3); k++) for (const way of [k, -k]) { const same = count(way); if (same > most) { best = way; most = same; } }
+      if (most < 2 || most < (changed - Math.abs(best)) / 2) return 0;
+      let top = 0, bottom = 0;
+      while (top < n && before[top] === after[top]) top++;
+      while (bottom < n - top && before[n - 1 - bottom] === after[n - 1 - bottom]) bottom++;
+      // Rows that happen to read the same may be taken for still ones; over a drag the fewest seen are the true ones.
+      this.top = this.seen ? Math.min(this.top, top) : top; this.bottom = this.seen ? Math.min(this.bottom, bottom) : bottom;
+      this.seen = true;
+      return best;
+    }
+    // The terminal has drawn. Rows it moved by, of those that were asked for, no longer have to be made up for.
+    drawn() {
+      if (!this.active) return;
+      let shift = 0;
+      if (this.kind === 'local') { const now = this.options.viewport(); shift = this.viewport - now; this.viewport = now; }
+      else { const now = this.options.read(); if (this.asked.length) shift = this.shift(this.rows, now); this.rows = now; }
+      const way = Math.sign(shift), cell = this.options.cell();
+      let left = Math.abs(shift);
+      while (left > 0 && this.asked.length && Math.sign(this.asked[0].rows) === way) {
+        const first = this.asked[0], taken = Math.min(left, Math.abs(first.rows));
+        first.rows -= way * taken; left -= taken; this.offset -= way * taken * cell;
+        if (!first.rows) this.asked.shift();
+      }
+      this.show();
+    }
+    // Once a frame. `resting`: no finger on the screen and no glide. Returns whether another frame is needed.
+    frame(at, resting) {
+      if (!this.active) return false;
+      const dt = Math.max(0, Math.min(50, at - this.last)), cell = this.options.cell();
+      this.last = at;
+      // What was asked for long ago is not coming (the program is at the end of its list): the picture gives it up.
+      while (this.asked.length && at - this.asked[0].at > WAIT) this.drain += this.asked.shift().rows * cell;
+      if (resting && !this.asked.length) this.drain = this.offset;
+      if (this.drain) {
+        const part = this.drain * (1 - Math.exp(-dt / SETTLE)), gone = Math.abs(this.drain - part) < .5 ? this.drain : part;
+        this.offset -= gone; this.drain -= gone;
+      }
+      if (resting && !this.asked.length && Math.abs(this.offset) < .5) { this.cancel(); return false; }
+      this.show();
+      return true;
+    }
+    show() {
+      const cell = this.options.cell(), most = AHEAD[this.kind === 'local' ? 'local' : 'remote'] * cell;
+      const still = this.kind !== 'local';
+      this.options.apply(Math.max(-most, Math.min(most, this.offset)), still ? this.top : 0, still ? this.bottom : 0);
+    }
+  }
   class TerminalScroller {
     constructor(options) {
       this.options = options;
@@ -30,6 +113,7 @@
       }
       this.velocity = this.velocity * .3 + delta / dt * .7;
       this.pending += delta; this.distance += Math.abs(delta);
+      if (this.options.slide) this.options.slide(delta);
       this.y = y; this.lastMove = at;
       this.schedule();
     }
@@ -48,8 +132,9 @@
       const remote = this.kind !== 'local', dt = Math.max(0, Math.min(32, at - this.lastFrame));
       this.lastFrame = at;
       if (!this.dragging && this.velocity) {
-        const decay = Math.exp(-dt / GLIDE);
-        this.pending += this.velocity * GLIDE * (1 - decay);
+        const decay = Math.exp(-dt / GLIDE), glide = this.velocity * GLIDE * (1 - decay);
+        this.pending += glide;
+        if (this.options.slide) this.options.slide(glide);
         this.velocity *= decay;
         if (at - this.released > 2500 || Math.abs(this.velocity) < .03) this.velocity = 0;
       }
@@ -71,6 +156,7 @@
       this.clock = clock || (() => performance.now());
       this.remoteUp = 0; this.pageLines = 0; this.sgr = false;
       this.owed = 0; this.way = 0; this.wheelAt = -1e9;
+      this.asked = 0;         // the rows the last call of scroll() asked the terminal or the program to move by
       // Mouse tracking and mouse encoding are independent terminal modes.
       for (const [final, enabled] of [['h', true], ['l', false]]) {
         term.parser.registerCsiHandler({ prefix: '?', final }, params => {
@@ -111,10 +197,12 @@
       return key.repeat(Math.abs(lines));
     }
     scroll(lines, mode = this.mode()) {
+      this.asked = 0;
       if (mode === 'local') {
         const before = this.term.buffer.active.viewportY;
         this.term.scrollLines(-lines);
-        return this.term.buffer.active.viewportY !== before;
+        this.asked = before - this.term.buffer.active.viewportY;
+        return this.asked !== 0;
       }
       if (mode === 'page') {
         this.pageLines += lines;
@@ -123,12 +211,14 @@
         this.pageLines -= pages * 8;
         if (!this.send((pages > 0 ? '\x1b[5~' : '\x1b[6~').repeat(Math.abs(pages)))) return false;
         this.remoteUp = Math.max(0, this.remoteUp + pages * 8);
+        this.asked = pages * 8;
         return true;
       }
       const sent = this.tool() === 'claude' ? this.paced(lines) : { steps: lines, moved: lines };
       if (!sent.steps) return true;
       if (!this.send(this.wheel(sent.steps))) return false;
       this.remoteUp = Math.max(0, this.remoteUp + sent.moved);
+      this.asked = sent.moved;
       return true;
     }
     latest() {
@@ -145,5 +235,6 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = TerminalScroller;
     module.exports.TerminalScrollRouter = TerminalScrollRouter;
-  } else { root.TerminalScroller = TerminalScroller; root.TerminalScrollRouter = TerminalScrollRouter; }
+    module.exports.TerminalSlide = TerminalSlide;
+  } else { root.TerminalScroller = TerminalScroller; root.TerminalScrollRouter = TerminalScrollRouter; root.TerminalSlide = TerminalSlide; }
 })(typeof window === 'undefined' ? globalThis : window);

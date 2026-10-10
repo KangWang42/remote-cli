@@ -11,7 +11,6 @@ import argparse
 import gzip
 import hashlib
 import hmac
-import importlib.util
 import json
 import os
 import re
@@ -28,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded P
 import relay  # noqa: E402
 import websocket  # noqa: E402
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024
@@ -208,15 +207,16 @@ class Tickets:
 
 
 class Space:
-    """What one computer and its phones share: a password, the sign-ins, and the terminals with the relay's state."""
+    """What one computer and its phones share: a password, the sign-ins, and the terminals (a relay.Relay)."""
 
-    def __init__(self, folder, engine, password="", digest="", prefix=""):
+    def __init__(self, folder, password="", digest="", prefix=""):
         os.makedirs(folder, exist_ok=True)
-        self.folder, self.relay, self.prefix = folder, engine, prefix
+        self.folder, self.prefix = folder, prefix
         self.password, self.digest = password, digest
         self.sessions = Sessions(os.path.join(folder, "sessions.json"))
         self.attempts, self.tickets = Attempts(), Tickets()
         self.store = os.path.join(folder, "terminals.json")
+        self.relay = relay.Relay(self.store)
 
     def accepts(self, given):
         if not isinstance(given, str):
@@ -236,9 +236,9 @@ class Refused(Exception):
 
 class Spaces:
     """A relay for everyone: every computer has a space of its own under /c/<id>/, made when its program asks, with
-    a password that only it and its phones know. A space has its own sign-ins and its own copy of the relay's state,
-    so nothing of one can be read or reached from another, and the relay has no list of them to show. A space
-    nobody has used for a month is removed."""
+    a password that only it and its phones know. A space has its own sign-ins and its own terminals, so nothing of
+    one can be read or reached from another, and one busy space does not hold up another; the relay has no list of
+    them to show. A space nobody has used for a month is removed."""
 
     def __init__(self, data, key="", most=SPACES, days=SPACE_DAYS):
         self.folder, self.key, self.most, self.days = os.path.join(data, "spaces"), key, most, days
@@ -257,12 +257,7 @@ class Spaces:
                         return None
                 except (OSError, ValueError, KeyError, TypeError):
                     return None
-                # The relay keeps what it knows of a computer in its module. Each space is given the module anew,
-                # which is what keeps the computers apart and lets one busy space not hold up another.
-                spec = importlib.util.spec_from_file_location("relay_space_" + key, relay.__file__)
-                engine = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(engine)
-                space = self.open[key] = Space(folder, engine, digest=digest, prefix="/c/" + key)
+                space = self.open[key] = Space(folder, digest=digest, prefix="/c/" + key)
             return space
 
     def _used(self, key):
@@ -403,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, data, extra=extra)
 
     def _error(self, exc, fallback):
-        self._json(400, {"error": str(exc) if isinstance(exc, self.space.relay.RemoteError) else fallback})
+        self._json(400, {"error": str(exc) if isinstance(exc, relay.RemoteError) else fallback})
 
     def _static(self, path, mark=""):
         root = self.server.web
@@ -442,7 +437,7 @@ class Handler(BaseHTTPRequestHandler):
         path = self._enter(path)
         if path is None:
             return
-        relay = self.space.relay
+        terminals = self.space.relay
         if not path.startswith("/api/"):
             return self._static(path, first("v"))
         if path == "/api/session":
@@ -451,13 +446,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"error": "auth"})
         if path == "/api/terminal/ws":
             return self._websocket(first("terminal"), first("after", "0"))
-        store = self.space.store
         try:
             if path == "/api/terminal":
                 wait = max(0.0, min(25.0, float(first("wait", "0"))))
-                return self._json(200, relay.overview(store, first("terminal"), int(first("after", "0")), wait=wait))
+                return self._json(200, terminals.overview(first("terminal"), int(first("after", "0")), wait=wait))
             if path == "/api/terminal/stream":
-                lines = relay.stream(store, first("terminal"), int(first("after", "0")))
+                lines = terminals.stream(first("terminal"), int(first("after", "0")))
                 item = next(lines)
             else:
                 return self._json(404, {"error": "not found"})
@@ -490,8 +484,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
             key = websocket.accept_key(self.headers)
             after = int(after)
-            relay, store = self.space.relay, self.space.store
-            lines = relay.stream(store, terminal, after, seconds=3600)
+            terminals = self.space.relay
+            lines = terminals.stream(terminal, after, seconds=3600)
             first = next(lines)
         except (ValueError, StopIteration):
             return self._json(400, {"error": "WebSocket 参数无效"})
@@ -542,7 +536,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(payload, dict) or payload.get("terminal") != terminal or payload.get("action") not in ("input", "resize", "close", "rename"):
                     raise relay.RemoteError("终端操作无效")
                 try:
-                    result = relay.command(store, payload)
+                    result = terminals.command(payload)
                     channel.send(dict(result, t="ack", status=200))
                 except relay.RemoteError as error:
                     channel.send({"t": "ack", "id": payload.get("id"), "status": 400, "state": "error", "error": str(error)})
@@ -582,7 +576,7 @@ class Handler(BaseHTTPRequestHandler):
         path = self._enter(path, payload)
         if path is None:
             return
-        space, relay = self.space, self.space.relay
+        space, terminals = self.space, self.space.relay
         if path == "/api/login":
             address, attempts = self._address(), space.attempts
             if attempts.blocked(address):
@@ -608,12 +602,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"error": "auth"})
         if path == "/api/ticket":
             return self._json(200, {"ticket": space.tickets.make()})
-        call = {"/api/terminal": relay.command, "/api/terminal/agent": relay.agent, "/api/terminal/agent/pull": relay.pull, "/api/files": relay.files,
-                "/api/conversation": relay.conversation}.get(path)
+        call = {"/api/terminal": terminals.command, "/api/terminal/agent": terminals.agent, "/api/terminal/agent/pull": terminals.pull, "/api/files": terminals.files,
+                "/api/conversation": terminals.conversation}.get(path)
         if call is None:
             return self._json(404, {"error": "not found"})
         try:
-            return self._json(200, call(space.store, payload))
+            return self._json(200, call(payload))
         except (ValueError, TypeError) as exc:
             return self._error(exc, "请求格式无效")
         except OSError:
@@ -639,7 +633,7 @@ def make_server(host, port, data, web, password=None, public=False, key="", most
     if password is None:
         password, made = read_password(data)
     server.password, server.password_made = password, made
-    space = server.space = Space(data, relay, password=password)
+    space = server.space = Space(data, password=password)
     server.sessions, server.attempts, server.tickets, server.store = space.sessions, space.attempts, space.tickets, space.store
     return server
 

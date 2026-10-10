@@ -59,7 +59,7 @@ def main():
             assert places() == [anew["server"][-20:]], places()
             # taken off the list while in use: said so, and the tab offers what is left
             gone = press(folder, "gone", again="chosen", mode="public", relays=[])
-            assert gone["mode"] == "public" and "不在列表里" in gone["status"] and gone["published"] == "0", gone
+            assert gone["mode"] == "public" and "已从列表中移除" in gone["status"] and gone["published"] == "0", gone
             # leaving for the program's own relay: that relay is given a password of its own
             before = (Path(folder) / "chosen" / "password.dpapi").read_bytes()
 

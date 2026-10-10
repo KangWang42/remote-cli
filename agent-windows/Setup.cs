@@ -15,7 +15,7 @@ namespace RemoteCli {
 ///   --quiet            no questions and no start afterwards
 ///   --dir <folder>     where to install (default: the folder of an earlier installation, else %LOCALAPPDATA%\Programs\RemoteCli)
 public static class Setup {
-    const string Version = "1.1.0", Name = "Remote CLI";
+    const string Version = "1.1.1", Name = "Remote CLI";
     // REMOTECLI_SETUP_SANDBOX=1 is for the tests: its own registry entry and shortcut names, and no look at a running
     // copy, so trying the installer never touches a real installation.
     static readonly bool Sandbox = Environment.GetEnvironmentVariable("REMOTECLI_SETUP_SANDBOX") == "1";
@@ -85,6 +85,8 @@ public static class Setup {
             browse.Click += (s, e) => { using (var dialog = new FolderBrowserDialog { Description = "选择安装位置", SelectedPath = Directory.Exists(field.Box.Text) ? field.Box.Text : "" }) if (dialog.ShowDialog(form) == DialogResult.OK) field.Box.Text = Resolve(dialog.SelectedPath); };
             using (var g = form.CreateGraphics()) { float factor = g.DpiX / 96f; if (factor > 1.01f) form.Scale(new SizeF(factor, factor)); }
             if (picture != null) {
+                // drawn off the screen: nobody at the computer is to take it for the installer
+                form.StartPosition = FormStartPosition.Manual; form.Location = new Point(-30000, -30000); form.ShowInTaskbar = false;
                 form.Show();
                 var until = DateTime.UtcNow.AddSeconds(1.5);
                 while (DateTime.UtcNow < until) { Application.DoEvents(); Thread.Sleep(30); }

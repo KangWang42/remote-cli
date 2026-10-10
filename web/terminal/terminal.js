@@ -28,7 +28,9 @@
   let drawing = 'dom';
   if (window.WebglAddon && !(bridge && bridge.renderer() === 'dom')) {
     try {
-      const gl = new WebglAddon.WebglAddon();
+      // The picture is kept after it is shown: the rows a program holds still are copied from it while a finger
+      // slides the rest (see `still` below).
+      const gl = new WebglAddon.WebglAddon(true);
       gl.onContextLoss(() => { gl.dispose(); drawing = 'dom'; });
       term.loadAddon(gl);
       drawing = 'webgl';
@@ -133,11 +135,54 @@
   term.onScroll(follow);
   const scrollRouter = new TerminalScrollRouter(term, send, () => tool);
   latest.addEventListener('click', () => {
-    scroller.stop();
+    scroller.stop(); unslide();
     scrollRouter.latest(); follow();
   });
   term.onData(data => { if (!restoring) send(data); });
 
+  // Between the moves of the terminal the picture is slid under the finger (TerminalSlide). The whole terminal is
+  // moved; the rows a fullscreen program holds still, its heading and its message box, are copied onto a canvas
+  // that stays where it is, so that what scrolls passes under them.
+  const still = document.createElement('canvas');
+  still.id = 'still'; still.hidden = true;
+  screen.insertBefore(still, latest);
+  const picture = () => Array.from(holder.querySelectorAll('.xterm-screen canvas')).find(canvas => !canvas.classList.contains('xterm-link-layer')) || null;
+  let slid = 0, slideFrame = 0;
+  const slide = new TerminalSlide({
+    cell: () => tall / Math.max(1, term.rows),
+    viewport: () => term.buffer.active.viewportY,
+    read() {
+      const buffer = term.buffer.active, rows = [];
+      for (let i = 0; i < term.rows; i++) { const line = buffer.getLine(buffer.viewportY + i); rows.push(line ? line.translateToString(true) : ''); }
+      return rows;
+    },
+    apply(pixels, top, bottom) {
+      const source = picture(), ratio = window.devicePixelRatio || 1;
+      // Without a picture to copy the still rows from, a program's own view is left as the terminal draws it.
+      if ((top || bottom) && !source) pixels = 0;
+      pixels = Math.round(pixels * ratio) / ratio;
+      if (pixels !== slid) { slid = pixels; holder.style.transform = pixels ? 'translate3d(0,' + pixels + 'px,0)' : ''; }
+      const shown = !!pixels && !!source && top + bottom > 0;
+      if (still.hidden === shown) still.hidden = !shown;
+      // Of the terminal that is slid only the rows that scroll are seen; the still ones are shown by the copy.
+      const part = tall / Math.max(1, term.rows), cut = shown ? 'inset(' + top * part + 'px 0 ' + bottom * part + 'px 0)' : '';
+      if (holder.style.clipPath !== cut) holder.style.clipPath = cut;
+      if (!shown) return;
+      const from = source.getBoundingClientRect(), frame = screen.getBoundingClientRect();
+      if (still.width !== source.width || still.height !== source.height) { still.width = source.width; still.height = source.height; }
+      // the terminal is drawn where it would be without the slide
+      still.style.left = (from.left - frame.left) + 'px'; still.style.top = (from.top - frame.top - pixels) + 'px';
+      still.style.width = from.width + 'px'; still.style.height = from.height + 'px';
+      const row = source.height / Math.max(1, term.rows), draw = still.getContext('2d');
+      draw.clearRect(0, 0, still.width, still.height);
+      if (top) draw.drawImage(source, 0, 0, source.width, Math.round(top * row), 0, 0, source.width, Math.round(top * row));
+      if (bottom) { const y = Math.round((term.rows - bottom) * row); draw.drawImage(source, 0, y, source.width, source.height - y, 0, y, source.width, source.height - y); }
+    }
+  });
+  const resting = () => !scroller.dragging && !scroller.velocity && !scroller.frame;
+  function sliding(at) { slideFrame = slide.frame(at, resting()) ? requestAnimationFrame(sliding) : 0; }
+  function unslide() { if (slideFrame) cancelAnimationFrame(slideFrame); slideFrame = 0; slide.cancel(); }
+  term.onRender(() => slide.drawn());
   // Touch movement scrolls local history or the program's fullscreen view, according to the active terminal mode.
   const scroller = new TerminalScroller({
     request: callback => requestAnimationFrame(callback), cancel: id => cancelAnimationFrame(id),
@@ -146,25 +191,33 @@
     visible: () => !document.hidden,
     reduced: () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     owing: () => scrollRouter.owing(),
+    slide: pixels => slide.moved(pixels),
     scroll(lines, mode) {
-      const moved = scrollRouter.scroll(lines, mode); follow(); return moved;
+      const moved = scrollRouter.scroll(lines, mode);
+      slide.ask(scrollRouter.asked, performance.now());
+      follow(); return moved;
     }
   });
   screen.addEventListener('touchstart', event => {
     scrollRouter.start();
-    if (event.touches.length === 1 && !latest.contains(event.target)) scroller.start(event.touches[0].clientY, performance.now());
-    else scroller.stop();
+    if (event.touches.length === 1 && !latest.contains(event.target)) {
+      const now = performance.now();
+      scroller.start(event.touches[0].clientY, now);
+      slide.begin(scrollRouter.mode() === 'local' ? 'local' : 'remote', now);
+      if (!slideFrame) slideFrame = requestAnimationFrame(sliding);
+    } else { scroller.stop(); unslide(); }
   }, { capture: true, passive: true });
   screen.addEventListener('touchmove', event => {
-    if (event.touches.length !== 1) { scroller.stop(); return; }
+    if (event.touches.length !== 1) { scroller.stop(); unslide(); return; }
     if (!scroller.dragging) return;
     scroller.move(event.touches[0].clientY, performance.now());
     event.preventDefault(); event.stopPropagation();
   }, { capture: true, passive: false });
   screen.addEventListener('touchend', () => scroller.end(performance.now()), { capture: true, passive: true });
-  screen.addEventListener('touchcancel', () => scroller.stop(), { capture: true, passive: true });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) scroller.stop(); });
-  term.buffer.onBufferChange(() => { scroller.stop(); scrollRouter.reset(); follow(); });
+  screen.addEventListener('touchcancel', () => { scroller.stop(); unslide(); }, { capture: true, passive: true });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { scroller.stop(); unslide(); } });
+  term.buffer.onBufferChange(() => { scroller.stop(); unslide(); slide.forget(); scrollRouter.reset(); follow(); });
+  term.onResize(() => { unslide(); slide.forget(); });
 
   // Buttons act on the terminal without taking the keyboard away from the message box.
   function keepFocus(element) { element.addEventListener('mousedown', event => event.preventDefault()); }
@@ -270,7 +323,7 @@
       if ($('files').hidden) $('files').hidden = false;        // the folder this terminal works in is known now
       if (!initialized || payload.reset) {
         restoring = true; running = false;
-        scroller.stop();
+        scroller.stop(); unslide(); slide.forget();
         scrollRouter.reset(); scrollRouter.sgr = false;
         term.reset(); term.resize(t.cols || 80, t.rows || 24);
         start = payload.chunks.length ? payload.chunks[0].seq - 1 : payload.after;

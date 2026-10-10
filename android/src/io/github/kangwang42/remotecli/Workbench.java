@@ -146,7 +146,7 @@ final class Workbench {
             if (!problem.isEmpty()) page.addView(kit.button("重新扫码连接电脑", 0, activity::scan), kit.below(16));
             draw();
         }
-        page.addView(kit.text("地址和密码相当于电脑的钥匙，不要发给别人。", 12.5f, kit.MUTED), kit.below(22));
+        page.addView(kit.text("凭地址和密码即可操作这台电脑上的终端，请妥善保管。", 12.5f, kit.MUTED), kit.below(22));
         TextView version = kit.text("版本 " + activity.versionName() + " · 检查更新", 13, kit.ACCENT);
         version.setMinHeight(kit.dp(44)); version.setGravity(Gravity.CENTER_VERTICAL);
         kit.press(version, activity::checkUpdate);
@@ -228,7 +228,7 @@ final class Workbench {
             if (!pending.add(url)) continue;
             final String cookie = CookieManager.getInstance().getCookie(url);
             activity.net.execute(() -> {
-                String state = "off", line = "连不上，可能没开机或地址变了";
+                String state = "off", line = "无法连接：电脑未开机，或地址已变更";
                 JSONObject data = null;
                 HttpURLConnection connection = null;
                 // An answer that was read to its end leaves the connection open for the next question: over a tunnel
@@ -579,7 +579,7 @@ final class Workbench {
             card.addView(rule());
             LinearLayout help = kit.row();
             help.setPadding(kit.dp(16), kit.dp(10), kit.dp(12), kit.dp(12));
-            help.addView(kit.text("key".equals(snapshot.state) ? "登录已过期。" : "确认电脑开着、Remote CLI 在运行；退出电脑端或重启电脑后，公网隧道的地址会变。", 12.5f, kit.MUTED), new LinearLayout.LayoutParams(0, -2, 1));
+            help.addView(kit.text("key".equals(snapshot.state) ? "登录已过期。" : "请确认电脑已开机且 Remote CLI 正在运行。退出电脑端或重启电脑后，公网隧道的地址会变更。", 12.5f, kit.MUTED), new LinearLayout.LayoutParams(0, -2, 1));
             TextView again = kit.bold("重新扫码", 13.5f, kit.ACCENT);
             again.setGravity(Gravity.CENTER); again.setMinHeight(kit.dp(40)); again.setPadding(kit.dp(14), 0, kit.dp(14), 0);
             again.setBackground(kit.shape(Kit.tint(kit.ACCENT, 34), 0, 12));

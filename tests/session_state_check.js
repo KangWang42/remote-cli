@@ -13,7 +13,7 @@ assert.match(app, /sessions\.filter\(s => sessionActivity\(s\) === 'active'\)/,
   'only explicitly active sessions may enter the activity list');
 assert.match(app, /sessions\.filter\(s => sessionActivity\(s\) === 'locked'\)/,
   'retained writer locks must remain available as locked history');
-assert.match(app, /手机不能替你关掉它。请先在那个应用里结束这段对话/,
+assert.match(app, /手机无法关闭它。请先在该应用中结束这段对话/,
   'a conversation held by an app needs to say what to do on the computer');
 assert.match(app, /api\('api\/conversation'/, 'a conversation open on the computer is looked at before anything is done to it');
 assert.doesNotMatch(app, /写入锁|app-server|归属待确认/, 'the page speaks of what happens on the computer, not of locks');
