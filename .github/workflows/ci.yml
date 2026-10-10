@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["relay/**", "agent-linux/**", "agent-rust/**", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["relay/**", "agent-linux/**", "agent-rust/**", ".github/workflows/ci.yml"]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    name: tests (Python ${{ matrix.python-version }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: relay unit tests
+        run: python -m unittest discover -s relay -p "test_*.py"
+      - name: build the Rust agent
+        run: cargo build --release --manifest-path agent-rust/Cargo.toml
+      - name: rust lint (fmt + clippy)
+        run: |
+          cargo fmt --check --manifest-path agent-rust/Cargo.toml
+          cargo clippy --manifest-path agent-rust/Cargo.toml --release -- -D warnings
+      - name: python lint (runtime errors only)
+        run: |
+          pip install ruff
+          ruff check --select E9,F63,F7,F82 relay agent-linux
+      - name: agent-linux tests (unit + e2e against the real relay, Python and Rust binaries)
+        run: python -m unittest discover -s agent-linux -p "test_*.py"
