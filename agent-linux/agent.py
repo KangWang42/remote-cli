@@ -951,10 +951,14 @@ class Agent:
             self.server, self.token = server, ""
             self.http.close()
             self.pull_http.close()
-        if not self.server:
-            return
-        if not self.token:
-            if time.time() < self.next_login or not self.login():
+        if not self.server or not self.token:
+            # Even with nothing going out, pending must be sealed: it is the only buffer
+            # without a bound, and the floor on output carries the agent through a long
+            # relay outage.
+            with self.work:
+                for live in self.terminals.values():
+                    seal(live)
+            if not self.server or (time.time() < self.next_login or not self.login()):
                 return
         if not self.paired:
             self.paired = True
