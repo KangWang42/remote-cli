@@ -161,7 +161,10 @@ public final class MainActivity extends Activity {
         return true;
     }
 
-    /** "192.168.1.5:8722" and "https://x.example.com/" both become an origin; anything else is refused. */
+    /**
+     * "192.168.1.5:8722" and "https://x.example.com/" both become an origin; anything else is refused. A computer at
+     * a relay for everyone has an address of its own there, "https://relay.example.com/c/<id>", and keeps that path.
+     */
     static String clean(String typed) {
         String text = typed == null ? "" : typed.trim();
         if (text.isEmpty()) return "";
@@ -169,7 +172,8 @@ public final class MainActivity extends Activity {
         Uri uri = Uri.parse(text);
         String scheme = uri.getScheme(), host = uri.getHost();
         if (host == null || host.isEmpty() || !("http".equals(scheme) || "https".equals(scheme))) return "";
-        return scheme + "://" + host + (uri.getPort() > 0 ? ":" + uri.getPort() : "");
+        String path = uri.getPath(), space = path != null && path.matches("/c/[a-f0-9]{20}/?") ? path.substring(0, 23) : "";
+        return scheme + "://" + host + (uri.getPort() > 0 ? ":" + uri.getPort() : "") + space;
     }
 
     private void show(View content, String name) {

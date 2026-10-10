@@ -839,7 +839,8 @@ public sealed class TerminalAgent {
         nextLogin = DateTime.UtcNow.AddSeconds(60);
         if (client != null) client.Dispose();
         client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, CookieContainer = new CookieContainer() }) { Timeout = TimeSpan.FromSeconds(20) };
-        if (!Regex.IsMatch(Origin, @"\Ahttps?://[^/\s]+\z")) return false;
+        // The address of a relay, or of this computer's place at a relay for everyone (https://relay/c/<id>).
+        if (!Regex.IsMatch(Origin, @"\Ahttps?://[^/\s]+(/c/[a-f0-9]{20})?\z")) return false;
         var endpoint = ServicePointManager.FindServicePoint(new Uri(Origin));
         endpoint.UseNagleAlgorithm = false;
         endpoint.Expect100Continue = false;  // small JSON reports can send their body with the headers

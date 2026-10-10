@@ -62,7 +62,7 @@
     clearTimeout(timer);
     if (!document.hidden) {
       try {
-        const reply = await fetch('/api/terminal', { credentials: 'same-origin' });
+        const reply = await fetch('../api/terminal', { credentials: 'same-origin' });
         if (reply.ok) {
           data = await reply.json();
           // What is on screen now counts as seen: this terminal is no longer "done" in the lists.

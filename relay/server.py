@@ -11,10 +11,12 @@ import argparse
 import gzip
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import sys
 import threading
@@ -26,10 +28,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded P
 import relay  # noqa: E402
 import websocket  # noqa: E402
 
-VERSION = "1.0.9"
+VERSION = "1.1.0"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024
+# A relay for everyone ("--public") keeps a space for each computer under /c/<id>/.
+SPACE = re.compile(r"^/c/([a-f0-9]{20})(/.*)?$")
+SPACES, SPACE_DAYS, SPACES_A_DAY = 100, 30, 6      # computers at most; days a space is kept unused; new spaces a day from one address
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
          ".woff2": "font/woff2", ".bcmap": "application/octet-stream", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
          ".ico": "image/x-icon", ".webmanifest": "application/manifest+json"}
@@ -202,6 +207,102 @@ class Tickets:
         return end >= time.time()
 
 
+class Space:
+    """What one computer and its phones share: a password, the sign-ins, and the terminals with the relay's state."""
+
+    def __init__(self, folder, engine, password="", digest="", prefix=""):
+        os.makedirs(folder, exist_ok=True)
+        self.folder, self.relay, self.prefix = folder, engine, prefix
+        self.password, self.digest = password, digest
+        self.sessions = Sessions(os.path.join(folder, "sessions.json"))
+        self.attempts, self.tickets = Attempts(), Tickets()
+        self.store = os.path.join(folder, "terminals.json")
+
+    def accepts(self, given):
+        if not isinstance(given, str):
+            return False
+        if self.digest:         # a space keeps a hash only: its password is known to the computer that asked for it
+            return hmac.compare_digest(hashlib.sha256(given.encode("utf-8")).hexdigest(), self.digest)
+        return hmac.compare_digest(given.encode("utf-8"), self.password.encode("utf-8"))
+
+
+class Refused(Exception):
+    """A space that is not made: the status to answer with, and the reason for the person."""
+
+    def __init__(self, status, reason):
+        super().__init__(reason)
+        self.status = status
+
+
+class Spaces:
+    """A relay for everyone: every computer has a space of its own under /c/<id>/, made when its program asks, with
+    a password that only it and its phones know. A space has its own sign-ins and its own copy of the relay's state,
+    so nothing of one can be read or reached from another, and the relay has no list of them to show. A space
+    nobody has used for a month is removed."""
+
+    def __init__(self, data, key="", most=SPACES, days=SPACE_DAYS):
+        self.folder, self.key, self.most, self.days = os.path.join(data, "spaces"), key, most, days
+        os.makedirs(self.folder, exist_ok=True)
+        self.lock, self.open, self.made, self.swept = threading.Lock(), {}, {}, 0
+
+    def get(self, key):
+        with self.lock:
+            space = self.open.get(key)
+            if space is None:
+                folder = os.path.join(self.folder, key)
+                try:
+                    with open(os.path.join(folder, "space.json"), encoding="utf-8") as stream:
+                        digest = json.load(stream)["password"]
+                    if not isinstance(digest, str) or len(digest) != 64:
+                        return None
+                except (OSError, ValueError, KeyError, TypeError):
+                    return None
+                # The relay keeps what it knows of a computer in its module. Each space is given the module anew,
+                # which is what keeps the computers apart and lets one busy space not hold up another.
+                spec = importlib.util.spec_from_file_location("relay_space_" + key, relay.__file__)
+                engine = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(engine)
+                space = self.open[key] = Space(folder, engine, digest=digest, prefix="/c/" + key)
+            return space
+
+    def _used(self, key):
+        folder = os.path.join(self.folder, key)
+        try:        # signing in, a day of use and every change of a terminal write a file here
+            return max(os.stat(os.path.join(folder, name)).st_mtime for name in ("space.json", "sessions.json", "terminals.json") if os.path.exists(os.path.join(folder, name)))
+        except (OSError, ValueError):
+            return 0
+
+    def sweep(self, now=None):
+        """Removes the spaces nobody has used for `days`. Called with the lock held, at most once an hour."""
+        now = time.time() if now is None else now
+        self.swept = now
+        for key in os.listdir(self.folder):
+            if SPACE.match("/c/" + key) and now - self._used(key) > self.days * 86400:
+                self.open.pop(key, None)
+                shutil.rmtree(os.path.join(self.folder, key), ignore_errors=True)
+
+    def create(self, address, key=""):
+        """A new space: its id and its password, which is told once and kept here as a hash."""
+        with self.lock:
+            now = time.time()
+            if self.key and not (isinstance(key, str) and hmac.compare_digest(key.encode("utf-8"), self.key.encode("utf-8"))):
+                raise Refused(403, "这个公共中转需要口令，电脑端提供的口令不对")
+            if now - self.swept > 3600:
+                self.sweep(now)
+            recent = self.made[address] = [t for t in self.made.get(address, []) if now - t < 86400]
+            if len(recent) >= SPACES_A_DAY:
+                raise Refused(429, "这个地址今天申请得太多了，请明天再试")
+            if sum(1 for name in os.listdir(self.folder) if SPACE.match("/c/" + name)) >= self.most:
+                raise Refused(503, "这个公共中转的名额已满，请换一个中转或稍后再试")
+            recent.append(now)
+            name, password = secrets.token_hex(10), "-".join(secrets.token_hex(3) for _ in range(4))
+            folder = os.path.join(self.folder, name)
+            os.makedirs(folder)
+            with os.fdopen(os.open(os.path.join(folder, "space.json"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as stream:
+                json.dump({"password": hashlib.sha256(password.encode("utf-8")).hexdigest(), "created": int(now)}, stream)
+            return name, password
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "remote-cli/" + VERSION
@@ -243,7 +344,42 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     def _authed(self):
-        return self.server.sessions.valid(self._token())
+        return self.space.sessions.valid(self._token())
+
+    def _enter(self, path, payload=None):
+        """Finds the space a request is for. Returns the path inside it, or None when the request is answered
+        already: a relay for everyone has nothing at its top but its version and the making of a space."""
+        spaces = self.server.spaces
+        if spaces is None:
+            self.space = self.server.space
+            return path
+        found = SPACE.match(path)
+        if found:
+            self.space = spaces.get(found.group(1))
+            if self.space is None:
+                self._json(404, {"error": "space"})
+            elif found.group(2) is None:        # the pages name their files relative to the folder
+                self.send_response(308)
+                self.send_header("Location", path + "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                return found.group(2)
+        elif path == "/api/session" and payload is None:
+            self._json(200, {"signed_in": False, "version": VERSION, "public": True, "key": bool(spaces.key)})
+        elif path == "/api/space" and payload is not None:
+            try:
+                name, password = spaces.create(self._address(), payload.get("key", ""))
+                self._json(200, {"space": "/c/" + name, "password": password})
+            except Refused as refused:
+                self._json(refused.status, {"error": str(refused)})
+            except OSError:
+                self._json(500, {"error": "中转没能保存新的空间"})
+        elif path in ("", "/") and payload is None:
+            self._send(200, "Remote CLI relay\n", "text/plain; charset=utf-8")
+        else:
+            self._json(404, {"error": "not found"})
+        return None
 
     def _send(self, code, body, kind="application/json; charset=utf-8", extra=None):
         data = body if isinstance(body, bytes) else body.encode("utf-8")
@@ -267,7 +403,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, data, extra=extra)
 
     def _error(self, exc, fallback):
-        self._json(400, {"error": str(exc) if isinstance(exc, relay.RemoteError) else fallback})
+        self._json(400, {"error": str(exc) if isinstance(exc, self.space.relay.RemoteError) else fallback})
 
     def _static(self, path, mark=""):
         root = self.server.web
@@ -303,6 +439,10 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         path, query = url.path, parse_qs(url.query)
         first = lambda key, default="": (query.get(key) or [default])[0]
+        path = self._enter(path)
+        if path is None:
+            return
+        relay = self.space.relay
         if not path.startswith("/api/"):
             return self._static(path, first("v"))
         if path == "/api/session":
@@ -311,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"error": "auth"})
         if path == "/api/terminal/ws":
             return self._websocket(first("terminal"), first("after", "0"))
-        store = self.server.store
+        store = self.space.store
         try:
             if path == "/api/terminal":
                 wait = max(0.0, min(25.0, float(first("wait", "0"))))
@@ -350,7 +490,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
             key = websocket.accept_key(self.headers)
             after = int(after)
-            lines = relay.stream(self.server.store, terminal, after, seconds=3600)
+            relay, store = self.space.relay, self.space.store
+            lines = relay.stream(store, terminal, after, seconds=3600)
             first = next(lines)
         except (ValueError, StopIteration):
             return self._json(400, {"error": "WebSocket 参数无效"})
@@ -401,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(payload, dict) or payload.get("terminal") != terminal or payload.get("action") not in ("input", "resize", "close", "rename"):
                     raise relay.RemoteError("终端操作无效")
                 try:
-                    result = relay.command(self.server.store, payload)
+                    result = relay.command(store, payload)
                     channel.send(dict(result, t="ack", status=200))
                 except relay.RemoteError as error:
                     channel.send({"t": "ack", "id": payload.get("id"), "status": 400, "state": "error", "error": str(error)})
@@ -438,36 +579,41 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except (ValueError, UnicodeDecodeError):
             return self._json(400, {"error": "请求格式无效"})
+        path = self._enter(path, payload)
+        if path is None:
+            return
+        space, relay = self.space, self.space.relay
         if path == "/api/login":
-            address, attempts = self._address(), self.server.attempts
+            address, attempts = self._address(), space.attempts
             if attempts.blocked(address):
                 return self._json(429, {"error": "密码错误次数过多，请 15 分钟后再试"})
             given = payload.get("password")
             if "ticket" in payload:
-                accepted = self.server.tickets.take(payload.get("ticket"))
+                accepted = space.tickets.take(payload.get("ticket"))
             else:
-                accepted = isinstance(given, str) and hmac.compare_digest(given.encode("utf-8"), self.server.password.encode("utf-8"))
+                accepted = space.accepts(given)
             if not accepted:
                 attempts.fail(address)
                 time.sleep(0.4)
                 return self._json(401, {"error": "密码不正确"})
             attempts.clear(address)
-            token = self.server.sessions.create()
-            cookie = "rcli=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict%s" % (token, SESSION_DAYS * 86400, "; Secure" if self._secure() else "")
+            token = space.sessions.create()
+            # In a space the cookie is for that space's pages only: a phone may know several computers at one relay.
+            cookie = "rcli=%s; Path=%s; Max-Age=%d; HttpOnly; SameSite=Strict%s" % (token, space.prefix or "/", SESSION_DAYS * 86400, "; Secure" if self._secure() else "")
             return self._json(200, {"ok": True, "token": token}, {"Set-Cookie": cookie})
         if path == "/api/logout":
-            self.server.sessions.remove(self._token())
-            return self._json(200, {"ok": True}, {"Set-Cookie": "rcli=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"})
+            space.sessions.remove(self._token())
+            return self._json(200, {"ok": True}, {"Set-Cookie": "rcli=; Path=%s; Max-Age=0; HttpOnly; SameSite=Strict" % (space.prefix or "/")})
         if not self._authed():
             return self._json(401, {"error": "auth"})
         if path == "/api/ticket":
-            return self._json(200, {"ticket": self.server.tickets.make()})
+            return self._json(200, {"ticket": space.tickets.make()})
         call = {"/api/terminal": relay.command, "/api/terminal/agent": relay.agent, "/api/terminal/agent/pull": relay.pull, "/api/files": relay.files,
                 "/api/conversation": relay.conversation}.get(path)
         if call is None:
             return self._json(404, {"error": "not found"})
         try:
-            return self._json(200, call(self.server.store, payload))
+            return self._json(200, call(space.store, payload))
         except (ValueError, TypeError) as exc:
             return self._error(exc, "请求格式无效")
         except OSError:
@@ -479,18 +625,22 @@ class Server(ThreadingHTTPServer):
     request_queue_size = 64
 
 
-def make_server(host, port, data, web, password=None):
+def make_server(host, port, data, web, password=None, public=False, key="", most=SPACES):
+    """One computer's relay with one password, or with `public` a relay for everyone, which has no password of its
+    own: every computer is given a space (see Spaces). `key`, when set, must be given to have a space made."""
     os.makedirs(data, exist_ok=True)
     server = Server((host, port), Handler)
+    server.web = os.path.abspath(web)
+    server.spaces, server.space, server.password, server.password_made = None, None, "", False
+    if public:
+        server.spaces = Spaces(data, key, most)
+        return server
     made = False
     if password is None:
         password, made = read_password(data)
     server.password, server.password_made = password, made
-    server.sessions = Sessions(os.path.join(data, "sessions.json"))
-    server.attempts = Attempts()
-    server.tickets = Tickets()
-    server.store = os.path.join(data, "terminals.json")
-    server.web = os.path.abspath(web)
+    space = server.space = Space(data, relay, password=password)
+    server.sessions, server.attempts, server.tickets, server.store = space.sessions, space.attempts, space.tickets, space.store
     return server
 
 
@@ -501,11 +651,14 @@ def main():
     parser.add_argument("--port", type=int, default=8722)
     parser.add_argument("--data", default=os.path.join(here, "data"), help="folder for the password, sign-ins and terminal state")
     parser.add_argument("--web", default=os.path.join(os.path.dirname(here), "web"), help="folder of the web client")
+    parser.add_argument("--public", action="store_true", default=os.environ.get("RCLI_PUBLIC", "") == "1",
+                        help="a relay for everyone: no password of its own, every computer is given a space (also RCLI_PUBLIC=1)")
+    parser.add_argument("--spaces", type=int, default=int(os.environ.get("RCLI_SPACES", "") or SPACES), help="with --public: how many computers at most")
     args = parser.parse_args()
-    server = make_server(args.host, args.port, args.data, args.web)
-    if len(server.password) < 12:
+    server = make_server(args.host, args.port, args.data, args.web, public=args.public, key=os.environ.get("RCLI_JOIN_KEY", "").strip(), most=args.spaces)
+    if not args.public and len(server.password) < 12:
         print("warning: the password is shorter than 12 characters", file=sys.stderr)
-    print("remote-cli relay %s on http://%s:%d" % (VERSION, args.host, args.port), flush=True)
+    print("remote-cli relay %s on http://%s:%d%s" % (VERSION, args.host, args.port, " for everyone, at most %d computers" % args.spaces if args.public else ""), flush=True)
     if server.password_made:
         print("password (also saved in %s): %s" % (os.path.join(args.data, "password.txt"), server.password), flush=True)
     try:

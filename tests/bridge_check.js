@@ -22,8 +22,8 @@ function page(host = 'test.trycloudflare.com') {
   }
   const document = { hidden: false, addEventListener: (name, handler) => { listeners[name] = handler; } };
   const context = {
-    URLSearchParams, TextDecoder, Uint8Array, AbortController, WebSocket: Socket, document,
-    location: { hostname: host, host, protocol: 'https:', search: '?id=' + terminalId, replace() {} },
+    URL, URLSearchParams, TextDecoder, Uint8Array, AbortController, WebSocket: Socket, document,
+    location: { hostname: host, host, protocol: 'https:', search: '?id=' + terminalId, href: 'https://' + host + '/terminal/?id=' + terminalId, replace() {} },
     localStorage: { getItem() { return null; } },
     crypto: { getRandomValues(bytes) { bytes.fill(++counter); return bytes; } },
     Date: { now: () => now },
@@ -60,7 +60,7 @@ async function check() {
   assert.equal(live.connections.at(-1).state, 'connected');
   assert.equal(live.connections.at(-1).reconnects, 0);
   assert.equal(live.connections.at(-1).lastLatency, null, 'the socket handshake must not be presented as recent network latency');
-  const measurement = live.requests.find(item => item.url === '/api/session');
+  const measurement = live.requests.find(item => item.url === '../api/session');
   live.advance(37); measurement.resolve({ status: 200, ok: true, json: async () => ({ signed_in: true }) }); await settle();
   assert.equal(live.connections.at(-1).lastLatency, 37, 'latency must come from an immediate response, with a concrete round-trip time');
   live.context.ProjectTerminal.input('a');
@@ -101,7 +101,7 @@ async function check() {
   assert.equal(old.connections.at(-1).state, 'connected');
   assert.equal(old.connections.at(-1).lastLatency, null, 'twenty seconds of long-poll waiting must not count as latency');
   old.advance(64);
-  old.requests.find(item => item.url === '/api/session').resolve({ status: 200, ok: true, json: async () => ({ signed_in: true }) }); await settle();
+  old.requests.find(item => item.url === '../api/session').resolve({ status: 200, ok: true, json: async () => ({ signed_in: true }) }); await settle();
   assert.equal(old.connections.at(-1).lastLatency, 64);
   old.context.ProjectTerminal.input('first');
   let request = old.requests.find(item => item.options.method === 'POST');
@@ -126,7 +126,7 @@ async function check() {
   assert.ok(sseConnected, 'SSE must report a connected state after its first event');
   assert.equal(sseConnected.lastLatency, null);
   sse.advance(24);
-  sse.requests.find(item => item.url === '/api/session').resolve({ status: 200, ok: true, json: async () => ({ signed_in: true }) }); await settle();
+  sse.requests.find(item => item.url === '../api/session').resolve({ status: 200, ok: true, json: async () => ({ signed_in: true }) }); await settle();
   assert.equal(sse.connections.at(-1).lastLatency, 24);
   sse.advance(55000); finishSse({ done: true }); await settle();
   assert.equal(sse.connections.at(-1).state, 'connected', 'normal SSE renewal must keep the logical connection alive');

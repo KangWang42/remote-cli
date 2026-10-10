@@ -72,7 +72,7 @@
     latencyReader = control;
     const timer = setTimeout(() => control.abort(), 5000);
     try {
-      const reply = await fetch('/api/session', { credentials: 'same-origin', cache: 'no-store', signal: control.signal });
+      const reply = await fetch('../api/session', { credentials: 'same-origin', cache: 'no-store', signal: control.signal });
       const result = await reply.json();
       if (mine !== latencyRun) return;
       if (reply.ok && result.signed_in) { link.lastLatency = Math.max(0, Date.now() - startedAt); reportLink(); }
@@ -90,7 +90,7 @@
   async function post(payload) {
     const control = new AbortController(), timer = setTimeout(() => control.abort(), 20000);
     try {
-      const reply = await fetch('/api/terminal', { method: 'POST', credentials: 'same-origin', signal: control.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const reply = await fetch('../api/terminal', { method: 'POST', credentials: 'same-origin', signal: control.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       let body = {};
       try { body = await reply.json(); } catch (error) { /* not JSON */ }
       if (reply.status === 401) { home(); throw new Error('请重新输入访问密码'); }
@@ -113,7 +113,7 @@
     startLink('websocket');
     const startedAt = Date.now();
     let channel;
-    try { channel = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/terminal/ws?terminal=' + id + '&after=' + after); }
+    try { channel = new WebSocket(new URL('../api/terminal/ws?terminal=' + id + '&after=' + after, location.href).href.replace(/^http/, 'ws')); }
     catch (error) { socketMode = false; return read(); }
     socket = channel;
     let got = false;
@@ -161,7 +161,7 @@
     let buffered = false;
     const firstLineTimer = setTimeout(() => { if (!got) { buffered = true; control.abort(); } }, 4000);
     try {
-      const reply = await fetch('/api/terminal/stream?terminal=' + id + '&after=' + after, { credentials: 'same-origin', signal: control.signal, headers: { Accept: 'text/event-stream' } });
+      const reply = await fetch('../api/terminal/stream?terminal=' + id + '&after=' + after, { credentials: 'same-origin', signal: control.signal, headers: { Accept: 'text/event-stream' } });
       status = reply.status;
       if (status === 200 && reply.body) {
         const body = reply.body.getReader(), text = new TextDecoder();
@@ -197,7 +197,7 @@
     reader = control;
     const timer = setTimeout(() => control.abort(), 30000);
     try {
-      const reply = await fetch('/api/terminal?terminal=' + id + '&after=' + after + '&wait=20', { credentials: 'same-origin', signal: control.signal });
+      const reply = await fetch('../api/terminal?terminal=' + id + '&after=' + after + '&wait=20', { credentials: 'same-origin', signal: control.signal });
       if (mine !== run) return;
       if (reply.status === 401) return home();
       const item = await reply.json();

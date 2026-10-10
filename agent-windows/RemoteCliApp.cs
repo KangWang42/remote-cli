@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "1.0.9";
+    const string Version = "1.1.0";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -48,9 +48,16 @@ public sealed class App : Form {
     readonly List<Panel> pages = new List<Panel>();
     readonly List<NavItem> nav = new List<NavItem>();
     readonly System.Windows.Forms.Timer toastTimer = new System.Windows.Forms.Timer(), activityTimer = new System.Windows.Forms.Timer();
-    RoundButton updateButton, tunnelButton, ownConnect, changePassword;
-    bool ownForm, ownTrouble;       // the tab of one's own relay is open without being in use; what it last said is a problem
-    string ownNote = "", said = "";         // said: the line of status shown last
+    RoundButton updateButton, tunnelButton, relayGo, changePassword;
+    Label codeAbout;
+    readonly Picker relayPick = new Picker(), skinPick = new Picker();
+    Relays relays;
+    Relay shown;                    // the relay the field in the relay tab shows while one is being chosen
+    readonly Dictionary<string, int> answers = new Dictionary<string, int>();      // how long each relay took to answer, when it was asked last
+    DateTime asked = DateTime.MinValue, listRead = DateTime.MinValue;
+    bool relayTab, relayTrouble, relayBusy;     // the relay tab is open while another way is in use; what it last said is a problem; a relay is being checked
+    string relayNote = "", said = "";       // said: the line of status shown last
+    Dictionary<Control, int[]> parts;       // which colour of the skin each control has
     // A window that a test presses stays off the screen and takes no keys: someone at the computer must not mistake it for the program.
     static bool offstage;
     protected override bool ShowWithoutActivation { get { return offstage; } }
@@ -75,9 +82,9 @@ public sealed class App : Form {
         try { config = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(ConfigFile, Encoding.UTF8)); } catch { config = null; }
         if (config == null) config = new Dictionary<string, object>();
         foreach (var item in new Dictionary<string, object> { { "Mode", "lan" }, { "Port", 8722 }, { "Server", "" }, { "OwnServer", "" }, { "RemoteEnabled", true },
-                 { "RemoteMaxMode", "full" }, { "TunnelProtocol", "auto" }, { "AutoUpdate", false }, { "RemoteDirs", new object[0] }, { "UpdateCheckUtc", "" } })
+                 { "RemoteMaxMode", "full" }, { "TunnelProtocol", "auto" }, { "AutoUpdate", false }, { "RemoteDirs", new object[0] }, { "UpdateCheckUtc", "" }, { "Relay", "" }, { "Skin", Theme.Default } })
             if (!config.ContainsKey(item.Key) || config[item.Key] == null) config[item.Key] = item.Value;
-        if (Array.IndexOf(new[] { "lan", "cloud", "own" }, Mode) < 0) config["Mode"] = "lan";
+        if (Array.IndexOf(new[] { "lan", "cloud", "own", "public" }, Mode) < 0) config["Mode"] = "lan";
         try { password = Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(PasswordFile), null, DataProtectionScope.CurrentUser)); } catch { password = ""; }
         if (password.Length == 0) SetPassword(NewPassword());
     }
@@ -198,17 +205,33 @@ public sealed class App : Form {
         StopChildren();
         string mode = Mode;
         try {
-            if (mode == "own") {
-                string server = Convert.ToString(config["OwnServer"]).Trim().TrimEnd('/');
-                if (!Regex.IsMatch(server, @"\Ahttps?://[^/\s]+\z")) { Say("请填写中转地址，例如 https://cli.example.com", true); return; }
+            if (mode == "own" || mode == "public") {
+                Relay chosen = Remembered();
+                string server, wrong = "";
+                if (mode == "public") {
+                    // A chosen for everyone gave this computer a place of its own; one it removed meanwhile is asked for again.
+                    if (chosen == null) { Say("这个公共中转已经不在列表里了，请在“中转”里换一个", true); return; }
+                    Say("正在连接公共中转…");
+                    string secret;
+                    wrong = relays.Space(chosen, out server, out secret);
+                    if (mine != generation) return;
+                    if (wrong.Length > 0) { Say(wrong, true); return; }
+                    if (secret != password) SetPassword(secret);
+                } else {
+                    server = Relays.Clean(Convert.ToString(config["OwnServer"]), true);
+                    if (server.Length == 0) { Say("还没有选中转，请在“中转”里选一个，或添加自己的", true); return; }
+                }
                 Keep("Server", server);
                 if (agent != null) agent.Reset();
                 ShowAddress(server);
-                // Whether it works is found out here and said: the address, the certificate or the password.
-                Say("正在连接自有中转…");
-                string wrong = TerminalAgent.CheckRelay(server, password);
-                if (mine != generation) return;
-                Say(wrong.Length == 0 ? "已连上自有中转，地址固定不变。手机 App 扫码或输入地址连接" : wrong, wrong.Length > 0);
+                if (mode == "own") {
+                    // Whether it works is found out here and said: the address, the certificate or the password.
+                    Say("正在连接中转…");
+                    wrong = TerminalAgent.CheckRelay(server, password);
+                    if (mine != generation) return;
+                }
+                string name = chosen != null ? chosen.Name : new Uri(server).Authority;
+                Say(wrong.Length > 0 ? wrong : mode == "public" ? "已连上公共中转“" + name + "”，地址固定不变。手机 App 扫码连接" : "已连上中转“" + name + "”，地址固定不变。手机 App 扫码或输入地址连接", wrong.Length > 0);
                 return;
             }
             string python = Path.Combine(appDir, "python", "python.exe");
@@ -262,11 +285,12 @@ public sealed class App : Form {
         finally { if (held != null && held != tunnel) Kill(held); }
     }
     void Reconnect() { Task.Run(() => Connect()); }
-    // "重新连接" does what the tab shown says. With the address and password of one's own relay in the two boxes and
-    // not in use yet (the tab was opened from another way of connecting, or they were changed), it connects there.
+    // "重新连接" does what the tab shown says: with the relay tab open while another way is in use, it connects to
+    // the relay the field shows, as "连接" beside the field does.
     void Again() {
-        bool typed = (ownForm && Mode != "own") || (Mode == "own" && (addressBox.Text != putAddress || passwordBox.Text != putPassword));
-        if (!typed) Reconnect(); else if (ownConnect.Enabled) ConnectOwn();
+        if (!relayTab || RelayMode) { Reconnect(); return; }
+        Relay relay = Showing();
+        if (relay != null) Use(relay); else relayPick.Open();
     }
 
     async void DownloadTunnel(object sender, EventArgs e) {
@@ -327,53 +351,156 @@ public sealed class App : Form {
         if (String.IsNullOrEmpty(text)) return;
         try { Clipboard.SetText(text); Toast("已复制" + what); } catch (ExternalException) { Toast("复制失败，请再试一次"); }
     }
-    // The relay of one's own is filled in before anything is changed: choosing its tab only opens the two boxes, and
-    // the way in use goes on until "连接" has found the relay there and its password right.
-    string OwnPasswordFile { get { return Path.Combine(dataDir, "own-password.dpapi"); } }
-    string OwnPassword() { try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(OwnPasswordFile), null, DataProtectionScope.CurrentUser)); } catch { return ""; } }
-    void OwnSays(string text, bool problem) { ownNote = text; ownTrouble = problem; ShowMode(); }
-    string putAddress = "", putPassword = "";       // what the program wrote into the two boxes last: anything else in them was typed
-    void Put(string where, string secret) { addressBox.Text = putAddress = where; passwordBox.Text = putPassword = secret; }
-    void ConnectOwn() {
-        string server = addressBox.Text.Trim().TrimEnd('/'), secret = passwordBox.Text.Trim();
-        if (!Regex.IsMatch(server, @"\Ahttps?://[^/\s]+\z")) { OwnSays("地址要写完整，以 https:// 开头，例如 https://cli.example.com 或 https://1.2.3.4:8443", true); addressBox.Focus(); return; }
-        if (secret.Length == 0) { OwnSays("请在“密码”里填中转的密码：服务器上运行 sudo bash install.sh password 可以看到", true); passwordBox.Focus(); return; }
-        ownConnect.Enabled = false;
-        OwnSays("正在检查中转…", false);
+    // ---------- relays
+    // One tab for every relay: those for everyone from the published list, and the owner's own, saved here. The field
+    // shows which one; a press lists them all with how fast each answers, and there one is added or taken away.
+    // Choosing a relay checks it before anything is changed: the way in use goes on until the relay is reached and
+    // takes the password.
+    bool RelayMode { get { return Mode == "own" || Mode == "public"; } }
+    void RelaySays(string text, bool problem) { relayNote = text; relayTrouble = problem; ShowMode(); }
+    void Put(string where, string secret) { addressBox.Text = where; passwordBox.Text = secret; }
+    List<Relay> Known() {
+        var all = relays.Published(); all.AddRange(relays.Own());
+        foreach (Relay relay in all) { int ms; if (answers.TryGetValue(relay.Id, out ms)) relay.Ms = ms; }
+        return all;
+    }
+    Relay Remembered() { string id = Convert.ToString(config["Relay"]); return id.Length == 0 ? null : Known().FirstOrDefault(r => r.Id == id); }
+    // The relay the field shows: the one in use, or while one is being chosen the one chosen last, else the first there is.
+    Relay Showing() {
+        if (RelayMode && !relayTab) return Remembered() ?? new Relay { Public = Mode == "public", Name = Mode == "public" ? "已不在列表里" : Convert.ToString(config["OwnServer"]), Url = Mode == "public" ? "" : Convert.ToString(config["OwnServer"]), Password = password };
+        var all = Known();
+        if (shown != null) { Relay now = all.FirstOrDefault(r => r.Id == shown.Id); if (now != null) shown = now; }
+        return shown ?? Remembered() ?? all.FirstOrDefault();
+    }
+    static string Took(Relay relay) { return relay.Ms >= 0 ? relay.Ms + " ms" : relay.Ms == -1 ? "连不上" : ""; }
+    // Asks every relay how fast it answers, beside what the window is doing; the answers appear as they come.
+    void AskRelays() {
+        asked = DateTime.UtcNow;
+        foreach (Relay each in Known()) {
+            Relay relay = each;
+            Task.Run(() => { int ms = Relays.Ask(relay.Url); try { BeginInvoke(new Action(() => { answers[relay.Id] = ms; if (modePick.Chosen == 2) ShowMode(); })); } catch (InvalidOperationException) { } });
+        }
+    }
+    void ReadList() {
+        listRead = DateTime.UtcNow;
+        Task.Run(() => { relays.Refresh(); try { BeginInvoke(new Action(() => { ShowMode(); if (modePick.Chosen == 2) AskRelays(); })); } catch (InvalidOperationException) { } });
+    }
+    void ListRelays() {
+        if (DateTime.UtcNow - asked > TimeSpan.FromSeconds(60)) AskRelays();
+        var menu = Theme.Menu();
+        var all = Known();
+        string inUse = RelayMode ? Convert.ToString(config["Relay"]) : "";
+        foreach (bool everyone in new[] { true, false }) {
+            if (!all.Any(r => r.Public == everyone)) continue;
+            menu.Items.Add(new ToolStripMenuItem(everyone ? "公共中转 · 不用配置" : "我的中转") { Enabled = false });
+            foreach (Relay each in all.Where(r => r.Public == everyone)) {
+                Relay relay = each;
+                var item = new ToolStripMenuItem(relay.Name) { Checked = relay.Id == inUse, ShortcutKeyDisplayString = Took(relay), ShowShortcutKeys = true };
+                item.Click += (s, e) => Use(relay);
+                menu.Items.Add(item);
+            }
+        }
+        if (menu.Items.Count > 0) menu.Items.Add(new ToolStripSeparator());
+        var add = new ToolStripMenuItem("添加自己的中转…");
+        add.Click += (s, e) => {
+            var typed = Dialog("添加自己的中转", "填服务器上中转的地址和密码。先检查，能连上才保存并切换过去。", "添加并连接", false,
+                new[] { "地址，例如 https://cli.example.com 或 https://1.2.3.4:8443", "密码（服务器上 sudo bash install.sh password 显示的）", "名称（可不填）" }, draft);
+            if (typed != null) { draft = typed; AddRelay(typed[0], typed[1], typed[2]); }
+        };
+        menu.Items.Add(add);
+        if (all.Any(r => !r.Public)) {
+            var remove = new ToolStripMenuItem("移除我的中转");
+            var inner = (ToolStripDropDownMenu)remove.DropDown;
+            inner.Renderer = menu.Renderer; inner.ShowImageMargin = false; inner.BackColor = Theme.Panel; inner.ForeColor = Theme.Ink; inner.Font = menu.Font;
+            foreach (Relay each in all.Where(r => !r.Public)) {
+                Relay relay = each;
+                remove.DropDownItems.Add(relay.Name, null, (s, e) => RemoveRelay(relay));
+            }
+            menu.Items.Add(remove);
+        }
+        menu.MinimumSize = new Size(relayPick.Width, 0);
+        menu.Closed += (s, e) => BeginInvoke(new Action(menu.Dispose));
+        menu.Show(relayPick, new Point(0, relayPick.Height + 2));
+    }
+    string[] draft;         // what was typed for a relay that could not be added yet, to go on from
+    void AddRelay(string address, string secret, string name) {
+        string url = Relays.Clean(address, true);
+        secret = (secret ?? "").Trim(); name = TerminalAgent.Tidy(name);
+        relayTab = !RelayMode;
+        if (url.Length == 0) { RelaySays("地址要写完整，以 https:// 开头，例如 https://cli.example.com 或 https://1.2.3.4:8443", true); return; }
+        if (secret.Length == 0) { RelaySays("要填中转的密码：服务器上运行 sudo bash install.sh password 可以看到", true); return; }
+        Use(new Relay { Url = url, Name = name.Length > 0 && name.Length <= 20 ? name : new Uri(url).Authority, Password = secret });
+    }
+    void RemoveRelay(Relay relay) {
+        if (Mode == "own" && Convert.ToString(config["Relay"]) == relay.Id) { Toast("正在用这个中转，先换到别的连接方式再移除"); return; }
+        if (!Confirm("移除“" + relay.Name + "”？", "只是不再记着它的地址和密码，服务器上的中转不受影响。", "移除", true)) return;
+        relays.Remove(relay.Url);
+        if (shown != null && shown.Id == relay.Id) shown = null;
+        ShowMode();
+    }
+    void Use(Relay relay) {
+        if (relayBusy) return;
+        relayBusy = true; relayTab = !RelayMode; shown = relay;
+        RelaySays("正在检查“" + relay.Name + "”…", false);
         Task.Run(() => {
-            string wrong = TerminalAgent.CheckRelay(server, secret);
+            string server, secret, wrong;
+            if (relay.Public) wrong = relays.Space(relay, out server, out secret);
+            else { server = relay.Url; secret = relay.Password; wrong = TerminalAgent.CheckRelay(server, secret); }
             BeginInvoke(new Action(() => {
-                ownConnect.Enabled = true;
-                if (wrong.Length > 0) { OwnSays(wrong + (Mode == "own" ? "" : "。现在的连接方式没有变"), true); return; }
-                try { File.WriteAllBytes(OwnPasswordFile, ProtectedData.Protect(Encoding.UTF8.GetBytes(secret), null, DataProtectionScope.CurrentUser)); } catch { }
-                lock (saving) { config["OwnServer"] = server; Keep("Mode", "own"); }
-                ownForm = false; ownNote = "";
-                Put(server, secret);
+                relayBusy = false;
+                if (wrong.Length > 0) { RelaySays(wrong + (RelayMode ? "。还在用原来的中转" : "。现在的连接方式没有变"), true); if (RelayMode) shown = null; return; }
+                if (!relay.Public) { relays.Save(relay); draft = null; }
+                lock (saving) { if (!relay.Public) config["OwnServer"] = relay.Url; config["Relay"] = relay.Id; Keep("Mode", relay.Public ? "public" : "own"); }
+                relayTab = false; relayNote = ""; shown = null;
                 SetPassword(secret); ShowMode(); Reconnect();
             }));
         });
     }
+    // Before relays were kept as a list there was one, with its password in a file of its own: it becomes the first of the list.
+    void TakeOver() {
+        string server = Relays.Clean(Convert.ToString(config["OwnServer"]), true), secret = "";
+        try { secret = Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(Path.Combine(dataDir, "own-password.dpapi")), null, DataProtectionScope.CurrentUser)); } catch { }
+        if (secret.Length == 0 && Mode == "own") secret = password;
+        if (relays.HasOwn || server.Length == 0 || secret.Length == 0) return;
+        var relay = new Relay { Url = server, Name = new Uri(server).Authority, Password = secret };
+        relays.Save(relay);
+        if (Convert.ToString(config["Relay"]).Length == 0) Keep("Relay", relay.Id);
+    }
+    // What is shown instead of the address and the password of a relay for everyone: the phone is given them by the code alone.
+    bool Hidden { get { if (modePick.Chosen != 2) return false; Relay relay = Showing(); return relay != null && relay.Public; } }
     void ShowMode() {
-        bool own = ownForm || Mode == "own";
-        int mode = own ? 2 : Mode == "lan" ? 0 : 1;
-        modePick.Chosen = mode;
-        modeAbout.ForeColor = own && ownNote.Length > 0 ? (ownTrouble ? Theme.Bad : Theme.Busy) : Theme.Muted;
-        modeAbout.Text = mode == 0 ? "手机和电脑连同一个 Wi-Fi 时用，速度最快。第一次使用时 Windows 防火墙会询问，请选“允许”。"
-            : mode == 1 ? "不需要服务器和账号，手机在任何网络都能连。更新程序后地址不变；退出程序或重启电脑后地址会变，手机需要重新扫码。"
-            : ownNote.Length > 0 ? ownNote
-            : Mode == "own" ? "正在用自己服务器上的中转，地址固定。要换地址或密码，改下面两栏再点“连接”。"
-            : "在下面填自己服务器上中转的地址和密码，点“连接”。连上之前，现在的连接方式不变。";
-        tunnelButton.Visible = mode == 1; ownConnect.Visible = own; changePassword.Visible = !own;
-        // In that tab the two boxes are typed into; elsewhere they show what the phone is to use.
-        bool typed = !addressBox.ReadOnly;
-        addressBox.ReadOnly = passwordBox.ReadOnly = !own;
-        addressField.Invalidate(); passwordField.Invalidate();
-        if (!own) Put(address, password);
-        // Boxes nobody typed into follow what is in use: at a start with one's own relay the address is known only after this ran once.
-        else if (!typed || (addressBox.Text == putAddress && passwordBox.Text == putPassword))
-            Put(Mode == "own" ? address : Convert.ToString(config["OwnServer"]), Mode == "own" ? password : OwnPassword());
+        int tab = relayTab || RelayMode ? 2 : Mode == "lan" ? 0 : 1;
+        modePick.Chosen = tab;
+        Relay relay = tab == 2 ? Showing() : null;
+        modeAbout.ForeColor = tab == 2 && relayNote.Length > 0 ? (relayTrouble ? Theme.Bad : Theme.Busy) : Theme.Muted;
+        modeAbout.Text = tab == 0 ? "手机和电脑连同一个 Wi-Fi 时用，速度最快。第一次使用时 Windows 防火墙会询问，请选“允许”。"
+            : tab == 1 ? "不需要服务器和账号，手机在任何网络都能连。更新程序后地址不变；退出程序或重启电脑后地址会变，手机需要重新扫码。"
+            : relayNote.Length > 0 ? relayNote
+            : relay == null ? "还没有中转。点下面添加自己服务器上的中转，装法见文档“自己部署中转”。"
+            : RelayMode && !relayTab ? (relay.Public ? "正在用公共中转，地址固定。终端内容会经过这台中转服务器；介意时请用自己的中转。" : "正在用自己的中转，地址固定。点下面可以换一个，或再添加。")
+            : "选一个中转再点“连接”。公共中转不用配置，也可以添加自己的。连上之前，现在的连接方式不变。";
+        tunnelButton.Visible = tab == 1; relayPick.Visible = relayGo.Visible = tab == 2; changePassword.Visible = tab != 2;
+        relayPick.Set(relay == null ? "添加自己的中转…" : relay.Name + (relay.Public ? " · 公共" : ""), relay == null ? "" : Took(relay), relay != null && relay.Ms == -1 ? 2 : 0);
+        relayGo.Enabled = !relayBusy;
+        // The two boxes show what the phone is to use; of a relay for everyone they show neither.
+        if (tab != 2) Put(address, password);
+        else if (relay == null) Put("", "");
+        else if (relay.Public) Put("公共中转 · " + relay.Name, "不显示，手机扫码连接");
+        else Put(relay.Url, relay.Password);
+        codeAbout.Text = Mode == "public" ? "公共中转只能用扫码连接" : "或在 App 里输入右边的地址和密码";
         tunnelButton.Text = File.Exists(TunnelFile) ? "重新建立隧道" : "下载隧道程序（约 60 MB）";
         tunnelButton.Glyph = File.Exists(TunnelFile) ? Theme.IconRefresh : Theme.IconDownload;
+    }
+    // Another skin for the window that is open: every control is given the same part of the new palette.
+    void Wear(string name) {
+        Theme.Use(name);
+        if (parts != null) Theme.Paint(parts);
+        if (IsHandleCreated) Theme.Title(Handle);
+        skinPick.Set(Theme.Titles[Array.IndexOf(Theme.Names, Theme.Skin)]);
+        ShowProjects(); activityMark = "\n"; RefreshActivity();
+        Say(said.Length > 0 ? said : "正在启动…", trouble);
+        ShowMode();
+        Invalidate(true);
     }
     void ShowProjects() {
         folders.Show(Dirs().Select(line => {
@@ -487,9 +614,11 @@ public sealed class App : Form {
         });
     }
 
-    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Theme.DarkTitle(Handle); }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Theme.Title(Handle); }
     public App() {
         LoadSettings();
+        relays = new Relays(dataDir);
+        TakeOver();
         kept = Kept();
         KillLeftovers();
         Text = "Remote CLI"; Font = Theme.Text();
@@ -522,33 +651,36 @@ public sealed class App : Form {
         Place(tile, qr, 10, 10, 188, 188); qr.SizeMode = PictureBoxSizeMode.Zoom; qr.BackColor = Color.White;
         Place(tile, qrHint, 10, 84, 188, 40); qrHint.BackColor = Color.White; qrHint.ForeColor = Color.FromArgb(120, 124, 140); qrHint.TextAlign = ContentAlignment.MiddleCenter; qrHint.Text = "正在准备…";
         var caption = Note(code, "用手机 App 扫码", 12, 242, 228, 22, Theme.Ink, 10f, true); caption.TextAlign = ContentAlignment.MiddleCenter;
-        var sub = Note(code, "或在 App 里输入右边的地址和密码", 12, 266, 228, 18, Theme.Muted, 8.5f); sub.TextAlign = ContentAlignment.MiddleCenter;
+        codeAbout = Note(code, "或在 App 里输入右边的地址和密码", 12, 266, 228, 18, Theme.Muted, 8.5f); codeAbout.TextAlign = ContentAlignment.MiddleCenter;
         var keys = Note(code, Theme.IconLock + "  地址和密码不要发给别人", 12, 288, 228, 18, Theme.Faint, 8.25f); keys.TextAlign = ContentAlignment.MiddleCenter; keys.Font = new Font(Theme.Icons, 8.25f);
         keys.Paint += (s, e) => { };
 
         var way = Place(connect, new Card(), 296, 122, 384, 318);
         Note(way, "连接方式", 20, 16, 200, 18, Theme.Muted, 8.5f, true);
-        Place(way, modePick, 20, 40, 344, 36); modePick.Items = new[] { "局域网", "公网隧道", "自有中转" };
+        Place(way, modePick, 20, 40, 344, 36); modePick.Items = new[] { "局域网", "公网隧道", "中转" };
         Place(way, modeAbout, 20, 84, 344, 38); modeAbout.BackColor = Theme.Panel; modeAbout.ForeColor = Theme.Muted; modeAbout.Font = Theme.Text(8.5f);
         tunnelButton = Action(way, "", "", ButtonKind.Normal, 20, 126, 230, 32, DownloadTunnel);
-        ownConnect = Action(way, "连接", Theme.IconRefresh, ButtonKind.Primary, 20, 126, 230, 32, (s, e) => ConnectOwn());
+        Place(way, relayPick, 20, 126, 250, 32); relayPick.Opening += (s, e) => ListRelays();
+        relayGo = Action(way, "连接", Theme.IconRefresh, ButtonKind.Primary, 278, 126, 86, 32, (s, e) => Again());
         modePick.Changed += (s, e) => {
-            string wanted = modePick.Chosen == 0 ? "lan" : modePick.Chosen == 1 ? "cloud" : "own";
-            ownNote = "";
-            // The tab of one's own relay is a form to fill in: nothing is stopped or started by opening it.
-            if (wanted == "own") { ownForm = true; ShowMode(); if (Mode != "own") addressBox.Focus(); return; }
-            ownForm = false;
+            relayNote = "";
+            // The relay tab is a place to choose in: nothing is stopped or started by opening it.
+            if (modePick.Chosen == 2) { relayTab = !RelayMode; ShowMode(); AskRelays(); return; }
+            relayTab = false; shown = null;
+            string wanted = modePick.Chosen == 0 ? "lan" : "cloud";
             if (wanted == Mode) { ShowMode(); return; }       // back from only looking at that tab: what is running stays
+            // The password of a place at a relay for everyone is known to that relay: this computer's own relay gets another.
+            if (Mode == "public") SetPassword(NewPassword());
             Keep("Mode", wanted); ShowMode(); Reconnect();
         };
         Note(way, "地址", 20, 172, 200, 18, Theme.Muted, 8.5f, true);
         Place(way, addressField, 20, 194, 256, 34); addressBox.ReadOnly = true;
-        Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 194, 80, 34, (s, e) => Copy(addressBox.Text, "地址"));
+        Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 194, 80, 34, (s, e) => { if (Hidden) Toast("公共中转的地址和密码不显示，手机扫码连接"); else Copy(addressBox.Text, "地址"); });
         Note(way, "密码", 20, 238, 200, 18, Theme.Muted, 8.5f, true);
         Place(way, passwordField, 20, 260, 256, 34); passwordBox.ReadOnly = true; passwordBox.Font = new Font("Consolas", 10f);
-        Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 260, 80, 34, (s, e) => Copy(passwordBox.Text, "密码"));
+        Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 260, 80, 34, (s, e) => { if (Hidden) Toast("公共中转的地址和密码不显示，手机扫码连接"); else Copy(passwordBox.Text, "密码"); });
         Action(connect, "重新连接", Theme.IconRefresh, ButtonKind.Normal, 28, 456, 116, 34, (s, e) => Again());
-        // A relay of one's own decides its password itself: there it is typed into the box above, not made here.
+        // A relay decides its password itself: this button is for the program's own relay, on the local network and through the tunnel.
         changePassword = Action(connect, "换一个密码", Theme.IconLock, ButtonKind.Ghost, 152, 456, 124, 34, (s, e) => {
             if (!Confirm("换一个密码？", "换密码后，已连接的手机需要重新扫码。", "换密码", false)) return;
             SetPassword(NewPassword()); Reconnect(); Toast("密码已更新");
@@ -604,7 +736,7 @@ public sealed class App : Form {
 
         // ---- page: settings
         var settings = Page("设置", "这些设置只影响这台电脑。");
-        var rows = Place(settings, new Card(), 28, 92, 652, 7 * 60 + 12);
+        var rows = Place(settings, new Card(), 28, 92, 652, 8 * 53 + 12);
         autoUpdateSwitch.On = Convert.ToString(config["AutoUpdate"]) == "True";
         autoUpdateSwitch.Changed += (s, e) => { Keep("AutoUpdate", autoUpdateSwitch.On); if (autoUpdateSwitch.On) CheckForUpdate(false); };
         enabledSwitch.On = Convert.ToString(config["RemoteEnabled"]) == "True";
@@ -627,9 +759,22 @@ public sealed class App : Form {
             int wanted;
             if (!Int32.TryParse(portBox.Box.Text.Trim(), out wanted) || wanted < 1024 || wanted > 65535) { portBox.Box.Text = Port.ToString(); Toast("端口要在 1024 到 65535 之间"); return; }
             if (wanted == Port) return;
-            Keep("Port", wanted); Toast("端口已改为 " + wanted); if (Mode != "own") Reconnect();
+            Keep("Port", wanted); Toast("端口已改为 " + wanted); if (!RelayMode) Reconnect();
         };
         portBox.Box.Leave += port; portBox.Box.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; port(s, e); } };
+        skinPick.Set(Theme.Titles[Array.IndexOf(Theme.Names, Theme.Default)]);
+        skinPick.Opening += (s, e) => {
+            var menu = Theme.Menu();
+            for (int i = 0; i < Theme.Names.Length; i++) {
+                string name = Theme.Names[i];
+                var item = new ToolStripMenuItem(Theme.Titles[i]) { Checked = name == Theme.Skin };
+                item.Click += (c, a) => { Keep("Skin", name); Wear(name); };
+                menu.Items.Add(item);
+            }
+            menu.MinimumSize = new Size(skinPick.Width, 0);
+            menu.Closed += (c, a) => BeginInvoke(new Action(menu.Dispose));
+            menu.Show(skinPick, new Point(0, skinPick.Height + 2));
+        };
         updateButton = new RoundButton { Text = "检查更新", Glyph = Theme.IconRefresh };
         updateButton.Click += (s, e) => CheckForUpdate(true);
         var all = new[] {
@@ -638,9 +783,10 @@ public sealed class App : Form {
             new SettingRow("新终端的权限", "Claude Code 和 Codex 从手机启动时用什么权限模式", rights, 250, 34),
             new SettingRow("公网隧道的协议", "隧道经常断开或出现 1033 时改用 HTTP/2", protocol, 170, 34),
             new SettingRow("本机端口", "局域网直连和公网隧道使用，被占用时换一个", portBox, 96, 32),
+            new SettingRow("外观", "和手机 App 相同的几种配色，默认与 App 一致", skinPick, 170, 34),
             new SettingRow("自动更新", "关闭时由你在这里或手机上发起；打开后在终端空闲时自己装好", autoUpdateSwitch, 46, 26),
             new SettingRow("版本 " + Version, "从 GitHub 发布页检查并安装新版本；手机上也可以发起", updateButton, 150, 34) };
-        for (int i = 0; i < all.Length; i++) Place(rows, all[i], 2, 6 + i * 60, 648, 60);
+        for (int i = 0; i < all.Length; i++) Place(rows, all[i], 2, 6 + i * 53, 648, 53);
         Action(settings, "打开数据文件夹", Theme.IconOpen, ButtonKind.Normal, 28, 544, 150, 36, (s, e) => { try { Process.Start(new ProcessStartInfo("explorer.exe", "\"" + dataDir + "\"")); } catch (Exception) { } });
         Action(settings, "项目主页", Theme.IconGlobe, ButtonKind.Ghost, 186, 544, 110, 36, (s, e) => { try { Process.Start(new ProcessStartInfo("https://github.com/KangWang42/remote-cli") { UseShellExecute = true }); } catch (Exception) { } });
         Action(settings, "退出 Remote CLI", Theme.IconPower, ButtonKind.Danger, 530, 544, 150, 36, (s, e) => Quit());
@@ -654,7 +800,7 @@ public sealed class App : Form {
         tray.DoubleClick += (s, e) => Reveal();
         tray.ContextMenuStrip = new ContextMenuStrip();
         tray.ContextMenuStrip.Items.Add("显示窗口", null, (s, e) => Reveal());
-        tray.ContextMenuStrip.Items.Add("复制地址", null, (s, e) => { if (address.Length > 0) try { Clipboard.SetText(address); } catch (ExternalException) { } });
+        tray.ContextMenuStrip.Items.Add("复制地址", null, (s, e) => { if (address.Length > 0 && Mode != "public") try { Clipboard.SetText(address); } catch (ExternalException) { } });
         tray.ContextMenuStrip.Items.Add("重新连接", null, (s, e) => Again());
         tray.ContextMenuStrip.Items.Add("-");
         tray.ContextMenuStrip.Items.Add("退出", null, (s, e) => Quit());
@@ -665,6 +811,10 @@ public sealed class App : Form {
         };
         ShowMode();
         Go(Dirs().Count == 0 ? 1 : 0);        // a first start begins where something has to be done
+        // The window was made in the default skin, whose colours all differ: which of them each control has is noted
+        // now, and the skin chosen in the settings is put on.
+        parts = Theme.Parts(this);
+        if (Convert.ToString(config["Skin"]) != Theme.Default) Wear(Convert.ToString(config["Skin"]));
         using (var g = CreateGraphics()) {
             float factor = g.DpiX / 96f;
             if (factor > 1.01f) { Scale(new SizeF(factor, factor)); folders.ItemHeight = (int)(54 * factor); activity.ItemHeight = (int)(54 * factor); }
@@ -673,7 +823,8 @@ public sealed class App : Form {
             agent = new TerminalAgent(dataDir) { Version = Version };
             // The phone may ask for the update: it is looked for and installed at once, whatever the terminals are doing.
             agent.UpdateRequested = () => BeginInvoke(new Action(() => CheckForUpdate(false, true)));
-            updateTimer.Tick += (t, a) => CheckForUpdate(false);
+            updateTimer.Tick += (t, a) => { CheckForUpdate(false); if (DateTime.UtcNow - listRead > TimeSpan.FromHours(6)) ReadList(); };
+            ReadList();
             quietTimer.Tick += async (t, a) => {
                 if (waitingUpdate == null || !updateButton.Enabled) return;
                 if (agent != null && !agent.Quiet(20)) return;        // a tool is working or someone is typing: later
@@ -726,27 +877,36 @@ public sealed class App : Form {
         Environment.Exit(0);
     }
 
-    // A small window in the program's own look: a question with two answers, optionally with one line to fill in.
-    string Dialog(string title, string text, string yes, bool danger, bool field, string value) {
-        using (var dialog = new Form { Text = "Remote CLI", ClientSize = new Size(420, field ? 196 : 158), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
+    // A small window in the program's own look: a question with two answers, optionally with lines to fill in, each
+    // under its label when it has one. Returns what was filled in, or null when the question was not agreed to.
+    string[] Dialog(string title, string text, string yes, bool danger, string[] labels, string[] values) {
+        using (var dialog = new Form { Text = "Remote CLI", FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
                                        MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false, Font = Theme.Text(), BackColor = Theme.Bg, ForeColor = Theme.Ink, AutoScaleMode = AutoScaleMode.None, Icon = Icon }) {
-            dialog.HandleCreated += (s, e) => Theme.DarkTitle(dialog.Handle);
+            dialog.HandleCreated += (s, e) => Theme.Title(dialog.Handle);
             Place(dialog, Theme.Label(title, Theme.Ink, Theme.Bg, 11.5f, true), 24, 22, 372, 26);
             Place(dialog, Theme.Label(text, Theme.Muted, Theme.Bg), 24, 52, 372, 40);
-            var box = new Field(); box.BackColor = Theme.Bg; box.Box.Text = value ?? "";
-            if (field) Place(dialog, box, 24, 96, 372, 34);
+            var boxes = new List<Field>();
+            int y = 96;
+            for (int i = 0; labels != null && i < labels.Length; i++) {
+                if (labels[i].Length > 0) { Place(dialog, Theme.Label(labels[i], Theme.Muted, Theme.Bg, 8.5f), 24, y, 372, 18); y += 22; }
+                var box = new Field(); box.BackColor = Theme.Bg; box.Box.Text = values != null && i < values.Length ? values[i] ?? "" : "";
+                Place(dialog, box, 24, y, 372, 34); boxes.Add(box);
+                y += 44;
+            }
+            y = boxes.Count == 0 ? 108 : y + 6;
+            dialog.ClientSize = new Size(420, y + 50);
             var ok = new RoundButton { Text = yes, Kind = danger ? ButtonKind.Danger : ButtonKind.Primary, DialogResult = DialogResult.OK };
             var cancel = new RoundButton { Text = "取消", DialogResult = DialogResult.Cancel };
-            int y = field ? 146 : 108;
-            Place(dialog, cancel, 196, y, 96, 34); Place(dialog, ok, 300, y, 96, 34);
+            int wide = yes.Length > 4 ? 128 : 96;
+            Place(dialog, cancel, 396 - wide - 8 - 96, y, 96, 34); Place(dialog, ok, 396 - wide, y, wide, 34);
             dialog.AcceptButton = ok; dialog.CancelButton = cancel;
             using (var g = dialog.CreateGraphics()) { float factor = g.DpiX / 96f; if (factor > 1.01f) dialog.Scale(new SizeF(factor, factor)); }
-            if (field) dialog.Shown += (s, e) => { box.Box.Focus(); box.Box.SelectAll(); };
-            return dialog.ShowDialog(Visible ? this : null) == DialogResult.OK ? (field ? box.Box.Text : "yes") : null;
+            if (boxes.Count > 0) dialog.Shown += (s, e) => { boxes[0].Box.Focus(); boxes[0].Box.SelectAll(); };
+            return dialog.ShowDialog(Visible ? this : null) == DialogResult.OK ? boxes.Select(b => b.Box.Text).ToArray() : null;
         }
     }
-    bool Confirm(string title, string text, string yes, bool danger) { return Dialog(title, text, yes, danger, false, null) != null; }
-    string Ask(string title, string text, string value) { return Dialog(title, text, "确定", false, true, value) ?? ""; }
+    bool Confirm(string title, string text, string yes, bool danger) { return Dialog(title, text, yes, danger, null, null) != null; }
+    string Ask(string title, string text, string value) { var filled = Dialog(title, text, "确定", false, new[] { "" }, new[] { value }); return filled == null ? "" : filled[0]; }
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
     [STAThread] public static int Main(string[] args) {
@@ -765,26 +925,29 @@ public sealed class App : Form {
             var window = new App();
             // --screenshot <file.png>: draws the window into a picture after a moment and exits; used for the documentation.
             if (args.Length >= 2 && args[0] == "--screenshot") {      // an optional third argument chooses the page (0 to 3)
-                if (args.Length >= 4 && args[3] == "own") { offstage = true; window.StartPosition = FormStartPosition.Manual; window.Location = new Point(-30000, -30000); window.ShowInTaskbar = false; }
+                // Such a window is never one to use: it stays off the screen, also when only a picture is asked for.
+                offstage = true; window.StartPosition = FormStartPosition.Manual; window.Location = new Point(-30000, -30000); window.ShowInTaskbar = false;
                 window.Show();
                 if (args.Length >= 3) { int page; if (Int32.TryParse(args[2], out page)) window.Go(page); }
                 Action<double> wait = seconds => { var end = DateTime.UtcNow.AddSeconds(seconds); while (DateTime.UtcNow < end) { Application.DoEvents(); Thread.Sleep(30); } };
-                // "own" after the page opens the tab of one's own relay as a click would; an address and a password
-                // after it are typed in and "连接" is pressed, or "重新连接" with "again" after them. What came of it is
-                // written beside the picture, for the tests.
-                if (args.Length >= 4 && args[3] == "own") {
+                // "own" after the page opens the relay tab as a click would; an address and a password after it are
+                // added as the window's own form adds them, "- - again" presses "重新连接" instead, and "public" takes the
+                // first relay for everyone. What came of it is written beside the picture, for the tests.
+                if (args.Length >= 4 && (args[3] == "own" || args[3] == "public")) {
                     wait(5);
                     window.modePick.Choose(2);
-                    if (args.Length >= 6) {
-                        if (args[4] != "-") { window.addressBox.Text = args[4]; window.passwordBox.Text = args[5]; }     // "-": what the boxes hold already
-                        if (args.Length >= 7 && args[6] == "again") window.Again(); else window.ConnectOwn();
-                        wait(1);
-                        for (int n = 0; n < 60 && !window.ownConnect.Enabled; n++) wait(0.5);
-                        wait(6);
-                    }
+                    if (args[3] == "public") { Relay first = window.Known().FirstOrDefault(r => r.Public); if (first != null) window.Use(first); }
+                    else if (args.Length >= 7 && args[6] == "again") window.Again();
+                    else if (args.Length >= 6) window.AddRelay(args[4], args[5], "");
+                    wait(1);
+                    for (int n = 0; n < 60 && window.relayBusy; n++) wait(0.5);
+                    wait(6);
+                    Relay showing = window.modePick.Chosen == 2 ? window.Showing() : null;
                     File.WriteAllText(args[1] + ".txt", String.Join("\n", "mode=" + window.Mode, "tab=" + window.modePick.Chosen, "status=" + window.said, "about=" + window.modeAbout.Text,
-                        "own_relay=" + (window.relay != null && !window.relay.HasExited ? "running" : "stopped"), "boxes=" + (window.addressBox.ReadOnly ? "shown" : "typed"),
-                        "address=" + window.addressBox.Text, "connect_button=" + window.ownConnect.Visible, "new_password_button=" + window.changePassword.Visible), new UTF8Encoding(false));
+                        "own_relay=" + (window.relay != null && !window.relay.HasExited ? "running" : "stopped"), "field=" + window.relayPick.Title, "showing=" + (showing == null ? "" : showing.Id),
+                        "address=" + window.addressBox.Text, "password_shown=" + (window.passwordBox.Text == window.password), "code=" + (window.qr.Image != null),
+                        "server=" + Convert.ToString(window.config["Server"]), "saved=" + window.relays.Own().Count, "published=" + window.relays.Published().Count,
+                        "new_password_button=" + window.changePassword.Visible, "skin=" + Theme.Skin), new UTF8Encoding(false));
                 }
                 var until = DateTime.UtcNow.AddSeconds(4);
                 while (DateTime.UtcNow < until) { Application.DoEvents(); Thread.Sleep(30); }

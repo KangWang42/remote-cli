@@ -80,7 +80,7 @@
       : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     let body = {};
     try { body = await reply.json(); } catch (error) { /* not JSON */ }
-    if (reply.status === 401 && path !== '/api/login') { showLogin(); throw new Error('请重新输入访问密码'); }
+    if (reply.status === 401 && path !== 'api/login') { showLogin(); throw new Error('请重新输入访问密码'); }
     if (!reply.ok) throw new Error(body.error || '请求失败（' + reply.status + '）');
     return body;
   }
@@ -147,10 +147,10 @@
     else if (choice === 'switch') native.disconnect();
     else if (choice === 'update') native.update();
     else if (choice === 'computer') {
-      try { await api('/api/terminal', { action: 'update', id: newId() }); toast(device.newer ? '电脑端开始更新，中断几秒后自动恢复' : '已让电脑端检查更新'); }
+      try { await api('api/terminal', { action: 'update', id: newId() }); toast(device.newer ? '电脑端开始更新，中断几秒后自动恢复' : '已让电脑端检查更新'); }
       catch (error) { toast(error.message); }
     }
-    else if (choice === 'out') { try { await api('/api/logout', {}); } catch (error) { /* signed out anyway */ } if (native) native.disconnect(); else showLogin(); }
+    else if (choice === 'out') { try { await api('api/logout', {}); } catch (error) { /* signed out anyway */ } if (native) native.disconnect(); else showLogin(); }
   });
 
   function showLogin() {
@@ -162,7 +162,7 @@
     event.preventDefault();
     $('login-error').textContent = '';
     try {
-      await api('/api/login', { password: $('password').value });
+      await api('api/login', { password: $('password').value });
       $('password').value = '';
       $('login').hidden = true; $('home').hidden = false;
       refresh();
@@ -189,10 +189,10 @@
     busy = true; toast(waiting);
     try {
       const op = Object.assign({ id: newId() }, payload);
-      let result = await api('/api/terminal', op);
+      let result = await api('api/terminal', op);
       for (let n = 0; n < 60 && result.state === 'queued'; n++) {
         await new Promise(r => setTimeout(r, 400));
-        result = await api('/api/terminal', op);
+        result = await api('api/terminal', op);
       }
       if (result.error) throw new Error(result.error);
       if (result.state === 'queued') throw new Error('电脑没有响应，请确认电脑端程序在运行');
@@ -277,7 +277,7 @@
       if (canPeek) {
         const said = el('div', { className: 'said' }, el('p', { className: 'quiet', textContent: '正在读取对话…' }));
         form.append(said, el('p', { className: 'quiet', textContent: '只是查看，不影响电脑上的程序。' }));
-        api('/api/conversation', { id: newId(), session: session.id }).then(got => {
+        api('api/conversation', { id: newId(), session: session.id }).then(got => {
           said.textContent = '';
           const messages = got.messages || [];
           if (got.more) said.append(el('p', { className: 'quiet', textContent: '更早的内容没有显示' }));
@@ -488,7 +488,7 @@
     clearTimeout(timer);
     try {
       const asked = early; early = null;
-      data = (asked && await asked) || await api('/api/terminal');
+      data = (asked && await asked) || await api('api/terminal');
       if (data.device.shell) TOOLS.shell = data.device.shell;
       draw(); peeks();
       if (anew) {
@@ -515,11 +515,11 @@
       const wanted = new URLSearchParams(location.search).get('open') || '';
       if (given || ticket) {
         history.replaceState(null, '', location.pathname + location.search);
-        try { await api('/api/login', ticket ? { ticket } : { password: given }); }
+        try { await api('api/login', ticket ? { ticket } : { password: given }); }
         catch (error) { showLogin(); $('login-error').textContent = ticket ? '这个窗口的登录已过期，请从电脑端程序重新打开' : error.message; return; }
       }
-      if (!/^[a-f0-9]{32}$/.test(wanted)) early = fetch('/api/terminal', { credentials: 'same-origin' }).then(reply => reply.ok ? reply.json() : null).catch(() => null);
-      const session = await (await fetch('/api/session', { credentials: 'same-origin' })).json();
+      if (!/^[a-f0-9]{32}$/.test(wanted)) early = fetch('api/terminal', { credentials: 'same-origin' }).then(reply => reply.ok ? reply.json() : null).catch(() => null);
+      const session = await (await fetch('api/session', { credentials: 'same-origin' })).json();
       if (!session.signed_in) return showLogin();
       // ?open=<terminal> goes straight to that terminal: the computer's own window opens the one that was picked.
       if (/^[a-f0-9]{32}$/.test(wanted)) return location.replace('terminal/?id=' + wanted);

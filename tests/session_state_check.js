@@ -15,7 +15,7 @@ assert.match(app, /sessions\.filter\(s => sessionActivity\(s\) === 'locked'\)/,
   'retained writer locks must remain available as locked history');
 assert.match(app, /手机不能替你关掉它。请先在那个应用里结束这段对话/,
   'a conversation held by an app needs to say what to do on the computer');
-assert.match(app, /api\('\/api\/conversation'/, 'a conversation open on the computer is looked at before anything is done to it');
+assert.match(app, /api\('api\/conversation'/, 'a conversation open on the computer is looked at before anything is done to it');
 assert.doesNotMatch(app, /写入锁|app-server|归属待确认/, 'the page speaks of what happens on the computer, not of locks');
 assert.match(page, /<details id="background" class="held-sessions"/);
 assert.match(page, /被电脑上其它程序占用的对话/);

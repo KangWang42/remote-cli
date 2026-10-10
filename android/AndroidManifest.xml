@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.github.kangwang42.remotecli" android:versionCode="37" android:versionName="1.0.9">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.github.kangwang42.remotecli" android:versionCode="38" android:versionName="1.1.0">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Only for the reminders, which are off until turned on: a notification when a task waits or is done, and the
-         service that looks at the computers while the app is not on the screen. -->
+    <!-- Only for the reminders, which are off until turned on: a notification when a task waits or is done, and being
+         woken about once a minute to look at the computers while the app is not on the screen. No service runs. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Only for reading the code on the computer's screen; asked for when "扫码连接" is tapped. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -27,6 +28,6 @@
                 <data android:scheme="remotecli" android:host="connect" />
             </intent-filter>
         </activity>
-        <service android:name=".Watcher" android:exported="false" android:foregroundServiceType="dataSync" />
+        <receiver android:name=".Watcher" android:exported="false" />
     </application>
 </manifest>

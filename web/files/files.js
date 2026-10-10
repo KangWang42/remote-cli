@@ -73,7 +73,7 @@
   // ---- asking the computer
   let run = 0;        // what is shown now; an answer for something left behind is dropped
   async function ask(action, path, offset) {
-    const reply = await fetch('/api/files', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+    const reply = await fetch('../api/files', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: newId(), action, dir, path, offset: offset || 0 }) });
     let body = {};
     try { body = await reply.json(); } catch (error) { /* not JSON */ }

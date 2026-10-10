@@ -15,7 +15,7 @@ namespace RemoteCli {
 ///   --quiet            no questions and no start afterwards
 ///   --dir <folder>     where to install (default: the folder of an earlier installation, else %LOCALAPPDATA%\Programs\RemoteCli)
 public static class Setup {
-    const string Version = "1.0.9", Name = "Remote CLI";
+    const string Version = "1.1.0", Name = "Remote CLI";
     // REMOTECLI_SETUP_SANDBOX=1 is for the tests: its own registry entry and shortcut names, and no look at a running
     // copy, so trying the installer never touches a real installation.
     static readonly bool Sandbox = Environment.GetEnvironmentVariable("REMOTECLI_SETUP_SANDBOX") == "1";
@@ -67,7 +67,7 @@ public static class Setup {
     static string Ask(string suggested, string picture = null) {
         using (var form = new Form { Text = "安装 " + Name, ClientSize = new Size(520, 250), FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
                                      StartPosition = FormStartPosition.CenterScreen, BackColor = Theme.Bg, ForeColor = Theme.Ink, Font = new Font("Microsoft YaHei UI", 9f), AutoScaleMode = AutoScaleMode.None, Icon = Theme.MarkIcon(32) }) {
-            form.HandleCreated += (s, e) => Theme.DarkTitle(form.Handle);
+            form.HandleCreated += (s, e) => Theme.Title(form.Handle);
             Action<Control, int, int, int, int> place = (control, x, y, w, h) => { control.SetBounds(x, y, w, h); form.Controls.Add(control); };
             place(new PictureBox { Image = Theme.Mark(96), SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Bg }, 24, 22, 48, 48);
             place(Theme.Label(Name + " " + Version, Theme.Ink, Theme.Bg, 14f, true), 86, 20, 400, 28);

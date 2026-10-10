@@ -3,7 +3,7 @@
 # Cloudflare tunnel when the phone and the computer are both close to the server.
 #
 #   curl -fsSL https://raw.githubusercontent.com/KangWang42/remote-cli/main/relay/install.sh | sudo bash
-#   sudo bash install.sh [--port N] [--source remote-cli.tar.gz]
+#   sudo bash install.sh [--port N] [--source remote-cli.tar.gz] [--public [--key WORD] [--spaces N]]
 #
 #   install.sh status       is the service running, which version, which port
 #   install.sh password     show the password the computer and the phone sign in with; --new replaces it
@@ -15,6 +15,10 @@
 # --source FILE  take the program from a source archive that is already on the server, for a server that cannot
 #                reach GitHub: download https://github.com/KangWang42/remote-cli/archive/refs/heads/main.tar.gz
 #                elsewhere and copy it over
+# --public       a relay for everyone instead of one's own: it has no password; every computer that asks is given a
+#                place of its own, with a password only that computer and its phones know (docs/SELF_HOSTING.md).
+#                --key WORD lets only programs that give this word have a place; --spaces N is how many computers
+#                at most (100 unless given)
 #
 # Needs root, systemd 235 or newer and Python 3.9 or newer. Installs nothing else. Running it again keeps the
 # password and the port.
@@ -29,6 +33,9 @@ port=""
 archive=""
 purge=""
 renew=""
+public=""
+key=""
+spaces=""
 fetched=""          # a folder made for this run, removed at the end
 source=""           # the folder that holds relay/ and web/
 
@@ -105,9 +112,16 @@ set_up() {
     ls -1dt "$root"/releases/*/ | tail -n +3 | xargs -r rm -rf
 
     install -d -m 700 "$settings"
+    local fresh=""
     if [ ! -s "$settings/relay.env" ]; then
-        (umask 077; printf 'RCLI_PASSWORD=%s\n' "$("$python" -c 'import secrets; print(secrets.token_urlsafe(24))')" > "$settings/relay.env")
+        fresh=1
+        if [ -n "$public" ]; then (umask 077; printf 'RCLI_PUBLIC=1\n' > "$settings/relay.env")
+        else (umask 077; printf 'RCLI_PASSWORD=%s\n' "$("$python" -c 'import secrets; print(secrets.token_urlsafe(24))')" > "$settings/relay.env"); fi
     fi
+    # What kind of relay it is and its limits are kept beside the password; given again, they replace what was kept.
+    if [ -n "$public" ] && ! grep -q '^RCLI_PUBLIC=1$' "$settings/relay.env"; then printf 'RCLI_PUBLIC=1\n' >> "$settings/relay.env"; fi
+    if [ -n "$key" ]; then sed -i '/^RCLI_JOIN_KEY=/d' "$settings/relay.env"; printf 'RCLI_JOIN_KEY=%s\n' "$key" >> "$settings/relay.env"; fi
+    if [ -n "$spaces" ]; then sed -i '/^RCLI_SPACES=/d' "$settings/relay.env"; printf 'RCLI_SPACES=%s\n' "$spaces" >> "$settings/relay.env"; fi
     chmod 600 "$settings/relay.env"
     cat > "$unit" <<UNIT
 [Unit]
@@ -136,8 +150,14 @@ UNIT
     local tries
     for tries in 1 2 3 4 5 6 7 8 9 10; do
         if "$python" -c 'import sys, urllib.request; urllib.request.urlopen("http://127.0.0.1:%s/api/session" % sys.argv[1], timeout=2)' "$port" 2>/dev/null; then
-            say "中转 $release 已在运行，监听 127.0.0.1:$port。"
-            say "访问密码：$(sed -n 's/^RCLI_PASSWORD=//p' "$settings/relay.env")"
+            if grep -q '^RCLI_PUBLIC=1$' "$settings/relay.env"; then
+                say "公共中转 $release 已在运行，监听 127.0.0.1:$port。它没有统一的密码：每台电脑由电脑端自动申请自己的空间。"
+            else
+                say "中转 $release 已在运行，监听 127.0.0.1:$port。"
+                # The password is shown when it was just made. An update keeps it and does not put it on the screen again.
+                if [ -n "$fresh" ]; then say "访问密码：$(sed -n 's/^RCLI_PASSWORD=//p' "$settings/relay.env")"
+                else say "访问密码没有变；要查看时运行 install.sh password。"; fi
+            fi
             say "下一步：让一个 web 服务器用 https 把请求转给 127.0.0.1:$port，见 docs/SELF_HOSTING.md。"
             return
         fi
@@ -152,11 +172,20 @@ status() {
     [ -n "$port" ] || fail "中转还没有安装。"
     say "服务：$(systemctl is-active "$service" 2>/dev/null || true)，开机自启：$(systemctl is-enabled "$service" 2>/dev/null || true)"
     say "版本：$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' "$root/current/relay/server.py" 2>/dev/null | head -1)，监听 127.0.0.1:$port"
+    if grep -q '^RCLI_PUBLIC=1$' "$settings/relay.env" 2>/dev/null; then
+        local folder=/var/lib/private/remote-cli/spaces
+        [ -d "$folder" ] || folder=/var/lib/remote-cli/spaces
+        say "公共中转：现在有 $(find "$folder" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l) 台电脑的空间，$(grep -q '^RCLI_JOIN_KEY=.' "$settings/relay.env" && echo 需要口令 || echo 不需要口令)"
+    fi
 }
 
 password() {
     [ "$(id -u)" = 0 ] || fail "请用 root 运行（前面加 sudo）。"
     [ -s "$settings/relay.env" ] || fail "中转还没有安装。"
+    if grep -q '^RCLI_PUBLIC=1$' "$settings/relay.env"; then
+        say "公共中转没有统一的密码：每台电脑的密码由它自己的电脑端申请和保管。"
+        return
+    fi
     if [ -n "$renew" ]; then
         local python
         python="$(find_python)" || fail "需要 Python 3.9 及以上。"
@@ -193,7 +222,10 @@ while [ $# -gt 0 ]; do
         --source) archive="${2:-}"; shift; [ -n "$archive" ] || fail "--source 后面要跟压缩包的路径。" ;;
         --purge) purge=1 ;;
         --new) renew=1 ;;
-        -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --public) public=1 ;;
+        --key) key="${2:-}"; shift; case "$key" in ''|*[!A-Za-z0-9._-]*) fail "--key 后面要跟口令，只用字母、数字和 . _ -。" ;; esac ;;
+        --spaces) spaces="${2:-}"; shift; case "$spaces" in ''|*[!0-9]*) fail "--spaces 后面要跟数量。" ;; esac ;;
+        -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) fail "不认识的参数：$1" ;;
     esac
     shift

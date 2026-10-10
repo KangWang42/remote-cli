@@ -230,10 +230,36 @@ The Windows program keeps its `instance` across a restart for an update: it note
 the restart reports the same instance and the same terminal ids, with output numbered on from where it was.
 The relay and the viewer then see the same terminals continue.
 
+## A relay for everyone
+
+Started with `--public` (or `RCLI_PUBLIC=1`), a relay has no password of its own and serves many computers, each in
+a space of its own:
+
+| Request | Result |
+| --- | --- |
+| `GET /api/session` | `{"signed_in": false, "version": "x.y.z", "public": true, "key": bool}`; `key` says that a word is needed to have a space made |
+| `POST /api/space` `{"key": "..."}` | `{"space": "/c/<20 hex digits>", "password": "..."}`. The password is told once; the relay keeps its SHA-256. 403 without the right word (`RCLI_JOIN_KEY`), 429 after six spaces in a day from one address, 503 when the relay has as many as it allows |
+
+Everything in this document then holds under the space's address: `https://relay/c/<id>/api/login`,
+`https://relay/c/<id>/api/terminal`, the pages at `https://relay/c/<id>/`. That address is what the computer's
+program uses as its relay and what the code for the phone carries. The sign-in cookie is set for the space's path,
+so a phone can know several computers at one relay. The pages ask for `api/...` relative to where they are, which is
+why they work at the top of a relay and in a space alike.
+
+A space has its own sign-ins, tickets, terminals and operations; a token of one is not valid in another, and the
+relay offers no list of spaces. A space whose files were not written for 30 days (nobody signed in, no terminal
+changed) is removed. Outside the spaces such a relay answers only the two requests above.
+
+The Windows program learns of relays for everyone from a published list, `public-relays.json` at the top of the
+repository (`{"relays": [{"name", "url", "key"}]}`), read at start and every six hours; `REMOTECLI_RELAYS` names
+another list. It asks for a space once and keeps what it was given; when the relay no longer has the space, it asks
+again.
+
 ## Storage
 
 The relay keeps `terminals.json` (the list of terminals), `terminals-output/<terminal>.jsonl` (the recent output of
 each, one piece per line, up to about 2,000,000 characters for a running terminal; new pieces are added to the
 file rather than the file written again), `sessions.json` (hashes of sign-in tokens) and, when it made the password itself,
 `password.txt`, all in its data folder with owner-only permissions where the system supports them. It writes
-no terminal input or output to any log.
+no terminal input or output to any log. A relay for everyone keeps the same files once per space, in
+`spaces/<id>/`, with `space.json` (the hash of the space's password and when it was made) instead of a password.
