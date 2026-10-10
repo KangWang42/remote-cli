@@ -70,6 +70,8 @@ class SpacesTests(unittest.TestCase):
         top = Phone(self.port)
         status, said, _ = top.ask("/api/session")
         self.assertEqual((status, said["public"], said["signed_in"], said["key"]), (200, True, False, False))
+        self.assertNotIn("version", said)                              # nothing about the relay itself is told
+        self.assertNotIn(server.VERSION, top.ask("/api/session")[2].getheader("Server"))
         for path in ("/api/terminal", "/app.js", "/terminal/", "/c/", "/c/zz", "/c/" + "a" * 20 + "/", "/c/" + "a" * 20 + "/api/session"):
             self.assertEqual(top.ask(path)[0], 404, path)
         for path in ("/api/login", "/api/terminal", "/api/terminal/agent"):

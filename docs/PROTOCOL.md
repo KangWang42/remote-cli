@@ -237,7 +237,7 @@ a space of its own:
 
 | Request | Result |
 | --- | --- |
-| `GET /api/session` | `{"signed_in": false, "version": "x.y.z", "public": true, "key": bool}`; `key` says that a word is needed to have a space made |
+| `GET /api/session` | `{"signed_in": false, "public": true, "key": bool}`; `key` says that a word is needed to have a space made. Nothing else about the relay is told outside a space, not its version either |
 | `POST /api/space` `{"key": "..."}` | `{"space": "/c/<20 hex digits>", "password": "..."}`. The password is told once; the relay keeps its SHA-256. 403 without the right word (`RCLI_JOIN_KEY`), 429 after six spaces in a day from one address, 503 when the relay has as many as it allows |
 
 Everything in this document then holds under the space's address: `https://relay/c/<id>/api/login`,

@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded P
 import relay  # noqa: E402
 import websocket  # noqa: E402
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024
@@ -300,7 +300,7 @@ class Spaces:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "remote-cli/" + VERSION
+    server_version = "remote-cli"       # the version is told to who asks a relay or a space for it, not in every answer
     sys_version = ""
 
     def setup(self):
@@ -361,7 +361,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 return found.group(2)
         elif path == "/api/session" and payload is None:
-            self._json(200, {"signed_in": False, "version": VERSION, "public": True, "key": bool(spaces.key)})
+            # no version here: whoever is not in a space learns that this is a relay, and nothing about it
+            self._json(200, {"signed_in": False, "public": True, "key": bool(spaces.key)})
         elif path == "/api/space" and payload is not None:
             try:
                 name, password = spaces.create(self._address(), payload.get("key", ""))

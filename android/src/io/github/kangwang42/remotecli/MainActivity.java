@@ -112,7 +112,12 @@ public final class MainActivity extends Activity {
             store(list);
         } catch (Exception ignored) { }
     }
-    static String host(String url) { String h = Uri.parse(url).getHost(); return h == null ? url : h; }
+    /** What is shown for a computer's address. A place at a relay for everyone shows none: whose relay it is, is not told. */
+    static String host(String url) {
+        Uri address = Uri.parse(url);
+        String path = address.getPath(), h = address.getHost();
+        return path != null && path.matches("/c/[a-f0-9]{20}") ? "公共中转" : h == null ? url : h;
+    }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);

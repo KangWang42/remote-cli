@@ -85,7 +85,9 @@ find_source() {
     source="$fetched/source"
 }
 
-current_port() { sed -n 's/.*--port \([0-9][0-9]*\) .*/\1/p' "$unit" 2>/dev/null | head -1; }
+# Nothing on a server where the relay is not installed yet: asking sed for a file that is not there would end the
+# script without a word.
+current_port() { [ -f "$unit" ] || return 0; sed -n 's/.*--port \([0-9][0-9]*\) .*/\1/p' "$unit" | head -1; }
 
 # Named so that it does not stand in for the system's own "install", which it uses.
 set_up() {
