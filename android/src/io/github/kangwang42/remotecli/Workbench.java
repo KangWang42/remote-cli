@@ -231,6 +231,9 @@ final class Workbench {
                 String state = "off", line = "连不上，可能没开机或地址变了";
                 JSONObject data = null;
                 HttpURLConnection connection = null;
+                // An answer that was read to its end leaves the connection open for the next question: over a tunnel
+                // making a new one costs more than the question itself.
+                boolean whole = false;
                 try {
                     connection = (HttpURLConnection) new URL(url + "/api/terminal").openConnection();
                     connection.setConnectTimeout(4000); connection.setReadTimeout(8000); connection.setUseCaches(false);
@@ -248,10 +251,11 @@ final class Workbench {
                                 bytes.write(part, 0, n);
                             }
                         }
+                        whole = true;
                         data = new JSONObject(bytes.toString("UTF-8"));
                     }
                 } catch (Exception unreachable) { /* keeps "off" */ }
-                finally { if (connection != null) connection.disconnect(); }
+                finally { if (connection != null && !whole) connection.disconnect(); }
                 final JSONObject answer = data;
                 final String s = state, l = line;
                 activity.runOnUiThread(() -> {
@@ -485,6 +489,7 @@ final class Workbench {
     }
     private JSONObject post(String address, String cookie, JSONObject payload) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
+        boolean whole = false;
         try {
             connection.setConnectTimeout(4000); connection.setReadTimeout(8000); connection.setUseCaches(false); connection.setDoOutput(true);
             connection.setInstanceFollowRedirects(false);
@@ -505,10 +510,11 @@ final class Workbench {
                     bytes.write(part, 0, n);
                 }
             }
+            whole = true;
             JSONObject result = new JSONObject(bytes.toString("UTF-8"));
             if (code != 200) throw new Exception(result.optString("error", "请求失败（" + code + "）"));
             return result;
-        } finally { connection.disconnect(); }
+        } finally { if (!whole) connection.disconnect(); }
     }
 
     /** One computer: its name and state, then its projects, the ones with running tasks first. */

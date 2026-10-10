@@ -100,8 +100,13 @@ characters). In both cases the first piece begins with the terminal modes in for
 mouse reporting, bracketed paste and the like), so the reader's terminal is in the state the program expects. A
 fullscreen program draws only what changed; a reader that began this way asks it for a full picture by changing the
 terminal's size and changing it back.
-A reply to `GET` is gzip-compressed when the request accepts it; the pages are served with an `ETag` and
-`Cache-Control: no-cache`, API answers with `no-store`.
+A reply to `GET` is gzip-compressed when the request accepts it. API answers are sent with `no-store`. The pages
+are served with an `ETag` and `Cache-Control: no-cache`; an HTML page names its scripts, styles and fonts with a
+mark of their content (`app.js?v=<12 hex>`), and a file asked for by its current mark is sent with
+`Cache-Control: public, max-age=31536000, immutable`.
+The WebSocket answers an offer of `permessage-deflate` (RFC 7692) with `client_no_context_takeover`: the relay's
+messages are compressed as one stream for the whole connection, each of the reader's on its own. A reader that
+does not offer it is sent plain text.
 One answer carries at most about 180,000 characters; `after < terminal.seq` means more is waiting.
 
 ### Operations

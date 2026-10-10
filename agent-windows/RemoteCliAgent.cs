@@ -892,7 +892,7 @@ public sealed class TerminalAgent {
     async Task Listen() {
         var reader = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
         for (;;) {
-            var started = DateTime.UtcNow; bool waiting = false;
+            var started = DateTime.UtcNow; bool waiting = false, brought = false;
             try {
                 HttpClient current = client;
                 if (current != null) {
@@ -905,6 +905,7 @@ public sealed class TerminalAgent {
                             waiting = true;
                             var operations = List(result, "operations").OfType<Dictionary<string, object>>().ToArray();
                             if (operations.Length > 0) {
+                                brought = true;
                                 Dictionary<string, object> prefs = Preferences();
                                 lock (work) foreach (var op in operations) Execute(op, prefs);
                             }
@@ -914,7 +915,8 @@ public sealed class TerminalAgent {
                 }
             } catch { }
             // An answer that came back at once without being a held request (not signed in yet, an older relay) must not become a busy loop.
-            if (!waiting || DateTime.UtcNow - started < TimeSpan.FromMilliseconds(40)) await Task.Delay(waiting ? 40 : 2000);
+            // One that brought something is asked for again at once: in a drag or fast typing the next is already waiting.
+            if (!waiting || (!brought && DateTime.UtcNow - started < TimeSpan.FromMilliseconds(40))) await Task.Delay(waiting ? 40 : 2000);
         }
     }
     public async Task Run() {

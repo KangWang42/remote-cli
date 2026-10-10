@@ -52,6 +52,44 @@ class FramingTests(unittest.TestCase):
                     framing.Connection(io.BytesIO(data), Sink()).receive()
                 self.assertEqual(found.exception.code, code)
 
+    def test_compression_is_answered_only_as_offered_and_marked_only_where_agreed(self):
+        import zlib
+        offer = lambda text: framing.deflate({"Sec-WebSocket-Extensions": text})
+        self.assertIsNone(framing.deflate({}))
+        self.assertIsNone(offer("x-webkit-deflate-frame"))
+        self.assertEqual(offer("permessage-deflate; client_max_window_bits"), ("permessage-deflate; client_no_context_takeover", 15, False))
+        self.assertEqual(offer("permessage-deflate; server_no_context_takeover; server_max_window_bits=10")[1:], (10, True))
+        self.assertIsNone(offer("permessage-deflate; server_max_window_bits=8"))            # a window this cannot keep
+        self.assertEqual(offer("permessage-deflate; made_up, permessage-deflate")[0], "permessage-deflate; client_no_context_takeover")
+        # what is sent: long text is compressed and builds on what went before; short text and pings are not
+        sink, drawn = Sink(), {"data": "\x1b[5;1H\x1b[2Kline of a screen that is drawn again and again " * 40}
+        channel = framing.Connection(io.BytesIO(), sink, ("permessage-deflate", 15, False))
+        channel.send(drawn); channel.send(drawn); channel.send({"t": "ack"}); channel.send(b"", opcode=9)
+        self.assertEqual([sent[0] for sent in sink.frames], [0xc1, 0xc1, 0x81, 0x89])
+        self.assertLess(len(sink.frames[0]), 300)                           # 2400 characters that repeat
+        self.assertLess(len(sink.frames[1]), len(sink.frames[0]) // 2)      # the same again: next to nothing
+        unpacker = zlib.decompressobj(-15)
+        body = lambda sent: sent[4:] if sent[1] == 126 else sent[2:]
+        for sent in sink.frames[:2]:
+            self.assertEqual(json.loads(unpacker.decompress(body(sent) + framing.TAIL)), drawn)
+        # what is read: a compressed message, whole or in two frames; never one that was not agreed or is too long
+        packer = zlib.compressobj(6, zlib.DEFLATED, -15)
+        text = json.dumps({"data": "中文 " * 200}, ensure_ascii=False).encode("utf-8")
+        packed = (packer.compress(text) + packer.flush(zlib.Z_SYNC_FLUSH))[:-4]
+        marked = lambda data, opcode=1, final=True: bytes((frame(data, opcode, final)[0] | 0x40,)) + frame(data, opcode, final)[1:]
+        agreed = lambda data: framing.Connection(io.BytesIO(data), Sink(), ("permessage-deflate", 15, False))
+        self.assertEqual(agreed(marked(packed)).receive().encode("utf-8"), text)
+        self.assertEqual(agreed(marked(packed[:9], final=False) + frame(packed[9:], opcode=0)).receive().encode("utf-8"), text)
+        self.assertEqual(json.loads(agreed(frame(b'{"plain":1}')).receive()), {"plain": 1})
+        long = zlib.compressobj(6, zlib.DEFLATED, -15)
+        bomb = (long.compress(b"x" * (framing.MAX_MESSAGE + 10)) + long.flush(zlib.Z_SYNC_FLUSH))[:-4]
+        for data, code, connection in ((marked(packed), 1002, lambda d: framing.Connection(io.BytesIO(d), Sink())), (marked(b"x", opcode=9), 1002, agreed),
+                                       (marked(packed[:9], final=False) + marked(packed[9:], opcode=0), 1002, agreed), (marked(b"\xff\xff\xff"), 1007, agreed), (marked(bomb), 1009, agreed)):
+            with self.subTest(code=code, length=len(data)):
+                with self.assertRaises(framing.ProtocolError) as found:
+                    connection(data).receive()
+                self.assertEqual(found.exception.code, code)
+
     def test_extended_output_length_and_standard_accept_key(self):
         headers = {"Upgrade": "websocket", "Connection": "keep-alive, Upgrade", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="}
         self.assertEqual(framing.accept_key(headers), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
@@ -205,6 +243,18 @@ class WebSocketIntegrationTests(unittest.TestCase):
             status, kept, body = get("/terminal/vendor/xterm.js", **dict(headers, **{"If-None-Match": tag}))
             self.assertEqual((status, body, kept["etag"], kept["x-content-type-options"]), (304, b"", tag, "nosniff"))
         self.assertEqual(get("/terminal/vendor/xterm.js", **{"If-None-Match": '"older"'})[0], 200)
+        # a page names its files by what they hold; asked for that way they are kept for good, and only that way
+        import re
+        page = get("/terminal/")[2].decode("utf-8")
+        named = re.search(r'src="(vendor/xterm\.js\?v=[0-9a-f]{12})"', page).group(1)
+        self.assertRegex(page, r'url\("vendor/jetbrains-mono-400\.woff2\?v=[0-9a-f]{12}"\)')
+        self.assertIn('href="data:,"', page)
+        status, kept, body = get("/terminal/" + named)
+        self.assertEqual((status, body, kept["cache-control"]), (200, source, "public, max-age=31536000, immutable"))
+        self.assertEqual(get("/terminal/vendor/xterm.js?v=000000000000")[1]["cache-control"], "no-cache")
+        self.assertEqual(get("/terminal/")[1]["cache-control"], "no-cache")
+        self.assertIn('src="app.js?v=', get("/")[2].decode("utf-8"))
+        self.assertIn('href="../app.css?v=', get("/files/")[2].decode("utf-8"))
         # a font is compressed already
         self.assertNotIn("content-encoding", get("/terminal/vendor/jetbrains-mono-400.woff2", **{"Accept-Encoding": "gzip"})[1])
         # what a terminal printed is never kept by the reader, and a long answer is compressed for one that asks
@@ -214,6 +264,34 @@ class WebSocketIntegrationTests(unittest.TestCase):
         self.assertEqual(len(json.loads(gzip.decompress(body))["chunks"][0]["data"]), 400 * 24)
         status, headers, body = get("/api/terminal?terminal=%s&after=0" % self.terminal)
         self.assertEqual((headers["cache-control"], "content-encoding" in headers, len(json.loads(body)["chunks"][0]["data"])), ("no-store", False, 400 * 24))
+
+    def test_a_reader_that_offers_compression_gets_the_same_output_in_far_fewer_bytes(self):
+        plain = self.connect()
+        packed = Socket(self.origin, "/api/terminal/ws?terminal=%s&after=0" % self.terminal, self.client.cookie["Cookie"], timeout=3, deflate=True)
+        self.sockets.append(packed)
+        self.assertEqual((plain.packed, packed.packed), (False, True))
+        plain.receive(); packed.receive()
+        # a screen drawn again and again, as a fullscreen program does while it is scrolled
+        screens = ["".join("\x1b[%d;1H\x1b[2Kline %03d of the picture  中文" % (row + 1, top + row) for row in range(30)) for top in range(40)]
+        for seq, screen in enumerate(screens, 1):
+            tr.agent(self.server.store, dict(self.live, output=[{"terminal": self.terminal, "seq": seq, "data": screen}]))
+        got = {}
+        for name, ws in (("plain", plain), ("packed", packed)):
+            text, last = "", 0
+            while last < 40:
+                item = ws.receive(3)
+                if item.get("t") == "out":
+                    text += "".join(chunk["data"] for chunk in item["chunks"])
+                    last = item["after"]
+            got[name] = text
+        self.assertEqual(got["packed"], got["plain"])
+        self.assertEqual(got["plain"], "".join(screens))
+        self.assertLess(packed.wire, plain.wire // 8)
+        # what the reader sends compressed is carried out like any other
+        for ws in (plain, packed):
+            ws.send(operation(self.terminal, "input", data="echo " + "long input " * 20))
+            self.assertEqual(self.next_type(ws, "ack")["status"], 200)
+        self.assertEqual(len(tr._pending), 3)           # the start of this terminal and the two inputs
 
     def test_invalid_input_returns_ack_and_keeps_connection_open(self):
         ws = self.connect()

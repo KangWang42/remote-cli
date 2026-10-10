@@ -395,7 +395,7 @@ public final class MainActivity extends Activity {
         final ConnectionHealth health = connectionHealth;
         checkingConnection = true;
         net.execute(() -> {
-            boolean reachable = false;
+            boolean reachable = false, whole = false;       // whole: read to its end, so the connection serves the next check too
             int status = 0;
             HttpURLConnection connection = null;
             try {
@@ -412,11 +412,12 @@ public final class MainActivity extends Activity {
                             bytes.write(part, 0, n);
                         }
                     }
+                    whole = true;
                     JSONObject session = new JSONObject(bytes.toString("UTF-8"));
                     reachable = session.opt("signed_in") instanceof Boolean;
                 }
             } catch (Exception unreachable) { /* A second failed check returns to pairing. */ }
-            finally { if (connection != null) connection.disconnect(); }
+            finally { if (connection != null && !whole) connection.disconnect(); }
             final boolean ok = reachable;
             final int code = status;
             runOnUiThread(() -> {

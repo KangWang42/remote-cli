@@ -1457,6 +1457,7 @@ impl Agent {
                 continue;
             }
             let started = Instant::now();
+            let mut brought = false;
             let payload = json!({"instance": self.instance, "wait": 12});
             match self.pull_http.post(
                 &format!("{server}/api/terminal/agent/pull"),
@@ -1471,6 +1472,7 @@ impl Agent {
                             let ops: Vec<Value> =
                                 ops.iter().filter(|op| op.is_object()).cloned().collect();
                             if !ops.is_empty() {
+                                brought = true;
                                 let cfg = read_config(&self.data);
                                 let mut state = self.state.lock().unwrap();
                                 let dirs = self.projects.lock().unwrap().all(&cfg);
@@ -1487,8 +1489,10 @@ impl Agent {
                 Err(_) => std::thread::sleep(Duration::from_secs(2)), // network trouble: the same
             }
             // an answer that came back at once must not become a busy loop; plain sleep —
-            // the shared wake event belongs to the report loop and must not be consumed here
-            if started.elapsed() < Duration::from_millis(40) {
+            // the shared wake event belongs to the report loop and must not be consumed here.
+            // One that brought something is asked for again at once: in a drag or fast typing
+            // the next is already waiting.
+            if !brought && started.elapsed() < Duration::from_millis(40) {
                 std::thread::sleep(Duration::from_millis(40));
             }
         }

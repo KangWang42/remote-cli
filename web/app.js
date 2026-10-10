@@ -19,6 +19,9 @@
     try { localStorage.setItem('rcli-' + key, value); } catch (error) { /* private window */ }
   };
   let data = null, project = '', timer = 0, busy = false, shown = 12, endedShown = 8, toastTimer = 0;
+  // The first list is asked for while the sign-in is still being checked: over a tunnel each answer takes a
+  // quarter of a second, and waiting for one before asking for the other doubled the time to the first picture.
+  let early = null;
 
   // ---- drawing helpers
   const svg = (path, size) => `<svg viewBox="0 0 24 24" width="${size || 22}" height="${size || 22}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
@@ -484,7 +487,8 @@
   async function refresh() {
     clearTimeout(timer);
     try {
-      data = await api('/api/terminal');
+      const asked = early; early = null;
+      data = (asked && await asked) || await api('/api/terminal');
       if (data.device.shell) TOOLS.shell = data.device.shell;
       draw(); peeks();
       if (anew) {
@@ -514,6 +518,7 @@
         try { await api('/api/login', ticket ? { ticket } : { password: given }); }
         catch (error) { showLogin(); $('login-error').textContent = ticket ? '这个窗口的登录已过期，请从电脑端程序重新打开' : error.message; return; }
       }
+      if (!/^[a-f0-9]{32}$/.test(wanted)) early = fetch('/api/terminal', { credentials: 'same-origin' }).then(reply => reply.ok ? reply.json() : null).catch(() => null);
       const session = await (await fetch('/api/session', { credentials: 'same-origin' })).json();
       if (!session.signed_in) return showLogin();
       // ?open=<terminal> goes straight to that terminal: the computer's own window opens the one that was picked.

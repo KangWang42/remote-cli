@@ -1175,7 +1175,7 @@ class Agent:
                 self.stop.wait(1)
                 continue
             started = time.monotonic()
-            waiting = False
+            waiting = brought = False
             try:
                 status, body = self.pull_http.post(
                     self.server + "/api/terminal/agent/pull",
@@ -1187,6 +1187,7 @@ class Agent:
                     result = json.loads(body.decode("utf-8") or "{}")
                     ops = result.get("operations")
                     if isinstance(ops, list) and ops:
+                        brought = True
                         cfg = read_config(self.data)
                         with self.work:
                             dirs = self.projects.all(cfg)
@@ -1196,8 +1197,9 @@ class Agent:
                         self.wake()
             except (OSError, http.client.HTTPException, ValueError):
                 waiting = False
-            # An answer that came back at once must not become a busy loop.
-            if not waiting or time.monotonic() - started < 0.04:
+            # An answer that came back at once must not become a busy loop. One that brought something is asked
+            # for again at once: in a drag or fast typing the next is already waiting.
+            if not waiting or (not brought and time.monotonic() - started < 0.04):
                 self.stop.wait(0.04 if waiting else 2)
 
     def run(self):

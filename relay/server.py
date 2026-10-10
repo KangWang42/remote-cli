@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import sys
@@ -25,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded P
 import relay  # noqa: E402
 import websocket  # noqa: E402
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024
@@ -59,6 +60,26 @@ def _page(full):
         with _pages_lock:
             _pages[full] = kept
     return kept
+
+
+# A page names its own files with a mark of what they hold ("app.js?v=3f9a..."). A file asked for by its mark never
+# changes, so the phone keeps it for good and opens the page again without asking about each of its files; a file
+# that did change has a new mark in the next page.
+_LINK = re.compile(r'((?:src|href)="|url\(")([^"?#:]+\.(?:js|css|woff2|png|svg|ico|webmanifest))(")')
+
+
+def _marked(full, root):
+    """An HTML page with the marks of its files: its tag, its content, and its content compressed."""
+    folder = os.path.dirname(full)
+
+    def mark(found):
+        target = os.path.normpath(os.path.join(folder, *found.group(2).split("/")))
+        if not target.startswith(root + os.sep) or not os.path.isfile(target):
+            return found.group(0)
+        return "%s%s?v=%s%s" % (found.group(1), found.group(2), _page(target)[1][:12], found.group(3))
+
+    body = _LINK.sub(mark, _page(full)[2].decode("utf-8")).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()[:24], body, gzip.compress(body, 6, mtime=0)
 
 
 class Sessions:
@@ -248,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, exc, fallback):
         self._json(400, {"error": str(exc) if isinstance(exc, relay.RemoteError) else fallback})
 
-    def _static(self, path):
+    def _static(self, path, mark=""):
         root = self.server.web
         name = "index.html" if path in ("", "/") else path.lstrip("/")
         if name.endswith("/"):
@@ -258,7 +279,11 @@ class Handler(BaseHTTPRequestHandler):
         if not full.startswith(root + os.sep) or kind is None or not os.path.isfile(full):
             return self._json(404, {"error": "not found"})
         _, tag, data, packed = _page(full)
-        headers = {"Cache-Control": "no-cache", "Vary": "Accept-Encoding"}
+        if full.lower().endswith(".html"):
+            tag, data, packed = _marked(full, root)
+        # Asked for by the mark of what it holds now, a file is kept for good; otherwise the reader asks each time.
+        kept = "public, max-age=31536000, immutable" if mark and mark == tag[:12] else "no-cache"
+        headers = {"Cache-Control": kept, "Vary": "Accept-Encoding"}
         if packed and self._gzip():
             data, tag = packed, tag + "-gz"
             headers["Content-Encoding"] = "gzip"
@@ -279,7 +304,7 @@ class Handler(BaseHTTPRequestHandler):
         path, query = url.path, parse_qs(url.query)
         first = lambda key, default="": (query.get(key) or [default])[0]
         if not path.startswith("/api/"):
-            return self._static(path)
+            return self._static(path, first("v"))
         if path == "/api/session":
             return self._json(200, {"signed_in": self._authed(), "version": VERSION})
         if not self._authed():
@@ -333,10 +358,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
         self.send_header("Sec-WebSocket-Accept", key)
+        compression = websocket.deflate(self.headers)
+        if compression:
+            self.send_header("Sec-WebSocket-Extensions", compression[0])
         self.end_headers()
         self.close_connection = True
         self.connection.settimeout(35)
-        channel = websocket.Connection(self.rfile, self.connection)
+        channel = websocket.Connection(self.rfile, self.connection, compression)
         channel.send(dict(first, t="out"))
 
         def output():
