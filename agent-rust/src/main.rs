@@ -14,7 +14,7 @@
 //! and one waiter per terminal — the same shape the Python agent uses. Terminal input and
 //! output never reach a log.
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -356,8 +356,9 @@ struct LiveInner {
     output: Vec<Chunk>, // numbered, not yet acknowledged by the relay
     out_bytes: usize,   // bytes in `output`, maintained by seal/trim
     seq: i64,
-    closed: bool,  // the process has been reaped
-    drained: bool, // the reader delivered everything
+    closed: bool,      // the process has been reaped
+    drained: bool,     // the reader delivered everything
+    told_closed: bool, // the relay accepted a report that said this terminal ended
     exit_code: Option<i64>,
     closed_at: Option<Instant>,
     closing_at: Option<Instant>, // TERM sent; KILL follows if this lapses three seconds
@@ -389,7 +390,12 @@ fn spawn_pre(cwd: &str, shell: &str) -> Result<SpawnPre, String> {
     let mut envs: Vec<String> = std::env::vars_os()
         .filter(|(k, _)| {
             let k = k.to_string_lossy();
-            !STRIP_ENV.iter().any(|s| s == &k) // never hand a parent coding session down
+            if STRIP_ENV.iter().any(|s| s == &k) {
+                return false; // never hand a parent coding session down
+            }
+            // these are set below; a duplicate would never win (getenv takes the first
+            // match), so an inherited value must make way
+            !(k == "TERM" || k == "COLORTERM" || (!has_utf8_locale && k == "LANG"))
         })
         .map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.to_string_lossy()))
         .collect();
@@ -468,7 +474,9 @@ impl Live {
                         libc::close(slave);
                     }
                     libc::close(master);
-                    libc::chdir(pre.cwd.as_ptr());
+                    if libc::chdir(pre.cwd.as_ptr()) != 0 {
+                        libc::_exit(127); // the folder is gone: do not start somewhere else
+                    }
                     libc::execvpe(pre.file.as_ptr(), pre.argv.as_ptr(), pre.envp.as_ptr());
                     libc::_exit(127);
                 }
@@ -489,6 +497,7 @@ impl Live {
                             seq: 0,
                             closed: false,
                             drained: false,
+                            told_closed: false,
                             exit_code: None,
                             closed_at: None,
                             closing_at: None,
@@ -737,6 +746,7 @@ impl Live {
     fn can_forget(&self) -> bool {
         let inner = self.inner.lock().unwrap();
         inner.closed
+            && inner.told_closed
             && inner.pending.is_empty()
             && inner.output.is_empty()
             && (inner.drained
@@ -805,16 +815,14 @@ fn output_batch(terminals: &HashMap<String, Arc<Live>>) -> Vec<Value> {
                 .collect()
         };
         for c in chunks {
-            let encoded = serde_json::to_string(
-                &json!({"terminal": &live.id, "seq": c.seq, "data": &c.data}),
-            )
-            .map(|s| s.len())
-            .unwrap_or(0);
+            let value = json!({"terminal": live.id, "seq": c.seq, "data": c.data});
+            // measure the very object that goes out — one serialization, not two
+            let encoded = serde_json::to_string(&value).map(|s| s.len()).unwrap_or(0);
             if !batch.is_empty() && size + encoded > BATCH_BYTES {
                 return batch;
             }
             size += encoded;
-            batch.push(json!({"terminal": live.id, "seq": c.seq, "data": c.data}));
+            batch.push(value);
             if batch.len() >= BATCH_CHUNKS {
                 return batch;
             }
@@ -866,7 +874,11 @@ impl Projects {
     }
 
     fn all(&self, cfg: &Value) -> BTreeMap<String, String> {
-        let mut dirs = parse_dirs(cfg);
+        self.all_from(parse_dirs(cfg))
+    }
+
+    /// all(), over an already parsed fixed list — the report loop parses once per turn.
+    fn all_from(&self, mut dirs: BTreeMap<String, String>) -> BTreeMap<String, String> {
         for (name, path) in &self.own {
             if !dirs.contains_key(name) {
                 let path = normal_folder(path).unwrap_or_default();
@@ -878,8 +890,7 @@ impl Projects {
         dirs
     }
 
-    fn entries(&self, cfg: &Value) -> Vec<Value> {
-        let fixed = parse_dirs(cfg);
+    fn entries_from(&self, fixed: &BTreeMap<String, String>) -> Vec<Value> {
         let mut out: Vec<Value> = fixed
             .iter()
             .map(|(n, p)| json!({"name": n, "path": p, "fixed": true, "exists": true}))
@@ -990,6 +1001,7 @@ struct State {
     next_login: f64,
     terminals: HashMap<String, Arc<Live>>,
     completed: BTreeMap<String, Ack>,
+    completed_order: VecDeque<String>, // insertion order, for evicting the oldest
     reported: BTreeSet<String>,
     last_activity: f64,
     last_input: f64,
@@ -1042,6 +1054,7 @@ impl Agent {
                 next_login: 0.0,
                 terminals: HashMap::new(),
                 completed: BTreeMap::new(),
+                completed_order: VecDeque::new(),
                 reported: BTreeSet::new(),
                 last_activity: now(),
                 last_input: 0.0,
@@ -1101,7 +1114,7 @@ impl Agent {
 
     fn report(&self) {
         let cfg = read_config(&self.data);
-        let (server_before, token, dirs, payload, ack_ids) =
+        let (server_before, token, dirs, payload, ack_ids, closed_ids) =
             {
                 let mut state = self.state.lock().unwrap();
                 let server = cfg_str(&cfg, "Server")
@@ -1111,6 +1124,12 @@ impl Agent {
                 if server != state.server {
                     state.server = server;
                     state.token.clear();
+                }
+                // even when nothing can go out, pending must be sealed: it is the only
+                // buffer without a bound, and the floor on output carries the agent
+                // through a long relay outage
+                for live in state.terminals.values() {
+                    seal(live);
                 }
                 if state.server.is_empty() {
                     return;
@@ -1123,7 +1142,7 @@ impl Agent {
                     let name = tidy(cfg_str(&cfg, "Name"), 60);
                     let name = if name.is_empty() { hostname() } else { name };
                     if unsafe { libc::isatty(2) } == 1 {
-                        print_pairing(&state.server, &self.password, &name);
+                        print_pairing(&pairing_address(&cfg, &state.server), &self.password, &name);
                     } else {
                         say("配对信息不写入日志；在终端运行本程序 --pair 查看地址、密码和二维码");
                     }
@@ -1137,7 +1156,8 @@ impl Agent {
                         }
                     }
                 }
-                let dirs = self.projects.lock().unwrap().all(&cfg);
+                let fixed = parse_dirs(&cfg);
+                let dirs = self.projects.lock().unwrap().all_from(fixed.clone());
                 for live in state.terminals.values() {
                     live.escalate();
                 }
@@ -1164,15 +1184,26 @@ impl Agent {
                             .to_string()
                     })
                     .collect();
+                let mut closed_ids: Vec<String> = Vec::new();
                 let terminals: Vec<Value> = state.terminals.values().map(|live| {
                 let inner = live.inner.lock().unwrap();
+                if inner.closed {
+                    closed_ids.push(live.id.clone());
+                }
                 json!({"id": live.id, "state": if inner.closed { "closed" } else { "running" },
                        "cols": inner.cols, "rows": inner.rows, "session": "", "status": "",
                        "exit_code": inner.exit_code})
             }).collect();
-                let entries = self.projects.lock().unwrap().entries(&cfg);
+                let entries = self.projects.lock().unwrap().entries_from(&fixed);
+                let shell_name = self
+                    .shell(&cfg)
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
                 let payload = json!({
                     "info": {"instance": self.instance, "enabled": enabled, "tools": ["shell"],
+                             "version": VERSION, "shell": shell_name,
                              "workspaces": dirs.keys().collect::<Vec<_>>(),
                              "projects": entries},
                     "terminals": terminals,
@@ -1185,6 +1216,7 @@ impl Agent {
                     dirs,
                     payload,
                     ack_ids,
+                    closed_ids,
                 )
             };
         let result = self.report_http.post(
@@ -1209,6 +1241,13 @@ impl Agent {
             Err(_) => return,
         };
         let mut state = self.state.lock().unwrap();
+        // a report that went through said which terminals ended: only now may they be
+        // forgotten, or the phone would show a terminal running that died in transit
+        for id in closed_ids {
+            if let Some(live) = state.terminals.get(&id) {
+                live.inner.lock().unwrap().told_closed = true;
+            }
+        }
         for id in ack_ids {
             state.reported.insert(id);
         }
@@ -1226,10 +1265,16 @@ impl Agent {
             }
         }
         if state.completed.len() > 4000 {
-            let drop: Vec<String> = state.completed.keys().take(1000).cloned().collect();
-            for id in drop {
-                state.completed.remove(&id);
-                state.reported.remove(&id);
+            // evict the oldest executed (insertion order), never by id: an ack dropped
+            // while the relay still remembers the operation would run it a second time
+            for _ in 0..1000 {
+                match state.completed_order.pop_front() {
+                    Some(id) => {
+                        state.completed.remove(&id);
+                        state.reported.remove(&id);
+                    }
+                    None => break,
+                }
             }
         }
         let forget: Vec<String> = state
@@ -1336,6 +1381,7 @@ impl Agent {
                 error
             ));
         }
+        state.completed_order.push_back(op_id.clone());
         state.completed.insert(op_id.clone(), Ack { error });
         state.reported.remove(&op_id);
         state.last_activity = now();
@@ -1437,8 +1483,8 @@ impl Agent {
                         }
                     }
                 }
-                Ok(_) => {}
-                Err(_) => {}
+                Ok(_) => std::thread::sleep(Duration::from_secs(2)), // 429/5xx: back off, like the Python agent
+                Err(_) => std::thread::sleep(Duration::from_secs(2)), // network trouble: the same
             }
             // an answer that came back at once must not become a busy loop; plain sleep —
             // the shared wake event belongs to the report loop and must not be consumed here
@@ -1515,6 +1561,20 @@ fn print_pairing(server: &str, password: &str, name: &str) {
     }
 }
 
+/// Where the phone reaches the relay. It differs from Server when the relay runs on this
+/// computer: the agent talks to it locally, the phone through PairUrl.
+fn pairing_address(cfg: &Value, server: &str) -> String {
+    let public = cfg_str(cfg, "PairUrl")
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if valid_server(&public) {
+        public
+    } else {
+        server.to_string()
+    }
+}
+
 /// --pair: what the phone needs to add this computer, for the person at the console.
 fn show_pairing(data: &Path) -> u8 {
     let cfg = read_config(data);
@@ -1529,7 +1589,7 @@ fn show_pairing(data: &Path) -> u8 {
     }
     let name = tidy(cfg_str(&cfg, "Name"), 60);
     let name = if name.is_empty() { hostname() } else { name };
-    print_pairing(&server, &password, &name);
+    print_pairing(&pairing_address(&cfg, &server), &password, &name);
     0
 }
 
@@ -1572,7 +1632,7 @@ fn main() -> std::process::ExitCode {
             data = argv[at + 1].clone();
         }
     }
-    if argv.len() > 1 && argv[1] == "--pair" {
+    if argv.iter().any(|a| a == "--pair") {
         return std::process::ExitCode::from(show_pairing(Path::new(&data)));
     }
     if argv.len() > 1 && argv[1] == "--set-password" {

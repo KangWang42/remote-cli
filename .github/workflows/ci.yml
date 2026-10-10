@@ -3,9 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-    paths: ["relay/**", "agent-linux/**", "agent-rust/**", ".github/workflows/ci.yml"]
+    paths: ["relay/**", "agent-linux/**", "agent-rust/**", "tools/**", ".github/workflows/ci.yml"]
   pull_request:
-    paths: ["relay/**", "agent-linux/**", "agent-rust/**", ".github/workflows/ci.yml"]
+    paths: ["relay/**", "agent-linux/**", "agent-rust/**", "tools/**", ".github/workflows/ci.yml"]
   workflow_dispatch:
 
 jobs:
@@ -24,7 +24,9 @@ jobs:
       - name: relay unit tests
         run: python -m unittest discover -s relay -p "test_*.py"
       - name: build the Rust agent
-        run: cargo build --release --manifest-path agent-rust/Cargo.toml
+        run: |
+          cargo build --release --manifest-path agent-rust/Cargo.toml
+          test -x agent-rust/target/release/remote-cli-agent
       - name: rust lint (fmt + clippy)
         run: |
           cargo fmt --check --manifest-path agent-rust/Cargo.toml
@@ -32,6 +34,6 @@ jobs:
       - name: python lint (runtime errors only)
         run: |
           pip install ruff
-          ruff check --select E9,F63,F7,F82 relay agent-linux
+          ruff check --select E9,F63,F7,F82 relay agent-linux tools
       - name: agent-linux tests (unit + e2e against the real relay, Python and Rust binaries)
         run: python -m unittest discover -s agent-linux -p "test_*.py"
