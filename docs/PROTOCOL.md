@@ -181,13 +181,13 @@ the same folder. A locked source cannot be resumed concurrently; choose fork or 
 ```json
 {"info": {"instance": "<32 hex, new at each start>", "enabled": true, "tools": ["claude", "shell"], "workspaces": ["demo"],
           "features": ["files", "update"], "version": "0.7.0", "newer": "", "shell": "PowerShell", "projects": [...], "candidates": [...]},
- "terminals": [{"id": "...", "state": "running", "status": "idle"}],
+ "terminals": [{"id": "...", "state": "running", "status": "idle", "tool": "shell", "dir": "demo", "created": 1700000000000, "title": ""}],
  "output": [{"terminal": "...", "seq": 13, "data": "..."}],
  "acks": [{"id": "<operation id>", "error": ""}],
  "sessions": [...]}
 ```
 
-→ `{"operations": [{"id", "terminal", "action", ...}], "output_ack": {"<terminal>": 13}}`
+→ `{"operations": [{"id", "terminal", "action", ...}], "output_ack": {"<terminal>": 13}, "titles": {"<terminal>": "<name the owner gave>"}}`
 
 The computer keeps each piece of output until `output_ack` covers its `seq`, and reports each finished
 operation in `acks` until the relay stops sending it. It checks every operation itself: the folder must be
@@ -198,6 +198,33 @@ waiting and returns it at once, so a key press does not wait for the next report
 
 An answer to `file_list`, `file_read` or `session_read` (the operation behind `/api/conversation`, with `session`,
 `tool` and `dir`) travels in `acks` as `{"id", "error", "result": {...}}`.
+
+### A computer that turns to another relay
+
+The terminals belong to the computer, not to the relay that passed on the request to start them. `terminals` names
+every terminal the computer has, and the relay keeps its list in step with it:
+
+- A terminal the relay lists as running under this `instance` and that a report no longer names has ended; it is
+  listed as ended. A report without `terminals` says nothing about them.
+- A terminal the relay does not know is listed when the report says what it is: `tool`, `dir` and `created`
+  (milliseconds since 1970), with `session`, `title` (a name the owner gave it), `cols`, `rows` and `exit_code`
+  where they apply. A running one is always taken. An ended one (`state: "closed"`) is taken where it would be
+  kept: not beside a terminal of the same conversation, and not when the list is full of newer ones. A computer
+  that sends none of these fields is treated as before.
+- `output_ack` then names the terminal with the last piece the relay has (`0` for one it just listed). A computer
+  that kept the output it had given goes back to the piece after that one and sends it again, marked `"old": true`
+  so that it does not count as the program working. When what it kept begins later than that, the first piece is
+  marked `"restart": true` and begins with the terminal modes in force: the relay drops the output it kept before,
+  and readers get `reset`.
+- `titles` are the names given with `rename`; the computer reports them back as `title` to a relay that lists the
+  terminal for the first time.
+
+The Windows program does all of this, keeping about 600,000 characters of each running terminal and the last
+screens of the twelve terminals that ended last. So the way of connecting can be changed between the local relay
+and a relay of one's own while terminals run, and a relay that lost its list is given it again.
+
+A conversation is listed once among the terminals: a running terminal replaces the ended ones that showed the same
+conversation (`tool` and `session`), and of several ended ones the last that printed anything is kept.
 
 The Windows program keeps its `instance` across a restart for an update: it notes its open terminals, and after
 the restart reports the same instance and the same terminal ids, with output numbered on from where it was.

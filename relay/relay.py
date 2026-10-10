@@ -136,6 +136,7 @@ class _Operations(collections.OrderedDict):
 
 _pending = _Operations()
 _id = re.compile(r"^[a-f0-9]{16,32}$")
+_terminal = re.compile(r"^[a-f0-9]{32}$")
 _session = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 _device = {"seen": 0, "instance": "", "enabled": False, "workspaces": [], "tools": [], "projects": [], "candidates": []}
 PROJECT_ACTIONS = ("project_add", "project_remove", "project_rename")
@@ -158,6 +159,7 @@ def _state(path):
                 term.update(state="closed", error="中转服务重启前的启动未完成，请重新打开终端")
                 changed = True
             changed = _trim(term) or changed
+        changed = _single(state) or changed
         _cache[path] = state
         if changed:
             _save(path, state)
@@ -257,6 +259,60 @@ def _trim(term):
 
 def _view(now):
     return {**_device, "online": now - _device["seen"] < 15}
+
+
+def _single(state):
+    """A conversation is listed once among the terminals. A terminal that runs it replaces the ended ones that
+    showed it before; of several ended ones the last that printed anything stays. Returns whether any went."""
+    best = {}
+    for term in state["threads"].values():
+        if term.get("session") and term["state"] != "starting":
+            rank = (term["state"] == "running", term.get("seq", 0) > 0, term["created"])
+            key = (term["tool"], term["session"])
+            if key not in best or rank > best[key][0]:
+                best[key] = (rank, term["id"])
+    gone = [term["id"] for term in state["threads"].values()
+            if term.get("session") and term["state"] == "closed" and best[(term["tool"], term["session"])][1] != term["id"]]
+    for key in gone:
+        del state["threads"][key]
+    return bool(gone)
+
+
+def _room(state):
+    """Ended terminals beyond the number kept go, oldest first."""
+    while len(state["threads"]) > MAX_HISTORY:
+        closed = [t for t in state["threads"].values() if t["state"] not in ("starting", "running")]
+        if not closed:
+            break
+        del state["threads"][min(closed, key=lambda t: t["created"])["id"]]
+
+
+def _adopt(state, item, instance):
+    """A terminal the computer has and this relay does not know: the computer was using another relay when it was
+    started, or this relay lost its list. The computer says what it is, and it is listed here as it was there. An
+    ended one is taken only where it would be kept: not beside a terminal of the same conversation, and not when
+    the list is full of newer ones."""
+    key, tool, folder, created, session = item.get("id"), item.get("tool"), item.get("dir"), item.get("created"), item.get("session")
+    if not isinstance(key, str) or not _terminal.fullmatch(key) or tool not in LABELS or not _name(folder, 60) \
+            or type(created) is not int or created <= 0 or item.get("state") not in ("running", "closed"):
+        return None
+    session = session if isinstance(session, str) and _session.fullmatch(session) else ""
+    threads = state["threads"]
+    if item["state"] == "closed":
+        if session and any(t["tool"] == tool and t.get("session") == session for t in threads.values()):
+            return None
+        closed = [t["created"] for t in threads.values() if t["state"] == "closed"]
+        if len(threads) >= MAX_HISTORY and not any(at < created for at in closed):
+            return None
+    named = _name(item.get("title"), 60)
+    term = {"id": key, "tool": tool, "dir": folder, "title": item["title"].strip() if named else _device.get("shell") or LABELS[tool] if tool == "shell" else LABELS[tool],
+            "session": session, "status": "", "created": created, "state": item["state"], "error": "", "seq": 0, "output": [], "size": 0, "cols": 80, "rows": 24,
+            "instance": instance, "previous": "", "history": False, "touched": True}
+    if named:
+        term["renamed"] = True
+    threads[key] = term
+    _room(state)
+    return threads.get(key)
 
 
 # What a terminal is doing, for the lists on the phone:
@@ -570,11 +626,7 @@ def command(path, payload, now=None):
                     "created": int(now * 1000), "state": "starting", "error": "", "seq": 0, "output": [], "size": 0, "cols": 80, "rows": 24,
                     "instance": _device["instance"], "previous": previous, "history": bool(payload.get("history")), "touched": False}
             state["threads"][terminal] = term
-            while len(state["threads"]) > MAX_HISTORY:
-                closed = [t for t in state["threads"].values() if t["state"] not in ("starting", "running")]
-                if not closed:
-                    break
-                del state["threads"][min(closed, key=lambda t: t["created"])["id"]]
+            _room(state)
         else:
             term = state["threads"].get(terminal) if isinstance(terminal, str) else None
             if not term:
@@ -769,10 +821,23 @@ def agent(path, payload, now=None):
                     term.update(state="closed", error=op["error"])
                     _trim(term)
                     dirty = True
-        for item in payload.get("terminals", [])[:MAX_TERMINALS + MAX_HISTORY]:
+        reported = payload.get("terminals") if isinstance(payload.get("terminals"), list) else None
+        if reported is not None:
+            # The computer names every terminal it has. One that is listed here as running and is no longer among
+            # them ended while the computer was using another relay, or without this relay being told.
+            there = {item.get("id") for item in reported[:200] if isinstance(item, dict) and isinstance(item.get("id"), str)}
+            for term in state["threads"].values():
+                if term.get("instance") == instance and term["state"] == "running" and term["id"] not in there:
+                    term.update(state="closed", status="")
+                    _trim(term)
+                    dirty = True
+        for item in (reported or [])[:MAX_TERMINALS + MAX_HISTORY]:
             if not isinstance(item, dict):
                 continue
-            term = state["threads"].get(item.get("id"))
+            term = state["threads"].get(item.get("id")) if isinstance(item.get("id"), str) else None
+            if term is None and isinstance(item.get("id"), str):
+                term = _adopt(state, item, instance)
+                dirty = dirty or term is not None
             if term and term.get("instance") == instance:
                 status = item.get("state")
                 if status in ("running", "closed") and status != term["state"]:
@@ -804,10 +869,15 @@ def agent(path, payload, now=None):
             # computer has discarded them by then, so later output is accepted rather than refused forever.
             if not term or term.get("instance") != instance or type(seq) is not int or seq <= term["seq"] or not isinstance(data, str) or len(data) > 30000:
                 continue
+            if chunk.get("restart") is True:
+                # The computer gives its history again and it does not continue what is kept here: this piece begins
+                # with the terminal modes in force, and what was kept before it is dropped. Readers are told to start anew.
+                term["output"], term["size"] = [], 0
+                term["modes"], term["modes_rest"] = {}, ""
             term["output"].append({"seq": seq, "data": data})
             term["seq"] = seq
-            # A terminal from before this rule has no "touched" and keeps the old behaviour.
-            if term.get("touched", True) and now >= term.get("calm_until", 0):
+            # A terminal from before this rule has no "touched" and keeps the old behaviour. Output given again is not work.
+            if term.get("touched", True) and now >= term.get("calm_until", 0) and chunk.get("old") is not True:
                 term["out_at"] = now
             term["size"] = term.get("size", 0) + len(data)
             _trim(term)
@@ -816,6 +886,8 @@ def agent(path, payload, now=None):
         for term in state["threads"].values():
             if term.get("instance") == instance and _track(term, now):
                 dirty = True
+        if dirty:
+            _single(state)
         # States are written at once. Output alone is written every few seconds: a busy screen reports many times a second.
         if dirty or (path in _unsaved and now - _unsaved[path] >= SAVE_SECONDS):
             _save(path, state)
@@ -825,4 +897,6 @@ def agent(path, payload, now=None):
         for op in _pending.queued.values():
             op["sent"] = True
         ops = [{**op["payload"], "terminal": op["terminal"], "at": op["at"]} for op in _pending.queued.values()]
-        return {"operations": ops, "output_ack": {t["id"]: t["seq"] for t in state["threads"].values() if t.get("instance") == instance}}
+        mine = [t for t in state["threads"].values() if t.get("instance") == instance]
+        # The names the owner gave: the computer keeps them, so that another relay it turns to can show them too.
+        return {"operations": ops, "output_ack": {t["id"]: t["seq"] for t in mine}, "titles": {t["id"]: t["title"] for t in mine if t.get("renamed")}}

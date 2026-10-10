@@ -1,6 +1,6 @@
 """The "自有中转" tab of the Windows program, as installed (run after tools/package_windows.py): opening the tab
 changes nothing, a relay that refuses the password leaves the connection in use as it was and says why, and a
-relay that accepts it is switched to. The program presses its own controls (--screenshot ... own) and writes
+relay that accepts it is switched to; "重新连接" below does what the tab shown says. The program presses its own controls (--screenshot ... own) and writes
 what came of it; the relay of one's own is one started here. Uses temporary data folders and ports 8744 and 8745.
 
     python tests/own_mode_check.py [folder for the pictures]
@@ -29,13 +29,13 @@ def listening(port):
         return False
 
 
-def press(folder, name, *typed, mode="cloud", own_server=""):
+def press(folder, name, *typed, mode="cloud", own_server="", password=None):
     """Starts the program with its own data folder, opens the tab and types what is given; returns what it wrote."""
     data = Path(folder) / name
     data.mkdir()
     # "cloud" without the tunnel program: the program's own relay listens on this computer only.
     (data / "config.json").write_text(json.dumps({"Mode": mode, "Port": LOCAL, "OwnServer": own_server, "RemoteEnabled": True}), encoding="utf-8")
-    subprocess.run([str(STAGE / "RemoteCliAgent.exe"), "--set-password", str(data)], input=local_password.encode(), check=True)
+    subprocess.run([str(STAGE / "RemoteCliAgent.exe"), "--set-password", str(data)], input=(password or local_password).encode(), check=True)
     picture = Path(folder) / (name + ".png")
     subprocess.run([str(STAGE / "RemoteCli.exe"), "--screenshot", str(picture), "0", "own", *typed], env=dict(os.environ, REMOTECLI_DATA=str(data)), cwd=str(STAGE), check=True, timeout=120)
     said = dict(line.split("=", 1) for line in Path(str(picture) + ".txt").read_text(encoding="utf-8").splitlines())
@@ -76,11 +76,20 @@ def main():
             assert (accepted["mode"], accepted["tab"], accepted["own_relay"]) == ("own", "2", "stopped"), accepted
             assert accepted["status"].startswith("已连上自有中转") and accepted["address"] == address, accepted
             assert accepted["config"]["Mode"] == "own" and accepted["config"]["OwnServer"] == address, accepted["config"]
+            # "重新连接" with the tab open does what "连接" does: it switches when the relay takes the password, and not otherwise
+            again = press(folder, "again", address, relay_password, "again")
+            assert (again["mode"], again["own_relay"]) == ("own", "stopped") and again["status"].startswith("已连上自有中转"), again
+            assert again["config"]["Mode"] == "own" and again["config"]["OwnServer"] == address, again["config"]
+            unmoved = press(folder, "again-refused", address, "not-the-password", "again")
+            assert (unmoved["mode"], unmoved["own_relay"]) == ("cloud", "running") and "密码" in unmoved["about"], unmoved
+            # started with one's own relay in use: the two boxes show it, and "重新连接" connects to it again
+            started = press(folder, "started", "-", "-", "again", mode="own", own_server=address, password=relay_password)
+            assert (started["mode"], started["address"], started["boxes"]) == ("own", address, "typed") and started["status"].startswith("已连上自有中转"), started
             if out:
                 out.mkdir(parents=True, exist_ok=True)
                 for name in ("looked", "refused", "accepted"):
                     (out / ("own-" + name + ".png")).write_bytes((Path(folder) / (name + ".png")).read_bytes())
-            print("own relay tab: opening it changes nothing; a refused password, a bad address and an absent relay leave the connection as it was and say why; an accepted one is switched to")
+            print("own relay tab: opening it changes nothing; a refused password, a bad address and an absent relay leave the connection as it was and say why; an accepted one is switched to; the button below does the same as the one in the tab")
         finally:
             relay.kill()
 

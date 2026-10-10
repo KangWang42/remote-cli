@@ -22,7 +22,7 @@ namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
 public sealed class App : Form {
-    const string Version = "1.0.8";
+    const string Version = "1.0.9";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -75,17 +75,24 @@ public sealed class App : Form {
         try { config = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(ConfigFile, Encoding.UTF8)); } catch { config = null; }
         if (config == null) config = new Dictionary<string, object>();
         foreach (var item in new Dictionary<string, object> { { "Mode", "lan" }, { "Port", 8722 }, { "Server", "" }, { "OwnServer", "" }, { "RemoteEnabled", true },
-                 { "RemoteMaxMode", "full" }, { "TunnelProtocol", "auto" }, { "AutoUpdate", false }, { "RemoteDirs", new object[0] } })
+                 { "RemoteMaxMode", "full" }, { "TunnelProtocol", "auto" }, { "AutoUpdate", false }, { "RemoteDirs", new object[0] }, { "UpdateCheckUtc", "" } })
             if (!config.ContainsKey(item.Key) || config[item.Key] == null) config[item.Key] = item.Value;
         if (Array.IndexOf(new[] { "lan", "cloud", "own" }, Mode) < 0) config["Mode"] = "lan";
         try { password = Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(PasswordFile), null, DataProtectionScope.CurrentUser)); } catch { password = ""; }
         if (password.Length == 0) SetPassword(NewPassword());
     }
+    // Settings are changed from the window and from the thread that connects, at a start with one's own relay at the
+    // same moment: a change and the writing of the file are one step, one at a time. Every setting is there from
+    // LoadSettings on, so a change never adds one while another thread reads.
+    readonly object saving = new object();
     void Save() {
-        string temporary = ConfigFile + ".tmp";
-        File.WriteAllText(temporary, json.Serialize(config), new UTF8Encoding(false));
-        if (File.Exists(ConfigFile)) File.Replace(temporary, ConfigFile, null); else File.Move(temporary, ConfigFile);
+        lock (saving) {
+            string temporary = ConfigFile + ".tmp";
+            File.WriteAllText(temporary, json.Serialize(config), new UTF8Encoding(false));
+            if (File.Exists(ConfigFile)) File.Replace(temporary, ConfigFile, null); else File.Move(temporary, ConfigFile);
+        }
     }
+    void Keep(string key, object value) { lock (saving) { config[key] = value; Save(); } }
     static string NewPassword() {
         byte[] bytes = new byte[10];
         using (var random = RandomNumberGenerator.Create()) random.GetBytes(bytes);
@@ -194,7 +201,7 @@ public sealed class App : Form {
             if (mode == "own") {
                 string server = Convert.ToString(config["OwnServer"]).Trim().TrimEnd('/');
                 if (!Regex.IsMatch(server, @"\Ahttps?://[^/\s]+\z")) { Say("请填写中转地址，例如 https://cli.example.com", true); return; }
-                config["Server"] = server; Save();
+                Keep("Server", server);
                 if (agent != null) agent.Reset();
                 ShowAddress(server);
                 // Whether it works is found out here and said: the address, the certificate or the password.
@@ -217,7 +224,7 @@ public sealed class App : Form {
             for (int n = 0; n < 40 && !Listening(port); n++) { await Task.Delay(250); if (relay.HasExited) break; }
             if (mine != generation) return;
             if (!Listening(port)) { Say("本机服务没有启动成功", true); return; }
-            config["Server"] = "http://127.0.0.1:" + port; Save();
+            Keep("Server", "http://127.0.0.1:" + port);
             if (agent != null) agent.Reset();
             if (mode == "lan") {
                 string ip = LanAddress();
@@ -255,6 +262,12 @@ public sealed class App : Form {
         finally { if (held != null && held != tunnel) Kill(held); }
     }
     void Reconnect() { Task.Run(() => Connect()); }
+    // "重新连接" does what the tab shown says. With the address and password of one's own relay in the two boxes and
+    // not in use yet (the tab was opened from another way of connecting, or they were changed), it connects there.
+    void Again() {
+        bool typed = (ownForm && Mode != "own") || (Mode == "own" && (addressBox.Text != putAddress || passwordBox.Text != putPassword));
+        if (!typed) Reconnect(); else if (ownConnect.Enabled) ConnectOwn();
+    }
 
     async void DownloadTunnel(object sender, EventArgs e) {
         if (File.Exists(TunnelFile)) { Reconnect(); return; }
@@ -319,6 +332,8 @@ public sealed class App : Form {
     string OwnPasswordFile { get { return Path.Combine(dataDir, "own-password.dpapi"); } }
     string OwnPassword() { try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(OwnPasswordFile), null, DataProtectionScope.CurrentUser)); } catch { return ""; } }
     void OwnSays(string text, bool problem) { ownNote = text; ownTrouble = problem; ShowMode(); }
+    string putAddress = "", putPassword = "";       // what the program wrote into the two boxes last: anything else in them was typed
+    void Put(string where, string secret) { addressBox.Text = putAddress = where; passwordBox.Text = putPassword = secret; }
     void ConnectOwn() {
         string server = addressBox.Text.Trim().TrimEnd('/'), secret = passwordBox.Text.Trim();
         if (!Regex.IsMatch(server, @"\Ahttps?://[^/\s]+\z")) { OwnSays("地址要写完整，以 https:// 开头，例如 https://cli.example.com 或 https://1.2.3.4:8443", true); addressBox.Focus(); return; }
@@ -331,8 +346,9 @@ public sealed class App : Form {
                 ownConnect.Enabled = true;
                 if (wrong.Length > 0) { OwnSays(wrong + (Mode == "own" ? "" : "。现在的连接方式没有变"), true); return; }
                 try { File.WriteAllBytes(OwnPasswordFile, ProtectedData.Protect(Encoding.UTF8.GetBytes(secret), null, DataProtectionScope.CurrentUser)); } catch { }
-                config["OwnServer"] = server; config["Mode"] = "own"; Save();
+                lock (saving) { config["OwnServer"] = server; Keep("Mode", "own"); }
                 ownForm = false; ownNote = "";
+                Put(server, secret);
                 SetPassword(secret); ShowMode(); Reconnect();
             }));
         });
@@ -352,11 +368,10 @@ public sealed class App : Form {
         bool typed = !addressBox.ReadOnly;
         addressBox.ReadOnly = passwordBox.ReadOnly = !own;
         addressField.Invalidate(); passwordField.Invalidate();
-        if (!own) { addressBox.Text = address; passwordBox.Text = password; }
-        else if (!typed) {
-            addressBox.Text = Mode == "own" ? address : Convert.ToString(config["OwnServer"]);
-            passwordBox.Text = Mode == "own" ? password : OwnPassword();
-        }
+        if (!own) Put(address, password);
+        // Boxes nobody typed into follow what is in use: at a start with one's own relay the address is known only after this ran once.
+        else if (!typed || (addressBox.Text == putAddress && passwordBox.Text == putPassword))
+            Put(Mode == "own" ? address : Convert.ToString(config["OwnServer"]), Mode == "own" ? password : OwnPassword());
         tunnelButton.Text = File.Exists(TunnelFile) ? "重新建立隧道" : "下载隧道程序（约 60 MB）";
         tunnelButton.Glyph = File.Exists(TunnelFile) ? Theme.IconRefresh : Theme.IconDownload;
     }
@@ -379,7 +394,7 @@ public sealed class App : Form {
         string wanted = name;
         for (int n = 2; list.Any(line => line.StartsWith(name + "=")); n++) name = wanted + " " + n;
         list.Add(name + "=" + full);
-        config["RemoteDirs"] = list.ToArray(); Save(); ShowProjects();
+        Keep("RemoteDirs", list.ToArray()); ShowProjects();
         folders.SelectedIndex = folders.Items.Count - 1;
         Toast("已添加 " + name);
     }
@@ -524,7 +539,7 @@ public sealed class App : Form {
             if (wanted == "own") { ownForm = true; ShowMode(); if (Mode != "own") addressBox.Focus(); return; }
             ownForm = false;
             if (wanted == Mode) { ShowMode(); return; }       // back from only looking at that tab: what is running stays
-            config["Mode"] = wanted; Save(); ShowMode(); Reconnect();
+            Keep("Mode", wanted); ShowMode(); Reconnect();
         };
         Note(way, "地址", 20, 172, 200, 18, Theme.Muted, 8.5f, true);
         Place(way, addressField, 20, 194, 256, 34); addressBox.ReadOnly = true;
@@ -532,7 +547,7 @@ public sealed class App : Form {
         Note(way, "密码", 20, 238, 200, 18, Theme.Muted, 8.5f, true);
         Place(way, passwordField, 20, 260, 256, 34); passwordBox.ReadOnly = true; passwordBox.Font = new Font("Consolas", 10f);
         Action(way, "复制", Theme.IconCopy, ButtonKind.Normal, 284, 260, 80, 34, (s, e) => Copy(passwordBox.Text, "密码"));
-        Action(connect, "重新连接", Theme.IconRefresh, ButtonKind.Normal, 28, 456, 116, 34, (s, e) => Reconnect());
+        Action(connect, "重新连接", Theme.IconRefresh, ButtonKind.Normal, 28, 456, 116, 34, (s, e) => Again());
         // A relay of one's own decides its password itself: there it is typed into the box above, not made here.
         changePassword = Action(connect, "换一个密码", Theme.IconLock, ButtonKind.Ghost, 152, 456, 124, 34, (s, e) => {
             if (!Confirm("换一个密码？", "换密码后，已连接的手机需要重新扫码。", "换密码", false)) return;
@@ -554,7 +569,7 @@ public sealed class App : Form {
             string name = Ask("项目名称", "手机上显示的名字，不会改动文件夹本身。", folders.Rows[at].Title).Trim().Replace("=", " ");
             if (name.Length == 0 || name.Length > 40) return;
             if (list.Where((line, i) => i != at).Any(line => line.StartsWith(name + "="))) { Toast("已有同名项目"); return; }
-            list[at] = name + "=" + path; config["RemoteDirs"] = list.ToArray(); Save(); ShowProjects();
+            list[at] = name + "=" + path; Keep("RemoteDirs", list.ToArray()); ShowProjects();
         });
         var open = Action(projects, "打开文件夹", Theme.IconOpen, ButtonKind.Normal, 272, 518, 124, 36, (s, e) => {
             var row = folders.Selected; if (row == null) return;
@@ -563,7 +578,7 @@ public sealed class App : Form {
         var remove = Action(projects, "移除", Theme.IconDelete, ButtonKind.Danger, 588, 518, 92, 36, (s, e) => {
             int at = folders.SelectedIndex; if (at < 0) return;
             if (!Confirm("移除“" + folders.Rows[at].Title + "”？", "只是不再让手机访问这个文件夹，文件夹和里面的对话都不会被删除。", "移除", true)) return;
-            var list = Dirs(); list.RemoveAt(at); config["RemoteDirs"] = list.ToArray(); Save(); ShowProjects();
+            var list = Dirs(); list.RemoveAt(at); Keep("RemoteDirs", list.ToArray()); ShowProjects();
         });
         EventHandler chosen = (s, e) => { rename.Enabled = open.Enabled = remove.Enabled = folders.SelectedIndex >= 0; };
         folders.SelectedIndexChanged += chosen; chosen(null, EventArgs.Empty);
@@ -591,9 +606,9 @@ public sealed class App : Form {
         var settings = Page("设置", "这些设置只影响这台电脑。");
         var rows = Place(settings, new Card(), 28, 92, 652, 7 * 60 + 12);
         autoUpdateSwitch.On = Convert.ToString(config["AutoUpdate"]) == "True";
-        autoUpdateSwitch.Changed += (s, e) => { config["AutoUpdate"] = autoUpdateSwitch.On; Save(); if (autoUpdateSwitch.On) CheckForUpdate(false); };
+        autoUpdateSwitch.Changed += (s, e) => { Keep("AutoUpdate", autoUpdateSwitch.On); if (autoUpdateSwitch.On) CheckForUpdate(false); };
         enabledSwitch.On = Convert.ToString(config["RemoteEnabled"]) == "True";
-        enabledSwitch.Changed += (s, e) => { config["RemoteEnabled"] = enabledSwitch.On; Save(); RefreshActivity(); Toast(enabledSwitch.On ? "已允许手机访问" : "已暂停，手机立即不能操作"); };
+        enabledSwitch.Changed += (s, e) => { Keep("RemoteEnabled", enabledSwitch.On); RefreshActivity(); Toast(enabledSwitch.On ? "已允许手机访问" : "已暂停，手机立即不能操作"); };
         using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) autostartSwitch.On = key != null && key.GetValue("RemoteCli") != null;
         autostartSwitch.Changed += (s, e) => {
             using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) {
@@ -603,16 +618,16 @@ public sealed class App : Form {
         var rights = new Segmented { Items = new[] { "默认", "自动改文件", "只读" } };
         string max = Convert.ToString(config["RemoteMaxMode"]);
         rights.Chosen = max == "edit" ? 1 : max == "read" ? 2 : 0;
-        rights.Changed += (s, e) => { config["RemoteMaxMode"] = rights.Chosen == 1 ? "edit" : rights.Chosen == 2 ? "read" : "full"; Save(); Toast("对之后新开的终端生效"); };
+        rights.Changed += (s, e) => { Keep("RemoteMaxMode", rights.Chosen == 1 ? "edit" : rights.Chosen == 2 ? "read" : "full"); Toast("对之后新开的终端生效"); };
         var protocol = new Segmented { Items = new[] { "自动", "HTTP/2" } };
         protocol.Chosen = Convert.ToString(config["TunnelProtocol"]) == "http2" ? 1 : 0;
-        protocol.Changed += (s, e) => { config["TunnelProtocol"] = protocol.Chosen == 1 ? "http2" : "auto"; Save(); if (Mode == "cloud") Reconnect(); };
+        protocol.Changed += (s, e) => { Keep("TunnelProtocol", protocol.Chosen == 1 ? "http2" : "auto"); if (Mode == "cloud") Reconnect(); };
         var portBox = new Field(); portBox.Box.Text = Port.ToString(); portBox.Box.MaxLength = 5;
         EventHandler port = (s, e) => {
             int wanted;
             if (!Int32.TryParse(portBox.Box.Text.Trim(), out wanted) || wanted < 1024 || wanted > 65535) { portBox.Box.Text = Port.ToString(); Toast("端口要在 1024 到 65535 之间"); return; }
             if (wanted == Port) return;
-            config["Port"] = wanted; Save(); Toast("端口已改为 " + wanted); if (Mode != "own") Reconnect();
+            Keep("Port", wanted); Toast("端口已改为 " + wanted); if (Mode != "own") Reconnect();
         };
         portBox.Box.Leave += port; portBox.Box.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; port(s, e); } };
         updateButton = new RoundButton { Text = "检查更新", Glyph = Theme.IconRefresh };
@@ -640,7 +655,7 @@ public sealed class App : Form {
         tray.ContextMenuStrip = new ContextMenuStrip();
         tray.ContextMenuStrip.Items.Add("显示窗口", null, (s, e) => Reveal());
         tray.ContextMenuStrip.Items.Add("复制地址", null, (s, e) => { if (address.Length > 0) try { Clipboard.SetText(address); } catch (ExternalException) { } });
-        tray.ContextMenuStrip.Items.Add("重新连接", null, (s, e) => Reconnect());
+        tray.ContextMenuStrip.Items.Add("重新连接", null, (s, e) => Again());
         tray.ContextMenuStrip.Items.Add("-");
         tray.ContextMenuStrip.Items.Add("退出", null, (s, e) => Quit());
         FormClosing += (s, e) => {
@@ -677,7 +692,7 @@ public sealed class App : Form {
         if (!manual && !remote) {
             DateTime previous;
             if (config.ContainsKey("UpdateCheckUtc") && DateTime.TryParse(Convert.ToString(config["UpdateCheckUtc"]), null, System.Globalization.DateTimeStyles.RoundtripKind, out previous) && DateTime.UtcNow - previous < TimeSpan.FromMinutes(9)) return;
-            config["UpdateCheckUtc"] = DateTime.UtcNow.ToString("o"); Save();
+            Keep("UpdateCheckUtc", DateTime.UtcNow.ToString("o"));
         }
         updateButton.Enabled = false; if (manual) Toast("正在检查 GitHub 最新版本…");
         try {
@@ -755,13 +770,14 @@ public sealed class App : Form {
                 if (args.Length >= 3) { int page; if (Int32.TryParse(args[2], out page)) window.Go(page); }
                 Action<double> wait = seconds => { var end = DateTime.UtcNow.AddSeconds(seconds); while (DateTime.UtcNow < end) { Application.DoEvents(); Thread.Sleep(30); } };
                 // "own" after the page opens the tab of one's own relay as a click would; an address and a password
-                // after it are typed in and "连接" is pressed. What came of it is written beside the picture, for the tests.
+                // after it are typed in and "连接" is pressed, or "重新连接" with "again" after them. What came of it is
+                // written beside the picture, for the tests.
                 if (args.Length >= 4 && args[3] == "own") {
                     wait(5);
                     window.modePick.Choose(2);
                     if (args.Length >= 6) {
-                        window.addressBox.Text = args[4]; window.passwordBox.Text = args[5];
-                        window.ConnectOwn();
+                        if (args[4] != "-") { window.addressBox.Text = args[4]; window.passwordBox.Text = args[5]; }     // "-": what the boxes hold already
+                        if (args.Length >= 7 && args[6] == "again") window.Again(); else window.ConnectOwn();
                         wait(1);
                         for (int n = 0; n < 60 && !window.ownConnect.Enabled; n++) wait(0.5);
                         wait(6);

@@ -179,11 +179,19 @@ public sealed class TerminalAgent {
     HttpClient client;
     DateTime nextLogin = DateTime.MinValue;
     public sealed class LiveTerminal {
-        public string Id, Tool, Dir, Session = "", Status = ""; public PseudoTerminal Pty; public long Seq;
+        public string Id, Tool, Dir, Session = "", Status = "", Title = ""; public PseudoTerminal Pty; public long Seq;
         public DateTime Started = DateTime.UtcNow, ClosedSeen = DateTime.MinValue, Printed = DateTime.MinValue;
         public StringBuilder Pending = new StringBuilder();   // read from the program, not yet numbered
         public List<Dictionary<string, object>> Output = new List<Dictionary<string, object>>();
+        // What the relay has been given, the most recent of it: a relay that has less is given it again.
+        public List<Dictionary<string, object>> History = new List<Dictionary<string, object>>();
+        public int HistorySize; public long Led;               // Led: the piece that was given the modes in front of it
+        public List<KeyValuePair<int, bool>> Modes = new List<KeyValuePair<int, bool>>();    // in force before the first piece of History
+        public string ModesRest = "";
     }
+    // Terminals that ended, the last few: the phone lists them as recently used, at whichever relay the computer uses.
+    readonly List<LiveTerminal> ended = new List<LiveTerminal>();
+    public const int KeepRunning = 600000, KeepEnded = 120000, EndedMost = 12;
     public sealed class ComputerTakeover {
         public string Tool, Dir, Session, Launcher;
         public bool PhoneTerminal;
@@ -395,6 +403,57 @@ public sealed class TerminalAgent {
         if (codexFolders.Count > 3000) codexFolders.Clear();
         return sessions;
     }
+    // A program says once that it draws on the alternate screen, reads the mouse or takes pasted text in brackets.
+    // When the output that said so is dropped from the history kept here, the switch is remembered, in the order
+    // the relay keeps them (relay.py, _switch), and written in front of a history that begins later.
+    static readonly Regex Switch = new Regex(@"\x1b\[\?([0-9;]{1,40})([hl])|\x1bc"), SwitchCut = new Regex(@"\x1b(?:\[(?:\?[0-9;]{0,40})?)?\z");
+    static readonly HashSet<int> Switches = new HashSet<int> { 1, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1007, 1015, 1016, 1047, 1049, 2004 };
+    static void Follow(LiveTerminal t, string data) {
+        data = t.ModesRest + data;
+        Match cut = SwitchCut.Match(data);
+        int end = cut.Success ? cut.Index : data.Length;
+        foreach (Match found in Switch.Matches(data.Substring(0, end))) {
+            if (!found.Groups[2].Success) { t.Modes.Clear(); continue; }      // a full reset of the terminal
+            foreach (string number in found.Groups[1].Value.Split(';')) {
+                int mode;
+                if (!Int32.TryParse(number, out mode) || !Switches.Contains(mode)) continue;
+                t.Modes.RemoveAll(m => m.Key == mode);
+                t.Modes.Add(new KeyValuePair<int, bool>(mode, found.Groups[2].Value == "h"));
+            }
+        }
+        t.ModesRest = data.Substring(end);
+    }
+    static long Number(Dictionary<string, object> piece) { return Convert.ToInt64(piece["seq"]); }
+    /// What a relay says it has of a terminal's output, up to the piece `have`. Pieces it has are kept as history,
+    /// the last `keep` characters of them. A relay that has less than it was given (the computer turned to another
+    /// relay, or this one lost what it had not written down) is given the history again from where it is; when the
+    /// history begins later than that, its first piece says so and carries the terminal modes in force (and the
+    /// beginning of a sequence that the piece before it ended in the middle of).
+    /// Returns whether history goes out again.
+    public static bool Settle(LiveTerminal t, long have, int keep) {
+        int done = 0;
+        while (done < t.Output.Count && Number(t.Output[done]) <= have) done++;
+        foreach (var piece in t.Output.Take(done)) { piece.Remove("restart"); t.History.Add(piece); t.HistorySize += ((string)piece["data"]).Length; }
+        t.Output.RemoveRange(0, done);
+        long next = t.Output.Count > 0 ? Number(t.Output[0]) : t.Seq + 1;
+        int from = t.History.FindIndex(piece => Number(piece) > have);
+        bool again = have < next - 1 && from >= 0;
+        if (again) {
+            var pieces = t.History.GetRange(from, t.History.Count - from);
+            t.History.RemoveRange(from, pieces.Count);
+            foreach (var piece in pieces) { piece["old"] = true; t.HistorySize -= ((string)piece["data"]).Length; }
+            t.Output.InsertRange(0, pieces);
+            var first = pieces[0];
+            if (Number(first) != have + 1) {
+                if (t.Led != Number(first)) { first["data"] = String.Concat(t.Modes.Select(m => "\x1b[?" + m.Key + (m.Value ? "h" : "l"))) + t.ModesRest + (string)first["data"]; t.Led = Number(first); }
+                first["restart"] = true;
+            }
+        }
+        int drop = 0, size = t.HistorySize;
+        while (size > keep && drop < t.History.Count - 1) { string data = (string)t.History[drop++]["data"]; Follow(t, data); size -= data.Length; }
+        t.History.RemoveRange(0, drop); t.HistorySize = size;
+        return again;
+    }
     // Many small reads become few numbered pieces, so a busy screen is not held back by the per-request piece limit.
     public static void Seal(LiveTerminal t) {
         while (t.Pending.Length > 0) {
@@ -411,7 +470,8 @@ public sealed class TerminalAgent {
     // config.json: Server (address of the relay), RemoteEnabled, RemoteMaxMode (full, edit or read) and RemoteDirs ("name=folder").
     Dictionary<string, object> Preferences() {
         var prefs = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(dataDir, "config.json"), Encoding.UTF8));
-        Origin = Get(prefs, "Server").TrimEnd('/');
+        string server = Get(prefs, "Server").TrimEnd('/');
+        if (server != Origin) { if (Origin.Length > 0) Reset(); Origin = server; }       // another relay: sign in there at once
         return prefs;
     }
     static string FindTool(string name) {
@@ -605,7 +665,7 @@ public sealed class TerminalAgent {
                 if (to.Length == 0 || to.Length > 40) throw new ArgumentException("名称需为 1 至 40 字");
                 if (to != name && (settings.ContainsKey(to) || own.Any(p => p.Key == to))) throw new ArgumentException("已有同名项目");
                 own[at] = new KeyValuePair<string, string>(to, own[at].Value);
-                foreach (var t in terminals.Values.Where(t => t.Dir == name)) t.Dir = to;
+                foreach (var t in terminals.Values.Concat(ended).Where(t => t.Dir == name)) t.Dir = to;
             }
         }
         SaveProjects(own);
@@ -690,7 +750,7 @@ public sealed class TerminalAgent {
         return batch;
     }
     // The address or the password changed: sign in again at once instead of after the usual pause.
-    public void Reset() { nextLogin = DateTime.MinValue; client = null; }
+    public void Reset() { nextLogin = DateTime.MinValue; client = null; sentSessions = ""; }
     /// Whether a relay of one's own can be used: reached at this address, and taking this password. Says nothing
     /// when it can, and otherwise what is wrong and what to do about it.
     public static string CheckRelay(string server, string password) {
@@ -879,7 +939,9 @@ public sealed class TerminalAgent {
                 }
             }
             if (DateTime.UtcNow - toolsAt > TimeSpan.FromSeconds(30)) { tools = new[] { "claude", "codex", "shell" }.Where(t => FindTool(t) != null).ToArray(); toolsAt = DateTime.UtcNow; }
-            lock (gate) { foreach (var t in terminals.Values) Seal(t); output = OutputBatch(terminals.Values.SelectMany(t => t.Output.Take(30))); }
+            // An ended terminal whose conversation runs in a terminal again is no longer one of the recent ones.
+            ended.RemoveAll(e => e.Session.Length > 0 && terminals.Values.Any(t => !t.Pty.Closed && t.Tool == e.Tool && t.Session == e.Session));
+            lock (gate) { foreach (var t in terminals.Values) Seal(t); output = OutputBatch(terminals.Values.Concat(ended).SelectMany(t => t.Output.Take(30))); }
             if (output.Count > 0) lastActivity = DateTime.UtcNow;
             // Pieces of files are large: a report carries as many as fit, the rest go with the next.
             int room = 3 * FilePiece, taken = 0;
@@ -894,7 +956,9 @@ public sealed class TerminalAgent {
                     projects = settings.Select(d => new { name = d.Key, path = d.Value, @fixed = true, exists = true })
                         .Concat(OwnProjects().Where(p => !settings.ContainsKey(p.Key)).Select(p => new { name = p.Key, path = p.Value, @fixed = false, exists = allowed.ContainsKey(p.Key) })).ToArray(),
                     candidates = candidates.ToArray() } },
-                { "terminals", terminals.Values.Select(t => new { id = t.Id, state = t.Pty.Closed ? "closed" : "running", cols = t.Pty.Cols, rows = t.Pty.Rows, session = t.Session, status = t.Status, exit_code = t.Pty.ExitCode, error = t.Pty.ExitCode.HasValue && t.Pty.ExitCode.Value != 0 ? "程序退出（代码 " + t.Pty.ExitCode.Value + "），请检查终端画面中的原因" : "" }).ToArray() },
+                // Every terminal says what it is, so that a relay that did not start it can list it: the computer may turn to another relay.
+                { "terminals", terminals.Values.Concat(ended).Select(t => new { id = t.Id, state = t.Pty.Closed ? "closed" : "running", cols = t.Pty.Cols, rows = t.Pty.Rows, session = t.Session, status = t.Status, exit_code = t.Pty.ExitCode, error = t.Pty.ExitCode.HasValue && t.Pty.ExitCode.Value != 0 ? "程序退出（代码 " + t.Pty.ExitCode.Value + "），请检查终端画面中的原因" : "",
+                    tool = t.Tool, dir = t.Dir, created = Milliseconds(t.Started), title = t.Title }).ToArray() },
                 { "output", output }, { "acks", acknowledgments }
             };
             // The list of conversations is long: it goes out when it changed, and now and then in case the relay restarted.
@@ -915,13 +979,20 @@ public sealed class TerminalAgent {
                 foreach (var a in acknowledgments) { reported.Add(Convert.ToString(a["id"])); a.Remove("result"); }
                 if (listing) { sentSessions = listedText; sessionsSent = DateTime.UtcNow; }
                 var ack = result.ContainsKey("output_ack") ? result["output_ack"] as Dictionary<string, object> : null;
-                if (ack != null) lock (gate) foreach (var t in terminals.Values) { object seq; if (ack.TryGetValue(t.Id, out seq)) t.Output.RemoveAll(c => Convert.ToInt64(c["seq"]) <= Convert.ToInt64(seq)); }
+                if (ack != null) lock (gate) foreach (var t in terminals.Values.Concat(ended)) { object seq; if (ack.TryGetValue(t.Id, out seq) && Settle(t, Convert.ToInt64(seq), t.Pty.Closed ? KeepEnded : KeepRunning)) soon = true; }
+                var named = result.ContainsKey("titles") ? result["titles"] as Dictionary<string, object> : null;
+                if (named != null) foreach (var t in terminals.Values.Concat(ended)) { object title; if (named.TryGetValue(t.Id, out title)) t.Title = Convert.ToString(title); }
                 foreach (object item in List(result, "operations")) { var op = item as Dictionary<string, object>; if (op != null) Execute(op, prefs); }
                 if (completed.Count > 4000) foreach (string key in completed.Keys.Take(1000).ToArray()) { completed.Remove(key); reported.Remove(key); }
                 // A terminal is forgotten only after its last output has been read from the program and stored by the relay.
                 foreach (var t in terminals.Values.Where(t => t.Pty.Closed && t.ClosedSeen == DateTime.MinValue)) t.ClosedSeen = DateTime.UtcNow;
                 string[] finished; lock (gate) finished = terminals.Where(t => t.Value.Pty.Closed && (t.Value.Pty.Drained || DateTime.UtcNow - t.Value.ClosedSeen > TimeSpan.FromSeconds(15)) && t.Value.Output.Count == 0 && t.Value.Pending.Length == 0).Select(t => t.Key).ToArray();
-                foreach (string key in finished) { terminals[key].Pty.Dispose(); terminals.Remove(key); }
+                foreach (string key in finished) {
+                    var over = terminals[key]; over.Pty.Dispose(); terminals.Remove(key);
+                    ended.RemoveAll(e => e.Session.Length > 0 && e.Tool == over.Tool && e.Session == over.Session);
+                    lock (gate) Settle(over, over.Seq, KeepEnded);
+                    ended.Add(over); if (ended.Count > EndedMost) ended.RemoveAt(0);
+                }
             }
         }
     }

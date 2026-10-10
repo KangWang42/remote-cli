@@ -615,6 +615,99 @@ class TerminalRelayTests(unittest.TestCase):
         view.resize(4, 2)
         self.assertEqual(view.lines(), ["   e", "done"])
 
+    def test_terminal_started_through_another_relay_is_listed_with_its_history(self):
+        sid, terminal = "12345678-1234-1234-1234-123456789abc", "7" * 32
+        sessions = [{"id": sid, "tool": "claude", "dir": "demo", "title": "修复面板", "updated": 5000}]
+        mine = {"id": terminal, "state": "running", "tool": "claude", "dir": "demo", "created": 900_000, "session": sid, "title": "我的名字", "cols": 100, "rows": 30}
+        reply = tr.agent(self.path, {"info": self.info, "sessions": sessions, "terminals": [mine]}, now=1001)
+        self.assertEqual((reply["output_ack"], reply["titles"]), ({terminal: 0}, {terminal: "我的名字"}))
+        view = tr.overview(self.path, now=1002)
+        shown = view["terminals"][0]
+        self.assertEqual((shown["id"], shown["state"], shown["title"], shown["created"], shown["cols"], shown["phase"]), (terminal, "running", "我的名字", 900_000, 100, "idle"))
+        self.assertEqual(view["sessions"][0]["terminal"], terminal)        # the conversation is the one that terminal shows, not one to open again
+        with self.assertRaisesRegex(RemoteError, "已经在手机终端里打开"):
+            tr.command(self.path, {"action": "start", "id": "1" * 32, "tool": "claude", "dir": "demo", "session": sid}, now=1003)
+        # the computer gives what it still has: it begins in the middle, says so, and is not counted as work
+        again = [{"terminal": terminal, "seq": 41, "data": "\x1b[?2004hold screen", "old": True, "restart": True}, {"terminal": terminal, "seq": 42, "data": " more", "old": True}]
+        self.assertEqual(tr.agent(self.path, {"info": self.info, "terminals": [mine], "output": again}, now=1004)["output_ack"], {terminal: 42})
+        read = tr.overview(self.path, terminal, after=0, now=1005)
+        self.assertEqual(("".join(c["data"] for c in read["chunks"]), read["reset"], read["after"], read["terminal"]["phase"]), ("\x1b[?2004hold screen more", True, 42, "idle"))
+        tr.command(self.path, {"action": "input", "id": "2" * 32, "terminal": terminal, "data": "ls\r"}, now=1006)     # and it is used like any other
+        self.assertEqual(tr.agent(self.path, {"info": self.info, "terminals": [mine]}, now=1007)["operations"][0]["data"], "ls\r")
+        # what does not say what it is (an older program on the computer) is not listed
+        tr.agent(self.path, {"info": self.info, "terminals": [mine, {"id": "8" * 32, "state": "running"}, {"id": "9" * 32, "state": "running", "tool": "bash", "dir": "demo", "created": 1}]}, now=1008)
+        self.assertEqual([t["id"] for t in tr.overview(self.path, now=1009)["terminals"]], [terminal])
+
+    def test_history_given_again_replaces_what_no_longer_continues(self):
+        self.start()
+        live = {"info": self.info, "terminals": [{"id": self.terminal, "state": "running"}]}
+        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": n, "data": "early %d " % n} for n in (1, 2)]), now=1004)
+        # the computer went on through another relay; back here it gives what it kept, which begins later
+        tr.agent(self.path, dict(live, output=[{"terminal": self.terminal, "seq": 9, "data": "late 9 ", "old": True, "restart": True}, {"terminal": self.terminal, "seq": 10, "data": "late 10"}]), now=1005)
+        read = tr.overview(self.path, self.terminal, after=2, now=1006)
+        self.assertEqual(("".join(c["data"] for c in read["chunks"]), read["reset"], read["after"]), ("late 9 late 10", True, 10))
+
+    def test_running_terminal_the_computer_no_longer_has_is_ended(self):
+        self.start()
+        other = tr.command(self.path, {"action": "start", "id": "c" * 32, "tool": "shell", "dir": "demo"}, now=1004)["terminal"]
+        tr.agent(self.path, {"info": self.info}, now=1005)                 # a report without the list says nothing about it
+        tr.agent(self.path, {"info": self.info, "terminals": []}, now=1006)
+        states = {t["id"]: (t["state"], t["phase"]) for t in tr.overview(self.path, now=1007)["terminals"]}
+        self.assertEqual(states, {self.terminal: ("closed", "ended"), other: ("starting", "starting")})      # one that has not started yet is still to come
+
+    def test_a_conversation_has_one_terminal_in_the_list(self):
+        sid = "12345678-1234-1234-1234-123456789abc"
+        sessions = [{"id": sid, "tool": "claude", "dir": "demo", "title": "修复面板", "updated": 5000}]
+        tr.agent(self.path, {"info": self.info, "sessions": sessions}, now=1001)
+        ids = lambda: [t["id"] for t in tr.overview(self.path, now=2000)["terminals"]]
+        def run(n, close=True, fail=False):
+            op = {"action": "start", "id": "%032x" % n, "tool": "claude", "dir": "demo", "session": sid}
+            terminal = tr.command(self.path, op, now=1010 + n)["terminal"]
+            if fail:
+                tr.agent(self.path, {"info": self.info, "acks": [{"id": op["id"], "error": "电脑未安装这个工具"}], "terminals": []}, now=1011 + n)
+                return terminal
+            tr.agent(self.path, {"info": self.info, "acks": [{"id": op["id"]}], "terminals": [{"id": terminal, "state": "running"}],
+                                 "output": [{"terminal": terminal, "seq": 1, "data": "screen %d" % n}]}, now=1011 + n)
+            if close:
+                tr.agent(self.path, {"info": self.info, "terminals": [{"id": terminal, "state": "closed"}]}, now=1012 + n)
+            return terminal
+        first = run(1)
+        self.assertEqual(ids(), [first])
+        failed = run(10, fail=True)                 # a start that failed does not take the place of the screen that was kept
+        self.assertEqual(ids(), [first])
+        second = run(20, close=False)               # running: the ended one of the same conversation goes
+        self.assertEqual(ids(), [second])
+        tr.agent(self.path, {"info": self.info, "terminals": [{"id": second, "state": "closed"}]}, now=1040)
+        third = run(30)
+        self.assertEqual(ids(), [third])
+        shell = [tr.command(self.path, {"action": "start", "id": "%032x" % (100 + n), "tool": "shell", "dir": "demo"}, now=1050 + n)["terminal"] for n in range(2)]
+        tr.agent(self.path, {"info": self.info, "terminals": [{"id": key, "state": "closed"} for key in shell]}, now=1055)
+        self.assertEqual(len(ids()), 3)             # terminals without a conversation are each their own
+        # lists written by an older relay are tidied when they are read
+        state = tr._state(self.path)
+        for n in range(3):
+            state["threads"]["%032x" % (200 + n)] = dict(state["threads"][third], id="%032x" % (200 + n), created=n, output=[])
+        tr._save(self.path, state)
+        tr._cache.clear()
+        self.assertEqual(sorted(ids()), sorted([third] + shell))
+        self.assertNotIn(failed, ids())
+
+    def test_ended_terminal_of_another_relay_is_listed_only_where_it_is_kept(self):
+        sid = "12345678-1234-1234-1234-123456789abc"
+        ended = lambda n, **more: dict({"id": "%032x" % n, "state": "closed", "tool": "codex", "dir": "demo", "created": 1000 + n, "exit_code": 0}, **more)
+        ids = lambda: {t["id"] for t in tr.overview(self.path, now=2000)["terminals"]}
+        reply = tr.agent(self.path, {"info": self.info, "terminals": [ended(5, session=sid)], "output": []}, now=1001)
+        self.assertEqual(reply["output_ack"], {"%032x" % 5: 0})
+        tr.agent(self.path, {"info": self.info, "terminals": [ended(5, session=sid)], "output": [{"terminal": "%032x" % 5, "seq": 3, "data": "last screen", "old": True, "restart": True}]}, now=1002)
+        shown = tr.overview(self.path, "%032x" % 5, now=1003)
+        self.assertEqual((shown["terminal"]["state"], shown["terminal"]["phase"], shown["chunks"][0]["data"]), ("closed", "ended", "last screen"))
+        tr.agent(self.path, {"info": self.info, "terminals": [ended(5, session=sid), ended(6, session=sid)]}, now=1004)       # the same conversation: once
+        self.assertEqual(ids(), {"%032x" % 5})
+        many = [ended(5, session=sid)] + [ended(n) for n in range(10, 10 + tr.MAX_HISTORY)]
+        for _ in range(2):          # said again and again, the list stays the same: the newest that fit
+            tr.agent(self.path, {"info": self.info, "terminals": many}, now=1005)
+            self.assertEqual(ids(), {"%032x" % n for n in range(10, 10 + tr.MAX_HISTORY)})
+
 
 if __name__ == "__main__":
     unittest.main()
