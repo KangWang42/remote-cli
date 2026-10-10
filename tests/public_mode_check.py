@@ -1,7 +1,7 @@
 """A relay for everyone, end to end. First the Windows program as installed (run after tools/package_windows.py):
-with such a relay in the published list, choosing it gives this computer a place of its own there without anything
-being typed, shows neither the address nor the password, and keeps the place for the next start; a place the relay
-removed is asked for again. Then the agent alone in such a place: a terminal is started, typed into and read by a
+with such a relay in the published list, named there in the field that is not readable at a glance and with the word
+it asks for, choosing it gives this computer a place of its own there without anything being typed, shows neither
+the address nor the password, and keeps the place for the next start; a place the relay removed is asked for again. Then the agent alone in such a place: a terminal is started, typed into and read by a
 phone under that place's address. The relay and the list are made here; ports 8744 (the program's own relay) and 8746.
 
     python tests/public_mode_check.py
@@ -21,19 +21,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from own_mode_check import ROOT, STAGE, listening, press
 from tunnel_check import Client, await_ready, operation
 
+sys.path.insert(0, str(ROOT / "tools"))
+from relay_list import hide, show
+
 PORT = 8746
+WORD = "word-" + secrets.token_hex(6)       # what this relay asks for before it makes a space
 
 
 def main():
     with tempfile.TemporaryDirectory(prefix="remote-cli-public-", ignore_cleanup_errors=True) as folder:
         store = Path(folder) / "relay"
         start = lambda: subprocess.Popen([sys.executable, str(ROOT / "relay" / "server.py"), "--port", str(PORT), "--data", str(store), "--public"],
-                                         env=dict(os.environ, PYTHONUTF8="1"), stdout=subprocess.DEVNULL)
+                                         env=dict(os.environ, PYTHONUTF8="1", RCLI_JOIN_KEY=WORD), stdout=subprocess.DEVNULL)
         relay, agent = start(), None
         try:
             await_ready(lambda: listening(PORT), "relay")
             origin = "http://127.0.0.1:%d" % PORT
-            listed = [{"name": "测试中转", "url": origin}, {"name": "not https", "url": "http://relay.example.com"}]
+            # the list names it in the field that is not readable at a glance, with the word it asks for
+            assert show(hide(origin, WORD)) == {"url": origin, "key": WORD} and origin not in hide(origin, WORD)
+            listed = [{"name": "测试中转", "hidden": hide(origin, WORD)}, {"name": "not https", "url": "http://relay.example.com"}, {"name": "not a field", "hidden": "x"}]
             places = lambda: sorted(p.name for p in (store / "spaces").iterdir()) if (store / "spaces").exists() else []
             # the relay tab lists it without anything having been set up; only looking changes nothing
             looked = press(folder, "looked", relays=listed)
@@ -68,7 +74,12 @@ def main():
             data, work = Path(folder) / "agent", Path(folder) / "work"
             data.mkdir(); work.mkdir()
             setup = Client(origin, timeout=10)
-            made = setup.call("/api/space", {})
+            try:
+                setup.call("/api/space", {})
+                raise AssertionError("a space was made without the word")
+            except RuntimeError as refused:
+                assert "403" in str(refused), refused
+            made = setup.call("/api/space", {"key": WORD})
             space = made["space"]
             (data / "config.json").write_text(json.dumps({"Server": origin + space, "RemoteEnabled": True, "RemoteMaxMode": "full", "RemoteDirs": ["demo=" + str(work)]}), encoding="utf-8")
             subprocess.run([str(STAGE / "RemoteCliAgent.exe"), "--set-password", str(data)], input=made["password"].encode(), check=True, timeout=10, **hidden)
@@ -82,7 +93,7 @@ def main():
             time.sleep(3)
             phone.call(space + "/api/terminal", operation(terminal, "input", data="'IN_' + 'MY_PLACE'\r"))
             await_ready(lambda: "IN_MY_PLACE" in text(), "the terminal's answer")
-            other = setup.call("/api/space", {})        # another computer's place has none of it
+            other = setup.call("/api/space", {"key": WORD})        # another computer's place has none of it
             stranger = Client(origin, timeout=10)
             stranger.call(other["space"] + "/api/login", {"password": other["password"]})
             assert stranger.call(other["space"] + "/api/terminal")["terminals"] == []

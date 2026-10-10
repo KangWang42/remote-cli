@@ -252,7 +252,10 @@ changed) is removed. Outside the spaces such a relay answers only the two reques
 
 The Windows program learns of relays for everyone from a published list, `public-relays.json` at the top of the
 repository (`{"relays": [{"name", "url", "key"}]}`), read at start and every six hours; `REMOTECLI_RELAYS` names
-another list. It asks for a space once and keeps what it was given; when the relay no longer has the space, it asks
+another list. An entry may carry `hidden` in place of `url` and `key`: the JSON `{"url", "key"}`, each byte combined
+(exclusive or) with the SHA-256 of the text `remote-cli public relays`, repeated, and written as base64 for URLs
+without padding. It keeps an address out of plain sight in a public file and is no encryption; `tools/relay_list.py`
+writes and reads it. It asks for a space once and keeps what it was given; when the relay no longer has the space, it asks
 again.
 
 ## Storage

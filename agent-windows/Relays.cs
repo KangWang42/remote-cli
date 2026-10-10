@@ -44,6 +44,17 @@ public sealed class Relays {
         string url = (typed ?? "").Trim().TrimEnd('/');
         return Regex.IsMatch(url, own ? Any : Address) || Regex.IsMatch(url, Local) ? url : "";
     }
+    // The list is a public file. An address written out in it is in front of everyone who opens or searches it; in the
+    // field "hidden" it is not (tools/relay_list.py writes that field). This keeps an address from a look and from a
+    // search. It is no secret from someone who reads this program, which has to know the address to connect.
+    static readonly byte[] Pad = SHA256.Create().ComputeHash(Encoding.ASCII.GetBytes("remote-cli public relays"));
+    Dictionary<string, object> Reveal(string hidden) {
+        try {
+            byte[] bytes = Convert.FromBase64String(hidden.Replace('-', '+').Replace('_', '/') + new string('=', (4 - hidden.Length % 4) % 4));
+            for (int i = 0; i < bytes.Length; i++) bytes[i] ^= Pad[i % Pad.Length];
+            return json.Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(bytes));
+        } catch (Exception) { return null; }
+    }
     /// The relays a published list names; null when the text is not such a list.
     public List<Relay> Read(string text) {
         try {
@@ -53,9 +64,12 @@ public sealed class Relays {
             var found = new List<Relay>();
             foreach (object item in (System.Collections.IEnumerable)named) {
                 var entry = item as Dictionary<string, object>;
-                string url = Clean(Text(entry, "url")), name = Regex.Replace(Text(entry, "name"), @"[\s\p{C}]+", " ").Trim();
+                // An entry names its relay in the open ("url", "key"), or in a field that is not readable at a glance.
+                var inner = Text(entry, "hidden").Length > 0 ? Reveal(Text(entry, "hidden")) : entry;
+                string url = Clean(Text(inner, "url")), name = Regex.Replace(Text(entry, "name"), @"[\s\p{C}]+", " ").Trim();
                 if (url.Length == 0 || found.Any(r => r.Url == url) || found.Count >= 12) continue;
-                found.Add(new Relay { Public = true, Url = url, Name = name.Length > 0 && name.Length <= 20 ? name : new Uri(url).Host, Key = Text(entry, "key") });
+                // Without a name it is called what it is; its address is never shown in its place.
+                found.Add(new Relay { Public = true, Url = url, Name = name.Length > 0 && name.Length <= 20 ? name : "公共中转", Key = Text(inner, "key") });
             }
             return found;
         } catch (Exception) { return null; }
