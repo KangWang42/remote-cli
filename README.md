@@ -24,13 +24,11 @@
 <p align="center"><i>Use your computer's terminal, Claude Code and Codex from your phone. One program on the computer, one app on the phone. The interface is in Chinese for now.</i></p>
 
 <p align="center">
-  <img src="docs/images/overview.png" alt="一台电脑的首页：等你确认的任务可以直接在卡片上回答" width="205">
+  <img src="docs/images/overview.png" alt="一台电脑的首页：等你确认的任务可以直接在卡片上回答" width="31%">
   &nbsp;
-  <img src="docs/images/look.png" alt="电脑上打开着的对话：先看内容，再决定要不要在手机上继续" width="205">
+  <img src="docs/images/look.png" alt="电脑上打开着的对话：先看内容，再决定要不要在手机上继续" width="31%">
   &nbsp;
-  <img src="docs/images/files-word.png" alt="Word 文件带格式的预览" width="205">
-  &nbsp;
-  <img src="docs/images/terminal-dark.png" alt="深色外观下的终端" width="205">
+  <img src="docs/images/files-word.png" alt="Word 文件带格式的预览" width="31%">
 </p>
 
 ## 为什么用它
@@ -100,9 +98,9 @@ Linux 电脑不用下载安装包，见下面的[快速开始](#linux-电脑)。
 4. **手机扫码。** 安装 `RemoteCli-Android.apk`，点“扫码添加电脑”，对准电脑窗口里的二维码。
 
 <p align="center">
-  <img src="docs/images/windows-projects.png" alt="电脑端：项目文件夹" width="400">
+  <img src="docs/images/windows-projects.png" alt="电脑端：项目文件夹" width="48%">
   &nbsp;
-  <img src="docs/images/windows.png" alt="电脑端：连接方式和二维码" width="400">
+  <img src="docs/images/windows.png" alt="电脑端：连接方式和二维码" width="48%">
 </p>
 
 ### Linux 电脑
@@ -116,13 +114,13 @@ curl -fsSL https://raw.githubusercontent.com/KangWang42/remote-cli/main/agent-li
 ## 手机上的样子
 
 <p align="center">
-  <img src="docs/images/project.png" alt="一个项目：新建终端和历史对话" width="200">
+  <img src="docs/images/project.png" alt="一个项目：新建终端和历史对话" width="23%">
   &nbsp;
-  <img src="docs/images/terminal.png" alt="终端页" width="200">
+  <img src="docs/images/terminal.png" alt="终端页" width="23%">
   &nbsp;
-  <img src="docs/images/files-slides.png" alt="PowerPoint 文件的预览" width="200">
+  <img src="docs/images/files-slides.png" alt="PowerPoint 文件的预览" width="23%">
   &nbsp;
-  <img src="docs/images/list-dark.png" alt="深色外观下的首页" width="200">
+  <img src="docs/images/list-dark.png" alt="深色外观下的首页" width="23%">
 </p>
 
 App 有三层：**工作台**（所有电脑）→ **一台电脑**（它的项目和任务）→ **终端**。常用的路径是打开 App、在工作台点一个任务、直接进终端。每个页面上的按钮和状态颜色的含义见[使用说明](docs/GUIDE.md)。
