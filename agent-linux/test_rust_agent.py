@@ -98,6 +98,28 @@ class RustAgentContract(test_agent.EndToEnd):
         self.assertEqual(status, 400)
         self.assertIn("工具或目录", refused["error"])
 
+    def test_exit_code_is_preserved(self):
+        # a non-zero exit keeps its code: exercises the other half of the waitpid decode
+        started = self.op({"action": "start", "tool": "shell", "dir": "项目"})
+        terminal = started["terminal"]
+        self.poll(
+            lambda: self.overview(),
+            lambda v: any(t["id"] == terminal and t["state"] == "running"
+                          for t in v["terminals"]))
+        self.op({"action": "input", "terminal": terminal, "data": "exit 7\n"})
+        view = self.poll(
+            lambda: self.overview(),
+            lambda v: any(t["id"] == terminal and t["state"] == "closed"
+                          for t in v["terminals"]))
+        code = next(t["exit_code"] for t in view["terminals"] if t["id"] == terminal)
+        self.assertEqual(code, 7)
+
+    def test_device_info_contract(self):
+        # the phone builds its device card from these; drift must not stay green
+        device = self.overview()["device"]
+        self.assertTrue(device.get("version"), "the agent reports no version")
+        self.assertTrue(device.get("shell"), "the agent reports no shell")
+
 
 @unittest.skipUnless(os.path.isfile(BINARY), "build the Rust agent first: cargo build --release (agent-rust/)")
 class RustSingletonLock(unittest.TestCase):
