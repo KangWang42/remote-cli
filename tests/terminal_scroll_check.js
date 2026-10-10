@@ -186,19 +186,55 @@ function fixture(kind = 'local', reduced = false) {
   assert.deepEqual([slide.top, slide.bottom], [head, foot], 'the heading and the message box are found to stand still');
   assert.ok(Math.abs((start - top) - 18) <= 1.5, 'and the program was moved by what the finger moved: ' + (start - top));
   // at the end of its list the program does not move: the picture is pulled a little, never further, and comes back
-  let most = 0;
-  scroller.start(0, now); slide.begin('remote', now); router.start(); due.length = 0;
-  for (let n = 1; n <= 150; n++) {
-    now += 1000 / 60;
-    if (n <= 60) scroller.move(n * 6, now);
-    if (n === 61) { scroller.velocity = 0; scroller.end(now); }
-    const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(f => f(now));
-    due.length = 0;                                             // asked, and not done
-    moving = slide.frame(now, !scroller.dragging && !scroller.velocity && !scroller.frame);
-    most = Math.max(most, Math.abs(slid));
+  const pull = () => {
+    let most = 0;
+    scroller.start(0, now); slide.begin('remote', now); router.start(); due.length = 0;
+    for (let n = 1; n <= 150; n++) {
+      now += 1000 / 60;
+      if (n <= 60) scroller.move(n * 6, now);
+      if (n === 61) { scroller.velocity = 0; scroller.end(now); }
+      const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(f => f(now));
+      due.length = 0;                                             // asked, and not done
+      moving = slide.frame(now, !scroller.dragging && !scroller.velocity && !scroller.frame);
+      most = Math.max(most, Math.abs(slid));
+    }
+    assert.equal(slid, 0); assert.equal(moving, false);
+    return most / cell;
+  };
+  let most = pull();
+  assert.ok(most > 1 && most <= 8, 'the program was moving this way: a pull of at most eight rows: ' + most);
+  most = pull();
+  assert.ok(most <= 1.5 + .001, 'having found the end, a second pull the same way gives only a little: ' + most);
+  slide.forget();
+  most = pull();
+  assert.ok(most > 1 && most <= 5, 'a way the program has not been seen to move in: at most five rows: ' + most);
+  // A network that holds messages back for a while and then delivers them at once: for a fifth of a second the
+  // picture goes on with the finger, and what comes after a longer wait is slid to, not jumped to.
+  // (the program here answers after 150 ms and moves three rows or more at a time, so it is some rows behind anyway)
+  // The last is a quicker finger: more rows arrive at once than the picture may run ahead by, and it comes on to
+  // them over a few frames.
+  for (const [held, pace, within, step] of [[200, 5, 3.5, 1], [450, 5, 3.5, 1], [450, 9, 9, 2.5]]) {
+    let finger = 0, away = 0, jump = 0, last = null;
+    scroller.start(0, now); slide.begin('remote', now); router.start(); due.length = 0;
+    const began = now, start = top;
+    for (let n = 1; n <= 200; n++) {
+      now += 1000 / 60;
+      if (n <= 110) { finger = n * pace; scroller.move(finger, now); }      // fifteen rows a second, or twenty-seven
+      if (n === 111) { scroller.velocity = 0; scroller.end(now); }
+      const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(f => f(now));
+      const stalled = now - began > 600 && now - began < 600 + held;         // nothing arrives in this while
+      let drew = false;
+      while (!stalled && due.length && due[0].at <= now) { top -= due.shift().rows; drew = true; }
+      if (drew) slide.drawn();                    // what arrived within a frame is drawn at once
+      moving = slide.frame(now, !scroller.dragging && !scroller.velocity && !scroller.frame);
+      const seen = (start - top) * cell + slid;
+      if (n <= 110) { away = Math.max(away, Math.abs(seen - finger)); if (last !== null) jump = Math.max(jump, Math.abs((seen - last) - pace)); }
+      last = seen;
+    }
+    assert.ok(away <= cell * within, held + ' ms held back: the picture stays near the finger: ' + away / cell);
+    assert.ok(jump <= cell * step, held + ' ms held back: and does not jump when the moves arrive: ' + jump / cell);
+    assert.equal(slid, 0); assert.equal(moving, false);
   }
-  assert.ok(most > cell && most <= cell * 3, 'a pull of at most three rows: ' + most / cell);
-  assert.equal(slid, 0); assert.equal(moving, false);
   // the terminal's own history moves a row at a time, at once: the slide is what is left of a row
   let viewport = 100; slid = 0;
   const local = new TerminalSlide({ cell: () => cell, viewport: () => viewport, read: () => [], apply(pixels) { slid = pixels; } });

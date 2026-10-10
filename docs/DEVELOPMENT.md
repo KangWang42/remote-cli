@@ -43,7 +43,7 @@ python -m unittest discover -s relay -p "test_*.py"
 python3 -m unittest discover -s agent-linux -p "test_*.py"   # Linux 电脑端，在 Linux 上运行：真实中转、真实终端，Claude Code 用替身程序
 python tests\e2e_windows.py
 node tests\bridge_check.js                                # 传输选择、连接状态、延迟测量、连续输入和断线重试
-node tests\terminal_scroll_check.js                       # 拖动、惯性、Codex 普通/全屏模式、Claude Code 的滚轮配速、鼠标编码和回到最新
+node tests\terminal_scroll_check.js                       # 拖动、惯性、网络停顿时画面的跟随、Codex 普通/全屏模式、Claude Code 的滚轮配速、鼠标编码和回到最新
 python tests\fullscreen_check.py <chrome.exe>             # 占满屏幕的程序：触摸拖动逐行滚动；长时间运行后重新打开只读最近的输出且画面完整。真实的中转和电脑端，Codex 用替身程序
 node tests\session_state_check.js                         # 运行中的会话与保留的写入锁分开显示
 python tests\android_aggregate_check.py --jdk <JDK 目录>  # 工作台的分组、排序、已完成标记和刷新判定

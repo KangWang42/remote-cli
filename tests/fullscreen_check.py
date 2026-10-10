@@ -240,17 +240,23 @@ def main():
         assert places[-1] == 0 and page_value("document.getElementById('terminal').style.transform") == "" and page_value("document.getElementById('still').hidden") is True, places[-5:]
         assert 4 <= report["rows_moved_by_a_slow_5_row_drag"] <= 5, report
         drag(-5)
-        # a quick flick of about ten rows glides on after the finger lifts, comes to rest, and a touch stops a glide at once
+        # a quick flick of about ten rows glides on after the finger lifts, as far as its speed carries it (the speed
+        # fades with the scroller's GLIDE, 325 ms), comes to rest, and a touch stops a glide at once. How quick the
+        # finger is depends on this computer's timer: the speed is taken from when the page saw the finger move.
         was = page_value(TOP)
-        box = page_value("(() => { const r = document.getElementById('screen').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()")
+        box = page_value("(() => { const r = document.getElementById('screen').getBoundingClientRect(), t = TerminalUI.terminal; return [r.left + r.width / 2, r.top + r.height / 2, document.getElementById('terminal').clientHeight / t.rows]; })()")
+        page_value("(() => { window.__moves = []; document.addEventListener('touchmove', () => window.__moves.push(performance.now()), { capture: true, passive: true }); return 1; })()")
         ask("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": box[0], "y": box[1]}])
         for step in range(1, 7):
             time.sleep(0.016)
             ask("Input.dispatchTouchEvent", type="touchMove", touchPoints=[{"x": box[0], "y": box[1] + step * 30}])
         ask("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
         time.sleep(2.8)
-        report["rows_moved_by_a_flick"] = was - page_value(TOP)
-        assert 25 <= report["rows_moved_by_a_flick"] <= 70, report
+        moves = page_value("window.__moves")
+        speed = min(2.5, 30 * (len(moves) - 1) / (moves[-1] - moves[0]))            # pixels a millisecond
+        dragged, carried = 180 / box[2], speed * 325 / box[2]
+        report["rows_moved_by_a_flick"], report["rows_its_speed_carries_it"] = was - page_value(TOP), round(dragged + carried, 1)
+        assert carried >= 5 and abs(report["rows_moved_by_a_flick"] - dragged - carried) <= 2 + carried * .25, report
         still = page_value(TOP)
         time.sleep(0.6)
         assert page_value(TOP) == still
