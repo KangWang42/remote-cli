@@ -179,6 +179,42 @@ class WebSocketIntegrationTests(unittest.TestCase):
             ws.receive(3)
         self.assertEqual(len(tr._pending), 1)
 
+    def test_pages_are_kept_by_the_reader_and_text_is_sent_compressed(self):
+        import gzip
+        import http.client
+        port = self.server.server_port
+
+        def get(path, **headers):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                connection.request("GET", path, headers=dict(headers, **self.client.cookie))
+                reply = connection.getresponse()
+                return reply.status, {k.lower(): v for k, v in reply.getheaders()}, reply.read()
+            finally:
+                connection.close()
+
+        source = (Path(__file__).resolve().parents[1] / "web" / "terminal" / "vendor" / "xterm.js").read_bytes()
+        status, plain, body = get("/terminal/vendor/xterm.js")
+        self.assertEqual((status, body, plain["cache-control"], "content-encoding" in plain), (200, source, "no-cache", False))
+        status, packed, body = get("/terminal/vendor/xterm.js", **{"Accept-Encoding": "gzip, br"})
+        self.assertEqual((status, packed["content-encoding"], gzip.decompress(body)), (200, "gzip", source))
+        self.assertLess(len(body), len(source) // 3)
+        self.assertNotEqual(packed["etag"], plain["etag"])
+        # a copy the reader holds is confirmed without being sent again; another copy is not
+        for headers, tag in (({}, plain["etag"]), ({"Accept-Encoding": "gzip"}, packed["etag"])):
+            status, kept, body = get("/terminal/vendor/xterm.js", **dict(headers, **{"If-None-Match": tag}))
+            self.assertEqual((status, body, kept["etag"], kept["x-content-type-options"]), (304, b"", tag, "nosniff"))
+        self.assertEqual(get("/terminal/vendor/xterm.js", **{"If-None-Match": '"older"'})[0], 200)
+        # a font is compressed already
+        self.assertNotIn("content-encoding", get("/terminal/vendor/jetbrains-mono-400.woff2", **{"Accept-Encoding": "gzip"})[1])
+        # what a terminal printed is never kept by the reader, and a long answer is compressed for one that asks
+        tr.agent(self.server.store, dict(self.live, output=[{"terminal": self.terminal, "seq": 1, "data": "\x1b[2K\x1b[1Gline of output\r\n" * 400}]))
+        status, headers, body = get("/api/terminal?terminal=%s&after=0" % self.terminal, **{"Accept-Encoding": "gzip"})
+        self.assertEqual((status, headers["cache-control"], headers["content-encoding"]), (200, "no-store", "gzip"))
+        self.assertEqual(len(json.loads(gzip.decompress(body))["chunks"][0]["data"]), 400 * 24)
+        status, headers, body = get("/api/terminal?terminal=%s&after=0" % self.terminal)
+        self.assertEqual((headers["cache-control"], "content-encoding" in headers, len(json.loads(body)["chunks"][0]["data"])), ("no-store", False, 400 * 24))
+
     def test_invalid_input_returns_ack_and_keeps_connection_open(self):
         ws = self.connect()
         ws.receive()

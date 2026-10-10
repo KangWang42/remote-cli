@@ -93,7 +93,15 @@ All three give
 ```
 
 `data` is what the program wrote to its terminal, escape sequences included. Sequence numbers are consecutive.
-`reset: true` means earlier output is no longer kept: clear the screen and continue from what is returned.
+`reset: true` means the answer does not continue from `after`: clear the screen and continue from what is returned.
+That is the case when earlier output is no longer kept, and when a reader with nothing (`after=0`) asks for a
+Claude Code or Codex terminal that draws on the alternate screen: it is given the last output only (about 120,000
+characters). In both cases the first piece begins with the terminal modes in force at that point (alternate screen,
+mouse reporting, bracketed paste and the like), so the reader's terminal is in the state the program expects. A
+fullscreen program draws only what changed; a reader that began this way asks it for a full picture by changing the
+terminal's size and changing it back.
+A reply to `GET` is gzip-compressed when the request accepts it; the pages are served with an `ETag` and
+`Cache-Control: no-cache`, API answers with `no-store`.
 One answer carries at most about 180,000 characters; `after < terminal.seq` means more is waiting.
 
 ### Operations

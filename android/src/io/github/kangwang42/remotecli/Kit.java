@@ -147,6 +147,17 @@ final class Kit {
         press(box, action);
         return box;
     }
+    /** A small action on a card: its icon on a quiet disc, with room around it for a thumb. */
+    View discButton(int drawable, String says, Runnable action) {
+        FrameLayout box = new FrameLayout(activity), disc = new FrameLayout(activity);
+        disc.setBackground(shape(RAISED, 0, 18));
+        disc.addView(icon(drawable, MUTED, 16), new FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER));
+        box.addView(disc, new FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER));
+        box.setContentDescription(says);
+        box.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
+        press(box, action);
+        return box;
+    }
     View dot(int color, int size) {
         View dot = new View(activity);
         dot.setBackground(shape(color, 0, size));

@@ -8,6 +8,7 @@ anything itself: the program on the computer does. Standard library only.
 Put it behind HTTPS (a reverse proxy or a tunnel) whenever it is reachable from outside your own network.
 """
 import argparse
+import gzip
 import hashlib
 import hmac
 import json
@@ -24,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded P
 import relay  # noqa: E402
 import websocket  # noqa: E402
 
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024
@@ -35,6 +36,29 @@ SECURITY = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer
             "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
                                        "media-src 'self' blob:; worker-src 'self' blob:; "
                                        "font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}
+
+
+# The pages are the same files until the program on the computer is updated. A phone keeps them and asks only
+# whether they have changed, and text is sent compressed: opening a terminal no longer fetches the terminal's
+# program again, which over a tunnel took longer than everything else on the page.
+PACKED = (".html", ".js", ".css", ".json", ".svg", ".webmanifest")
+_pages = {}         # file -> ((time changed, size), tag, content, compressed content or None)
+_pages_lock = threading.Lock()
+
+
+def _page(full):
+    stat = os.stat(full)
+    mark = (stat.st_mtime_ns, stat.st_size)
+    with _pages_lock:
+        kept = _pages.get(full)
+    if not kept or kept[0] != mark:
+        with open(full, "rb") as stream:
+            data = stream.read()
+        packed = gzip.compress(data, 6, mtime=0) if full.lower().endswith(PACKED) and len(data) > 1024 else None
+        kept = (mark, hashlib.sha256(data).hexdigest()[:24], data, packed)
+        with _pages_lock:
+            _pages[full] = kept
+    return kept
 
 
 class Sessions:
@@ -205,15 +229,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        for key, value in dict(SECURITY, **(extra or {})).items():
+        for key, value in dict(SECURITY, **{"Cache-Control": "no-store", **(extra or {})}).items():
             self.send_header(key, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
 
+    def _gzip(self):
+        return "gzip" in self.headers.get("Accept-Encoding", "").lower()
+
     def _json(self, code, value, extra=None):
-        self._send(code, json.dumps(value, ensure_ascii=False), extra=extra)
+        data = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        # What a reader asks for (the lists, a terminal's output) is long and repeats itself; what it sends is short.
+        if self.command == "GET" and len(data) > 2048 and self._gzip():
+            data, extra = gzip.compress(data, 3, mtime=0), dict(extra or {}, **{"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        self._send(code, data, extra=extra)
 
     def _error(self, exc, fallback):
         self._json(400, {"error": str(exc) if isinstance(exc, relay.RemoteError) else fallback})
@@ -227,8 +257,18 @@ class Handler(BaseHTTPRequestHandler):
         kind = TYPES.get(os.path.splitext(full)[1].lower())
         if not full.startswith(root + os.sep) or kind is None or not os.path.isfile(full):
             return self._json(404, {"error": "not found"})
-        with open(full, "rb") as stream:
-            self._send(200, stream.read(), kind)
+        _, tag, data, packed = _page(full)
+        headers = {"Cache-Control": "no-cache", "Vary": "Accept-Encoding"}
+        if packed and self._gzip():
+            data, tag = packed, tag + "-gz"
+            headers["Content-Encoding"] = "gzip"
+        headers["ETag"] = '"%s"' % tag
+        if headers["ETag"] in self.headers.get("If-None-Match", ""):
+            self.send_response(304)
+            for key, value in dict(SECURITY, **headers).items():
+                self.send_header(key, value)
+            return self.end_headers()
+        self._send(200, data, kind, headers)
 
     # ---- routes
     def do_HEAD(self):

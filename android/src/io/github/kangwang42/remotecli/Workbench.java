@@ -40,7 +40,7 @@ final class Workbench {
         final AggregateSessions.Entry entry;
         Task(String url, String computer, AggregateSessions.Entry entry, String kind) { this.url = url; this.computer = computer; this.entry = entry; this.kind = kind; }
     }
-    private static final int SHOWN = 4, TASKS = 12, TALKS = 8, RECENT = 8;
+    private static final int SHOWN = 4, TASKS = 12, TALKS = 8, RECENT = 5, RECENT_ALL = 20;
 
     private final MainActivity activity;
     private final Kit kit;
@@ -53,6 +53,7 @@ final class Workbench {
     private LinearLayout attention, recent;
     private TextView summary;
     private String attentionMark;
+    private boolean recentOpen;         // "最近使用" shows all of its terminals, not the first few
     private final Map<String, TextView> peeks = new HashMap<>();       // address, line break, terminal -> the line it last said
 
     Workbench(MainActivity activity, Kit kit) { this.activity = activity; this.kit = kit; }
@@ -339,6 +340,7 @@ final class Workbench {
         Collections.sort(recentTasks, (a, b) -> Long.compare(AggregateSessions.recent(b.entry), AggregateSessions.recent(a.entry)));
         for (Task task : tasks) mark.append(task.url).append('\n').append(task.entry.id).append('\n').append(task.kind).append('\n').append(task.entry.shownTitle()).append('\n').append(task.computer).append('\n').append(ending.contains(task.url + '\n' + task.entry.id)).append('\n');
         for (Task task : recentTasks) mark.append(task.url).append('\n').append(task.entry.id).append('\n').append(task.kind).append('\n').append(task.entry.shownTitle()).append('\n').append(task.computer).append('\n').append(AggregateSessions.ago(AggregateSessions.recent(task.entry), System.currentTimeMillis())).append('\n');
+        mark.append(recentOpen);
         if (mark.toString().equals(attentionMark)) {
             // the cards stay; only what each terminal last said is written anew
             List<Task> all = new ArrayList<>(tasks); all.addAll(recentTasks);
@@ -366,8 +368,15 @@ final class Workbench {
         recent.removeAllViews();
         if (!recentTasks.isEmpty()) {
             recent.addView(heading("最近使用", recentTasks.size() + " 个历史终端"), kit.below(tasks.isEmpty() ? 24 : 22));
-            for (int i = 0; i < Math.min(RECENT, recentTasks.size()); i++) recent.addView(taskCard(recentTasks.get(i), several), kit.below(i == 0 ? 10 : 8));
-            if (recentTasks.size() > RECENT) recent.addView(kit.text("另外 " + (recentTasks.size() - RECENT) + " 个可在对应项目中查看。", 12.5f, kit.MUTED), kit.below(8));
+            int shown = Math.min(recentOpen ? RECENT_ALL : RECENT, recentTasks.size());
+            for (int i = 0; i < shown; i++) recent.addView(taskCard(recentTasks.get(i), several), kit.below(i == 0 ? 10 : 8));
+            if (recentTasks.size() > RECENT) {
+                TextView toggle = kit.text(recentOpen ? "收起" : "其余 " + (recentTasks.size() - shown) + " 个", 13, kit.MUTED);
+                toggle.setGravity(Gravity.CENTER); toggle.setMinHeight(kit.dp(44));
+                kit.press(toggle, () -> { recentOpen = !recentOpen; draw(); });
+                recent.addView(toggle, kit.below(2));
+            }
+            if (recentOpen && recentTasks.size() > shown) recent.addView(kit.text("另外 " + (recentTasks.size() - shown) + " 个可在对应项目中查看。", 12.5f, kit.MUTED), kit.below(4));
         }
     }
     private View taskCard(Task task, boolean several) {
@@ -399,7 +408,12 @@ final class Workbench {
             peeks.put(task.url + '\n' + entry.id, peek);
         }
         card.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-        if (entry.terminal && "running".equals(entry.state)) card.addView(stopButton(task));
+        if (entry.terminal && "running".equals(entry.state)) {
+            // the disc ends as far from the card's edge as the tool's tile begins from the other
+            card.setPadding(kit.dp(14), kit.dp(11), kit.dp(10), kit.dp(11));
+            texts.setPadding(kit.dp(12), 0, kit.dp(6), 0);
+            card.addView(stopButton(task));
+        }
         kit.press(card, () -> {
             if (!entry.terminal) { activity.openSession(task.url, entry.project, entry.id); return; }
             markSeen(task.url, entry.id, entry.at);
@@ -410,7 +424,7 @@ final class Workbench {
 
     private View stopButton(Task task) {
         boolean busy = ending.contains(task.url + '\n' + task.entry.id);
-        View button = kit.iconButton(R.drawable.ic_stop, busy ? "正在结束“" + task.entry.shownTitle() + "”" : "结束“" + task.entry.shownTitle() + "”", () -> stopTask(task));
+        View button = kit.discButton(R.drawable.ic_stop, busy ? "正在结束“" + task.entry.shownTitle() + "”" : "结束“" + task.entry.shownTitle() + "”", () -> stopTask(task));
         button.setEnabled(!busy); button.setAlpha(busy ? .4f : 1f);
         return button;
     }
@@ -639,7 +653,12 @@ final class Workbench {
             boolean closing = ending.contains(url + '\n' + entry.id);
             row.addView(kit.pill(closing ? "正在结束" : AggregateSessions.label(kind), closing ? kit.MUTED : color(kind)));
         }
-        if (entry.terminal && "running".equals(entry.state)) row.addView(stopButton(new Task(url, "", entry, kind)));
+        if (entry.terminal && "running".equals(entry.state)) {
+            row.setPadding(kit.dp(8), kit.dp(6), kit.dp(2), kit.dp(6));
+            View stop = stopButton(new Task(url, "", entry, kind));
+            ((LinearLayout.LayoutParams) stop.getLayoutParams()).leftMargin = kit.dp(4);
+            row.addView(stop);
+        }
         kit.press(row, () -> {
             if (!entry.terminal) { activity.openSession(url, entry.project, entry.id); return; }
             markSeen(url, entry.id, entry.at);

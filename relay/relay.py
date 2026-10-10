@@ -179,6 +179,65 @@ def _folders(items, limit):
     return out
 
 
+# A program says once that it draws on the alternate screen, reads the mouse or takes pasted text in brackets, and
+# the output that said so is dropped when the history is full. These switches are therefore kept beside the output,
+# in the order they were last changed, and are written again in front of a history that no longer begins at the
+# terminal's start: a phone that opens the page later has to scroll and paste the way the program expects.
+_SWITCHES = frozenset((1, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1007, 1015, 1016, 1047, 1049, 2004))
+_ALTERNATE = ("47", "1047", "1049")
+_SWITCH = re.compile(r"\x1b\[\?([0-9;]{1,40})([hl])|\x1bc")
+_SWITCH_CUT = re.compile(r"\x1b(?:\[(?:\?[0-9;]{0,40})?)?\Z")
+# A program that keeps the whole screen to itself has no history behind it: the last of its output is all that a
+# reader who starts from nothing needs, and megabytes of earlier pictures only keep the page loading.
+TAIL = 120_000
+
+
+def _switch(modes, data, rest=""):
+    """Follows the switches in a piece of output. Returns the beginning of a sequence the piece ends in the middle of."""
+    data = rest + data
+    cut = _SWITCH_CUT.search(data)
+    for found in _SWITCH.finditer(data, 0, cut.start() if cut else len(data)):
+        if not found.group(2):              # a full reset of the terminal
+            modes.clear()
+            continue
+        for number in found.group(1).split(";"):
+            if number.isdigit() and int(number) in _SWITCHES:
+                modes.pop(str(int(number)), None)
+                modes[str(int(number))] = found.group(2) == "h"
+    return data[cut.start():] if cut else ""
+
+
+def _preamble(modes):
+    return "".join("\x1b[?%s%s" % (number, "h" if on else "l") for number, on in modes.items())
+
+
+def _resume(term, chunks):
+    """Where a reader that has nothing yet begins, and what has to be said before that piece."""
+    modes = dict(term.get("modes") or {})
+    whole = 0, _preamble(modes)
+    if term.get("state") != "running" or term.get("tool") == "shell":
+        return whole            # a shell's history is read back, and an ended terminal is short already
+    at, size = len(chunks), 0
+    while at > 0 and size + len(chunks[at - 1]["data"]) <= TAIL:
+        at -= 1
+        size += len(chunks[at]["data"])
+    for _ in range(20):         # not from the middle of a sequence
+        if at <= 0 or not _screen._PARTIAL.search(chunks[at - 1]["data"]):
+            break
+        at -= 1
+    if at <= 0:
+        return whole
+    rest = ""
+    for chunk in chunks[:at]:
+        rest = _switch(modes, chunk["data"], rest)
+    then = dict(modes)
+    for chunk in chunks[at:]:
+        rest = _switch(modes, chunk["data"], rest)
+    if any(then.get(key) for key in _ALTERNATE) and any(modes.get(key) for key in _ALTERNATE):
+        return at, _preamble(then)
+    return whole
+
+
 def _trim(term):
     """A running screen keeps its recent history; an ended one keeps only its final screens."""
     limit = OUTPUT_LIMIT if term.get("state") in ("starting", "running") else CLOSED_LIMIT
@@ -189,6 +248,7 @@ def _trim(term):
     size, drop = term["size"], 0
     while size > limit and drop < len(output) - 1:
         size -= len(output[drop]["data"])
+        term["modes_rest"] = _switch(term.setdefault("modes", {}), output[drop]["data"], term.get("modes_rest", ""))
         drop += 1
     del output[:drop]
     term["size"] = size
@@ -305,7 +365,7 @@ def _shell(value):
 
 
 def _public(term):
-    shown = {k: v for k, v in term.items() if k not in ("output", "instance", "size", "out_at", "touched", "calm_until")}
+    shown = {k: v for k, v in term.items() if k not in ("output", "instance", "size", "out_at", "touched", "calm_until", "modes", "modes_rest")}
     # Until the owner names a terminal, it carries the name of the conversation it has open.
     if not term.get("renamed"):
         shown["title"] = next((s["title"] for s in _sessions if s["id"] == term.get("session")), term["title"])
@@ -420,10 +480,15 @@ def _overview(path, terminal, after, now):
             raise RemoteError("终端已不存在")
         chunks = term.get("output", [])
         reset = bool(chunks and (after < chunks[0]["seq"] - 1 or after > term.get("seq", 0)))
-        # A reader is nearly always at the end: the new pieces are found from there, not by going through all of them.
-        start = 0 if reset else len(chunks)
-        while start > 0 and chunks[start - 1]["seq"] > after:
-            start -= 1
+        start, lead = len(chunks), ""
+        if chunks and (reset or after == 0):
+            # A reader that has nothing: it may be given the last of the output only, and is told so.
+            start, lead = _resume(term, chunks)
+            reset = reset or start > 0
+        else:
+            # A reader is nearly always at the end: the new pieces are found from there, not by going through all of them.
+            while start > 0 and chunks[start - 1]["seq"] > after:
+                start -= 1
         # Bound each mobile reply, without skipping the remaining output.
         out, length = [], 0
         for at in range(start, len(chunks)):
@@ -431,6 +496,8 @@ def _overview(path, terminal, after, now):
             length += len(chunks[at]["data"])
             if length >= 180_000:
                 break
+        if lead and out:
+            out[0]["data"] = lead + out[0]["data"]
         # A terminal's page needs to know only whether the computer is there; the lists of folders stay with the list.
         return {"device": {"online": now - _device["seen"] < 15, "enabled": _device["enabled"], "shell": _device.get("shell", "")}, "terminal": _public(term), "chunks": out, "reset": reset,
                 "after": out[-1]["seq"] if out else term.get("seq", 0), "tick": _tick[0]}

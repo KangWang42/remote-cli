@@ -69,6 +69,10 @@
   // reports; `sized` is when this page last asked for its own, so that a report still on its way is not taken for
   // someone else's wish.
   let theirs = '', sized = 0, elsewhere = false;
+  // A fullscreen program is read from its last output only (`cut`), and draws no more than what changed: it is asked
+  // once to draw the whole picture again, which it does when its screen changes size. `nudge` is the size asked for
+  // in between, until the computer reports it.
+  let cut = false, nudge = '', nudgeTimer = 0;
 
   function send(data) {
     if (!bridge) return false;
@@ -94,6 +98,23 @@
       lastSize = size; sized = Date.now();
       bridge.resize(JSON.stringify({ cols, rows }));
     }, 180);
+  }
+  function redraw() {
+    cut = false;
+    const cols = term.cols, rows = term.rows;
+    // A size that differs from the computer's is sent anyway, and the program draws everything for it.
+    if (!bridge || !running || term.buffer.active.type !== 'alternate' || rows <= 6 || theirs !== `${cols}x${rows}`) return;
+    clearTimeout(sizeTimer);
+    nudge = lastSize = `${cols}x${rows - 1}`; sized = Date.now();
+    bridge.resize(JSON.stringify({ cols, rows: rows - 1 }));
+    clearTimeout(nudgeTimer);
+    nudgeTimer = setTimeout(settle, 3000);       // the size is put back even if the report never comes
+  }
+  function settle() {
+    clearTimeout(nudgeTimer);
+    if (!nudge) return;
+    nudge = '';
+    resize();
   }
   function layout() {
     const w = screen.clientWidth, h = screen.clientHeight;
@@ -243,6 +264,7 @@
       if (reported && theirs && reported !== theirs && reported !== lastSize && Date.now() - sized > 2500) elsewhere = true;
       if (reported === `${term.cols}x${term.rows}`) elsewhere = false;
       theirs = reported;
+      if (nudge && reported === nudge) settle();
       slash.hidden = !(COMMANDS[tool] || []).length;
       if ($('files').hidden) $('files').hidden = false;        // the folder this terminal works in is known now
       if (!initialized || payload.reset) {
@@ -251,6 +273,7 @@
         scrollRouter.reset(); scrollRouter.sgr = false;
         term.reset(); term.resize(t.cols || 80, t.rows || 24);
         start = payload.chunks.length ? payload.chunks[0].seq - 1 : payload.after;
+        cut = start > 0; nudge = ''; clearTimeout(nudgeTimer);
       }
       const more = payload.after < t.seq;
       // Output arrives many times a second: the page around the terminal is touched only where something changed.
@@ -281,6 +304,7 @@
           restoring = false; running = live;
           if (caughtUp) term.scrollToBottom();
           if (caughtUp || connected) layout();      // the size is settled once, not after every piece of output
+          if (cut && running) redraw();
         } else if (!restoring) running = live;
         follow();
         if (bridge) bridge.rendered(String(payload.after), more ? 'more' : text || t.status === 'busy' ? 'active' : 'quiet');

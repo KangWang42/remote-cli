@@ -70,9 +70,10 @@
     }
     mode() {
       const alternate = this.term.buffer.active.type === 'alternate';
-      // Codex's inline view uses terminal scrollback; its fullscreen view accepts PageUp/PageDown.
-      // Windows ConPTY does not reliably mirror its native mouse capture as terminal escape modes.
-      if (this.tool() === 'codex') return alternate ? 'page' : 'local';
+      // Codex's inline view writes into the terminal's own history, which is scrolled here whatever it reports.
+      if (this.tool() === 'codex' && !alternate) return 'local';
+      // A fullscreen program that listens to the mouse scrolls by the line for each wheel step. Page keys move a
+      // screenful at a time, and are only for a program whose mouse mode never reached this terminal.
       return this.term.modes.mouseTrackingMode !== 'none' ? 'mouse' : alternate ? 'page' : 'local';
     }
     reset() { this.remoteUp = 0; this.pageLines = 0; }
@@ -80,7 +81,8 @@
     wheel(lines) {
       const column = Math.max(1, Math.floor(this.term.cols / 2)), row = Math.max(1, Math.floor(this.term.rows / 2));
       const button = lines > 0 ? 64 : 65;
-      const key = this.sgr ? `\x1b[<${button};${column};${row}M`
+      // Codex reads SGR reports only: the older encoding would arrive in its message box as typed characters.
+      const key = this.sgr || this.tool() === 'codex' ? `\x1b[<${button};${column};${row}M`
         : '\x1b[M' + String.fromCharCode(button + 32, Math.min(223, column) + 32, Math.min(223, row) + 32);
       return key.repeat(Math.abs(lines));
     }

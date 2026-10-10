@@ -63,6 +63,14 @@ function fixture(kind = 'local', reduced = false) {
   assert.equal(term.buffer.active.viewportY, 92, 'pulling the content down must reveal older output');
   assert.equal(sent.length, 0, 'local history must not be turned into program input');
   term.buffer.active.type = 'alternate';
+  assert.equal(router.mode(), 'mouse', 'Codex fullscreen that reports the mouse must scroll by the line');
+  router.scroll(2);
+  assert.equal(sent.at(-1), '\x1b[<64;40;12M'.repeat(2), 'Codex takes SGR wheel reports even before the encoding is seen');
+  assert.equal(router.remoteUp, 2);
+  router.latest();
+  assert.equal(sent.at(-1), '\x1b[<65;40;12M'.repeat(14), 'return to latest must scroll Codex back down');
+  assert.equal(router.remoteUp, 0);
+  term.modes.mouseTrackingMode = 'none';
   assert.equal(router.mode(), 'page', 'Codex fullscreen navigation must work without relying on native mouse mode propagation');
   router.scroll(8);
   assert.equal(sent.at(-1), '\x1b[5~', 'older fullscreen content is PageUp');
@@ -74,7 +82,7 @@ function fixture(kind = 'local', reduced = false) {
   assert.equal(router.remoteUp, 0);
   router.reset(); router.start(); router.scroll(3); router.scroll(5);
   assert.equal(sent.at(-1), '\x1b[5~', 'short movements in one gesture accumulate to a page');
-  tool = 'claude';
+  tool = 'claude'; term.modes.mouseTrackingMode = 'any';
   assert.equal(router.mode(), 'mouse');
   router.scroll(1);
   assert.equal(sent.at(-1), '\x1b[M' + String.fromCharCode(96, 72, 44), 'default mouse reports must use legacy encoding');

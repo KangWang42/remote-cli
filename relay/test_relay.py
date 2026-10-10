@@ -567,6 +567,39 @@ class TerminalRelayTests(unittest.TestCase):
         tr.agent(self.path, {"info": self.info, "terminals": [{"id": self.terminal, "state": "closed", "exit_code": 0}]}, now=1010)
         self.assertEqual(said(1011), "")
 
+    def test_a_fullscreen_program_is_read_from_its_last_output_with_the_switches_it_set(self):
+        self.start()
+        feed = lambda pieces: [tr.agent(self.path, {"info": self.info, "output": pieces[at:at + 100]}, now=1004) for at in range(0, len(pieces), 100)]
+        piece = lambda seq, data: {"terminal": self.terminal, "seq": seq, "data": data}
+        draw = "\x1b[5;1H" + "x" * 994
+        # the switches arrive once, the last of them cut in two by the end of a piece
+        feed([piece(1, "\x1b[?1049h\x1b[?1003;1006h\x1b[?25l\x1b[?20"), piece(2, "04h" + draw)] + [piece(seq, draw) for seq in range(3, 301)])
+        lead = "\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[?2004h"
+        fresh = tr.overview(self.path, self.terminal, after=0, now=1005)
+        self.assertTrue(fresh["reset"])
+        self.assertGreater(fresh["chunks"][0]["seq"], 150)
+        self.assertEqual(fresh["chunks"][0]["data"], lead + draw)
+        self.assertEqual((fresh["after"], sum(len(c["data"]) for c in fresh["chunks"]) <= tr.TAIL + len(lead)), (300, True))
+        self.assertNotIn("modes", fresh["terminal"])
+        # a reader that follows along is given what is new and nothing else
+        self.assertEqual((tr.overview(self.path, self.terminal, after=299, now=1005)["reset"], [c["data"] for c in tr.overview(self.path, self.terminal, after=299, now=1005)["chunks"]]), (False, [draw]))
+        # when the history is full the pieces that set the switches are dropped; the switches are not, also over a restart
+        limit, tr.OUTPUT_LIMIT = tr.OUTPUT_LIMIT, 200_000
+        self.addCleanup(setattr, tr, "OUTPUT_LIMIT", limit)
+        feed([piece(301, "\x1b[?1003l\x1b[?1000h" + draw), piece(302, draw)])
+        tr.agent(self.path, {"info": self.info}, now=1010)
+        tr._cache.clear()
+        stored = tr._state(self.path)["threads"][self.terminal]
+        self.assertGreater(stored["output"][0]["seq"], 2)
+        self.assertEqual(stored["modes"], {"1049": True, "1003": True, "1006": True, "25": False, "2004": True})
+        late = tr.overview(self.path, self.terminal, after=0, now=1011)
+        self.assertEqual((late["reset"], late["chunks"][0]["data"][:len(lead)]), (True, lead))
+        self.assertIn("\x1b[?1003l\x1b[?1000h", "".join(c["data"] for c in late["chunks"]))
+        # once the program has left the alternate screen its output is history again, and all that is kept is read back
+        feed([piece(303, "\x1b[?1049l\x1b[?25hbye\r\n")])
+        whole = tr.overview(self.path, self.terminal, after=0, now=1012)
+        self.assertEqual((whole["reset"], whole["chunks"][0]["seq"], whole["chunks"][0]["data"][:len(lead)]), (True, stored["output"][0]["seq"], lead))
+
     def test_screen_follows_cursor_erasing_scrolling_and_wide_characters(self):
         from screen import Screen
         view = Screen(10, 3)
