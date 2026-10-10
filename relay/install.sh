@@ -6,7 +6,7 @@
 #   sudo bash install.sh [--port N] [--source remote-cli.tar.gz]
 #
 #   install.sh status       is the service running, which version, which port
-#   install.sh password     show the password the computer and the phone sign in with
+#   install.sh password     show the password the computer and the phone sign in with; --new replaces it
 #   install.sh update       put the newest relay in place; the password and the terminals' records stay
 #   install.sh uninstall    stop and remove the service and the program; --purge also removes the password and records
 #
@@ -28,6 +28,7 @@ service=remote-cli-relay.service
 port=""
 archive=""
 purge=""
+renew=""
 fetched=""          # a folder made for this run, removed at the end
 source=""           # the folder that holds relay/ and web/
 
@@ -156,6 +157,16 @@ status() {
 password() {
     [ "$(id -u)" = 0 ] || fail "请用 root 运行（前面加 sudo）。"
     [ -s "$settings/relay.env" ] || fail "中转还没有安装。"
+    if [ -n "$renew" ]; then
+        local python
+        python="$(find_python)" || fail "需要 Python 3.9 及以上。"
+        systemctl stop "$service"
+        (umask 077; printf 'RCLI_PASSWORD=%s\n' "$("$python" -c 'import secrets; print(secrets.token_urlsafe(24))')" > "$settings/relay.env")
+        # whoever signed in with the old password signs in again
+        rm -f /var/lib/remote-cli/sessions.json /var/lib/private/remote-cli/sessions.json
+        systemctl start "$service"
+        say "已换成新密码。电脑端和手机都要用它重新连接："
+    fi
     sed -n 's/^RCLI_PASSWORD=//p' "$settings/relay.env"
 }
 
@@ -181,6 +192,7 @@ while [ $# -gt 0 ]; do
         --port) port="${2:-}"; shift; case "$port" in ''|*[!0-9]*) fail "--port 后面要跟端口号。" ;; esac ;;
         --source) archive="${2:-}"; shift; [ -n "$archive" ] || fail "--source 后面要跟压缩包的路径。" ;;
         --purge) purge=1 ;;
+        --new) renew=1 ;;
         -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) fail "不认识的参数：$1" ;;
     esac

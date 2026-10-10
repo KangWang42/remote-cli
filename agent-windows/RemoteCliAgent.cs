@@ -713,7 +713,7 @@ public sealed class TerminalAgent {
             using (var reply = ask("/api/login", new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "password", password } }))) {
                 int code = (int)reply.StatusCode;
                 if (code == 200) return "";
-                if (code == 401) return "中转不接受这个密码。点“换一个密码”，填中转服务器上设置的密码";
+                if (code == 401) return "中转不接受这个密码。请核对“密码”一栏，要填服务器上 sudo bash install.sh password 显示的那个";
                 if (code == 429) return "密码错了太多次，中转暂时不再接受登录，请 15 分钟后再试";
                 return "中转没有正常回应（" + code + "），请检查服务器上的中转和反向代理";
             }

@@ -203,6 +203,8 @@ public sealed class Segmented : Control {
     public Segmented() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.Selectable, true); Cursor = Cursors.Hand; TabStop = true; BackColor = Theme.Panel; }
     int At(int x) { return Items.Length == 0 ? -1 : Math.Max(0, Math.Min(Items.Length - 1, x * Items.Length / Math.Max(1, Width))); }
     void Pick(int index) { if (index < 0 || index == chosen) return; chosen = index; Invalidate(); if (Changed != null) Changed(this, EventArgs.Empty); }
+    /// As a click on that part would do.
+    public void Choose(int index) { Pick(index); }
     protected override void OnMouseMove(MouseEventArgs e) { int at = At(e.X); if (at != over) { over = at; Invalidate(); } base.OnMouseMove(e); }
     protected override void OnMouseLeave(EventArgs e) { over = -1; Invalidate(); base.OnMouseLeave(e); }
     protected override void OnMouseDown(MouseEventArgs e) { Focus(); Pick(At(e.X)); base.OnMouseDown(e); }
