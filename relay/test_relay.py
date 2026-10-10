@@ -446,7 +446,7 @@ class TerminalRelayTests(unittest.TestCase):
         self.assertEqual(answers["got"]["entries"], [{"name": "a.py"}])
         self.assertNotIn(ask["id"], self.relay._pending)        # nothing of it is kept
         refused = dict(ask, id="e" * 32)
-        failing = threading.Thread(target=lambda: answers.update(error=self.assertRaisesRegex(RemoteError, "不在项目文件夹内", tr.files, self.path, refused, 1003, 5)))
+        failing = threading.Thread(target=lambda: answers.update(error=self.assertRaisesRegex(RemoteError, "不在项目文件夹内", self.relay.files, refused, 1003, 5)))
         failing.start()
         self.relay.pull({"instance": self.info["instance"], "wait": 3})
         self.relay.agent({"info": info, "acks": [{"id": refused["id"], "error": "路径不在项目文件夹内"}]}, now=1004)
