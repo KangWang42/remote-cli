@@ -31,7 +31,9 @@ button:disabled { opacity: .45; cursor: default; }
 #composer, .keys, header { contain: layout; }
 /* The terminal keeps the height it had before the keyboard opened: the program on the computer is not resized, and
    the newest lines stay visible above the keyboard. */
-#terminal { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 10px; }
+/* The terminal's own layers are ordered among themselves only (isolation): the layer for links has a z-index, and
+   would otherwise lie over what is laid over the terminal here, and take the taps meant for "回到最新". */
+#terminal { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 10px; isolation: isolate; }
 /* The rows a fullscreen program holds still, shown in place while a finger slides the rest of the terminal. */
 #still { position: absolute; pointer-events: none; }
 #still[hidden] { display: none; }

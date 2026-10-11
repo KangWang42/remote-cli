@@ -21,7 +21,8 @@ svg { display: block; }
 #login-error { color: var(--bad); min-height: 1.5em; }
 .mark { width: 56px; height: 56px; border-radius: 16px; margin-bottom: 6px; background: linear-gradient(135deg, var(--raised), var(--panel)); border: 1px solid var(--line); display: grid; place-items: center; color: var(--accent); }
 input { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-input:focus { border-color: var(--accent); outline: none; }
+input:focus, textarea:focus { border-color: var(--accent); outline: none; }
+textarea { width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: inherit; font: inherit; line-height: 1.5; resize: none; }
 button.solid { min-height: 48px; border-radius: 12px; background: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.quiet { min-height: 44px; border-radius: 12px; color: var(--muted); }
 button.quiet:active { background: var(--raised); color: var(--ink); }
@@ -59,7 +60,10 @@ button.wide { width: 100%; margin-top: 8px; border: 1px dashed var(--line); }
 /* ending a terminal: a quiet disc beside the card's text, with room around it for a thumb */
 .card > button.side { position: relative; flex: none; align-self: center; width: 36px; height: 36px; margin: 0 12px 0 0; border-radius: 50%; display: grid; place-items: center; background: var(--raised); color: var(--muted); }
 .card > button.side::after { content: ""; position: absolute; inset: -6px; }
-.card > button.side:active { background: color-mix(in srgb, var(--bad) 20%, var(--raised)); color: var(--bad); }.card .text { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.card > button.side:active { background: color-mix(in srgb, var(--bad) 20%, var(--raised)); color: var(--bad); }
+.card > button.side.say { margin-right: 8px; }
+.card > button.side.say:active { background: color-mix(in srgb, var(--accent) 20%, var(--raised)); color: var(--accent); }
+.card .text { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .card b { font-weight: 600; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: .8rem; line-height: 1.3; min-width: 0; }
 .card .meta span { white-space: nowrap; }

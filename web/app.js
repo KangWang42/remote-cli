@@ -31,6 +31,7 @@
     chev: svg('<path d="M9 6l6 6-6 6"/>', 18), stop: svg('<rect x="6" y="6" width="12" height="12" rx="3.2" fill="currentColor" stroke="none"/>', 18), plus: svg('<path d="M12 5v14M5 12h14"/>', 20),
     folder: svg('<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'),
     claude: svg('<path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6L6 18"/>'), codex: svg('<path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"/><path d="M9 10l-2 2 2 2M15 10l2 2-2 2"/>'),
+    say: svg('<path d="M20.5 3.5L3.5 10.5l6.5 3 3 6.5zM10 13.5L20.5 3.500"/>', 18),
     shell: svg('<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7.5 10l3 2.2-3 2.2M12.5 15h4"/>'), mark: svg('<path d="M7 8l5 4-5 4M13.5 16.5h4.5"/>', 30)
   };
   function el(tag, props, ...children) {
@@ -135,6 +136,7 @@
     const ready = data && data.device.online && data.device.enabled;
     const choices = [];
     if (ready) choices.push({ label: '添加项目', sub: '添加电脑上的一个文件夹', value: 'add' });
+    if (ready && (data.device.features || []).includes('settings')) choices.push({ label: '电脑设置', sub: '切换连接线路，更改电脑端的几项设置', value: 'settings' });
     if (native) choices.push({ label: '回到工作台', sub: '查看所有电脑和进行中的任务，或换一台电脑', value: 'switch' });
     if (native && native.update) choices.push({ label: '检查 App 更新', sub: '当前版本 ' + (native.version ? native.version() : ''), value: 'update' });
     const device = data ? data.device : {};
@@ -144,6 +146,7 @@
     choices.push({ label: '退出登录', sub: '下次需要重新扫码或输入密码', value: 'out', kind: 'danger' });
     const choice = await ask('更多', '', choices);
     if (choice === 'add') addProject();
+    else if (choice === 'settings') location.href = 'computer/';
     else if (choice === 'switch') native.disconnect();
     else if (choice === 'update') native.update();
     else if (choice === 'computer') {
@@ -210,6 +213,18 @@
     if (fork) payload.fork = true;
     const result = await run(payload, '正在电脑上启动 ' + TOOLS[tool] + '…');
     if (result) open(result.terminal);
+  }
+  // A message for a running terminal without going into it: what the box of its page would send. The relay puts it
+  // the way the program takes pasted text and adds Enter (the operation "say").
+  async function say(t) {
+    const text = await openSheet((form, finish) => {
+      const box = el('textarea', { rows: 3, maxLength: 8000, placeholder: '输入指令，发送后等同于在终端中输入并回车', autocapitalize: 'off', spellcheck: false, ariaLabel: '指令' });
+      // what the program said last is shown, to tell which terminal this is and where it stands
+      form.append(el('h3', { textContent: t.title }), el('p', { textContent: t.said || TOOLS[t.tool] + ' · ' + t.dir }), box,
+        el('button', { type: 'button', className: 'choice solid', onclick: () => { if (box.value.trim()) finish(box.value); else box.focus(); } }, el('span', { textContent: '发送' })));
+      setTimeout(() => box.focus(), 80);
+    });
+    if (text && await run({ action: 'say', terminal: t.id, text }, '')) { toast('已发送给“' + t.title + '”'); refresh(); }
   }
   async function endTerminal(t) {
     if (!await ask('结束“' + t.title + '”？', '正在运行的任务会被中断。对话保存在电脑上，可以从历史对话继续。', [{ label: '结束终端', value: true, kind: 'danger' }])) return;
@@ -331,6 +346,8 @@
     peek.dataset.peek = t.id;
     const card = el('li', { className: 'card ' + phase }, el('button', { type: 'button', className: 'open', onclick: () => open(t.id) },
       el('span', { className: 'tool ' + t.tool, html: ICON[t.tool] }), el('span', { className: 'text' }, el('b', { textContent: t.title }), meta, peek)));
+    // A terminal that waits on a question is answered below, where the question is read: Enter would say yes to it.
+    if (t.state === 'running' && phase !== 'confirm') card.append(el('button', { type: 'button', className: 'side say', ariaLabel: '给这个终端发一条指令', html: ICON.say, onclick: () => say(t) }));
     if (running(t)) card.append(el('button', { type: 'button', className: 'side', ariaLabel: '结束这个终端', html: ICON.stop, onclick: () => endTerminal(t) }));
     // A question the program waits on is answered here, under what it asks: the question is on the card, so nothing
     // is allowed unseen. The two keys are the ones Claude Code and Codex take for "yes" and "no".

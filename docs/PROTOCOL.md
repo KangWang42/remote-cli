@@ -44,7 +44,7 @@ The code shown on the computer is `remotecli://connect?u=<address>&p=<password>&
 the computer; `live` means a program on the computer has it open, `terminal` is set when one of the relay's
 terminals already shows it. `state` is `starting`, `running` or `closed`; `status` is `busy`, `idle` or empty.
 
-Agents may advertise `info.features`: `codex-fork`, `codex-takeover`, `terminal-exit`, `files`, `update` and `peek`. These are forwarded
+Agents may advertise `info.features`: `codex-fork`, `codex-takeover`, `terminal-exit`, `files`, `update`, `peek` and `settings`. These are forwarded
 under `device.features`. Sessions may include `can_takeover`, `ownership_known`, and `takeover_reason`.
 An agent verifies Codex's actual writer lock and process ownership before advertising takeover, then checks
 again before terminating the selected independent CLI. Shared app servers and phone descendants are protected.
@@ -133,6 +133,7 @@ to held requests. Switching to the background cancels the active reader; returni
 | --- | --- |
 | `start` | `tool` (`claude`, `codex`, `shell`), `dir` (a workspace name); optional `session` (continue that conversation), `takeover` (end the owning computer CLI first), `fork` (Codex only: new conversation with the source history), `history` (let the tool show its own list) |
 | `input` | `terminal`, `data` (at most 16,000 characters) |
+| `say` | `terminal`, `text` (at most 8,000 characters, no control characters but line breaks and tabs). A message for a running terminal from where the terminal is not on the screen (a list, the app's workbench): what the box of the terminal's page sends, the text and then Enter. The relay knows from the program's output whether it takes pasted text in brackets (`ESC [ ? 2004 h`): it then gives the computer `input` with the text between `ESC [ 200 ~` and `ESC [ 201 ~` and `\r`, and otherwise the text on one line and `\r`. Refused while the terminal's phase is `confirm`: Enter would answer its question |
 | `resize` | `terminal`, `cols` (20–240), `rows` (6–100) |
 | `rename` | `terminal`, `title` |
 | `close` | `terminal` |
@@ -169,6 +170,55 @@ At most 40 messages of at most 1,500 characters, oldest first; `more` says that 
 something the tool did. What a tool writes into a conversation for itself (reminders, results of commands) is left
 out. The tool and the folder asked of the computer are the ones it reported for that conversation.
 
+### The program itself
+
+`POST /api/computer` `{"id": "<16 to 32 hex digits>", "action": "..."}` is held like `/api/files` and needs the
+`settings` capability, which the Windows program has. It is for a phone that is away from the computer: the program
+tells a few of its settings and the lines it can be reached by, changes one of those settings, and turns to another
+line. The program answers and decides everything; the relay checks the shape of the question and keeps nothing.
+
+| `action` | Fields | Answer |
+| --- | --- | --- |
+| `settings_read` | none | what the program tells about itself, below |
+| `settings_change` | `name`, `value` | the same, after the change. `rights`: `full`, `edit` or `read` (the mode Claude Code and Codex are started in from the phone); `tunnel`: `auto` or `http2` (used by the next tunnel); `autostart`, `update`: `true` or `false` |
+| `line_switch` | `to`: the `id` of a line | the same; `change.state` is now `preparing` |
+| `line_take` | none | `{"address", "ticket", "key", "seconds"}`, when `change.state` is `ready` |
+| `line_keep` | `key` | the same as `settings_read`; sent through the new line |
+
+```json
+{"name": "my-computer", "version": "1.2.0",
+ "lines": [{"id": "lan", "kind": "lan", "current": false, "ready": true},
+           {"id": "cloud", "kind": "cloud", "current": true, "ready": true},
+           {"id": "r3f9a0c1d2e4b", "kind": "own", "name": "home", "ms": 42, "current": false, "ready": true}],
+ "settings": {"rights": "full", "tunnel": "auto", "autostart": true, "update": false},
+ "change": {"state": "", "to": "", "note": "", "left": 0}}
+```
+
+`kind` is `lan`, `cloud` (the tunnel; `ready: false` when the tunnel program has to be fetched first), `own` or
+`public` (relays, with `name` and `ms`, how long the relay took to answer the computer: -1 none, -2 not asked yet).
+A relay's `id` is a word made from a hash: no address of a relay is told. Relays are added, and passwords and the
+port changed, at the computer only.
+
+Turning to another line is done so that a phone far from the computer is not shut out by a line it cannot reach:
+
+1. `line_switch`: the program makes the new line ready beside the one in use (checks the relay, or starts its own
+   relay and the tunnel) and says how far it is in `change`: `state` `preparing` with a `note`, then `ready`, or
+   `failed` with why. Nothing of the line in use is touched. A relay that does not know `/api/computer` is not turned
+   to, since the phone could not say there that it arrived.
+2. `line_take`, within 45 seconds: the answer is the new line's `address`, a `ticket` that signs in there once (see
+   "Signing in"; the password of the new line does not travel through the old one) and a `key`. The agent then
+   reports to the new line; the old one is left as it was.
+3. The viewer opens `<address>/computer/#t=<ticket>&keep=<key>`. That page signs in with the ticket and sends
+   `line_keep` with the key. The program then keeps the line: it is the one it starts with from now on, and what the
+   old line needed is ended. `change.state` is `trial` in between, with `left`, the seconds remaining.
+4. Without `line_keep` within `seconds` (120), the program goes back to the line it had, and `change` says `failed`
+   with why, for five minutes.
+
+Inside the app the page calls `RemoteCliNative.moved(address, ticket, key)` instead of leaving, and
+`RemoteCliNative.kept()` after `line_keep` was answered: the app opens the page at the new address, and lists the
+computer under that address once the line is kept. While a line is being changed from the phone, it is not changed
+at the computer.
+
 ## Computer
 
 `fork` requires a session UUID, the `codex-fork` capability, and `takeover=false`. The new terminal starts with
@@ -196,8 +246,10 @@ one of its projects, a conversation must exist on disk. The relay only refuses m
 `POST /api/terminal/agent/pull` `{"instance": "...", "wait": 12}` is held by the relay until an operation is
 waiting and returns it at once, so a key press does not wait for the next report.
 
-An answer to `file_list`, `file_read` or `session_read` (the operation behind `/api/conversation`, with `session`,
-`tool` and `dir`) travels in `acks` as `{"id", "error", "result": {...}}`.
+An answer to `file_list`, `file_read`, `session_read` (the operation behind `/api/conversation`, with `session`,
+`tool` and `dir`) or one of the operations of `/api/computer` travels in `acks` as `{"id", "error", "result": {...}}`.
+It is handed over once and not kept: when a relay asks for the same operation again (the computer had turned to
+another relay with the answer), the Windows program answers with an error, and the viewer asks anew.
 
 ### A computer that turns to another relay
 

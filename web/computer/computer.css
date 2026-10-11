@@ -1,0 +1,28 @@
+/* The program on the computer, seen from the phone: the lines it can be reached by and a few of its settings.
+   The lists use the cards of the other pages (../app.css). */
+.note { color: var(--muted); font-size: .86rem; text-align: center; margin: 18px 8px; }
+#state.plain { border-color: var(--line); background: var(--panel); }
+#state.good { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); background: color-mix(in srgb, var(--good) 9%, var(--panel)); }
+#state.busy b::before { content: ""; display: inline-block; width: .8em; height: .8em; margin-right: .5em; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; vertical-align: -.08em; animation: turn .8s linear infinite; }
+@keyframes turn { to { transform: rotate(360deg); } }
+
+/* ---- lines */
+#lines .card.current { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+#lines .card > button.open:disabled { opacity: 1; cursor: default; }
+#lines.held .card:not(.current) { opacity: .5; }
+.tool.lan { --tint: var(--good); }
+.tool.cloud, .tool.own { --tint: var(--accent); }
+.tool.public { --tint: var(--busy); }
+
+/* ---- settings: what it is on the left, the choice on the right; a choice of three goes below on a narrow screen */
+#settings .card { align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 12px 14px; }
+#settings .text { flex: 1 1 12rem; }
+#settings .text span { color: var(--muted); font-size: .8rem; line-height: 1.4; }
+.pick { display: flex; flex: none; padding: 3px; gap: 2px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); }
+.pick button { min-height: 36px; padding: 0 12px; border-radius: 9px; color: var(--muted); font-size: .88rem; white-space: nowrap; }
+.pick button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.flip { flex: none; position: relative; width: 52px; height: 30px; border-radius: 15px; border: 1px solid var(--line); background: var(--raised); transition: background .15s; }
+.flip::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+.flip[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.flip[aria-checked="true"]::after { transform: translateX(22px); background: var(--on-accent); }
+@media (prefers-reduced-motion: reduce) { .flip, .flip::after { transition: none; } #state.busy b::before { animation: none; } }

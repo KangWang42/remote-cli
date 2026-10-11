@@ -62,6 +62,7 @@ class _Operations(collections.OrderedDict):
 _id = re.compile(r"^[a-f0-9]{16,32}$")
 _terminal = re.compile(r"^[a-f0-9]{32}$")
 _session = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+_word = re.compile(r"^[a-z0-9_]{1,40}$")
 PROJECT_ACTIONS = ("project_add", "project_remove", "project_rename")
 UPDATE_ACTION = "update"      # the program on the computer looks for a newer version of itself and installs it
 MAX_TERMINALS, MAX_HISTORY, OUTPUT_LIMIT, CLOSED_LIMIT = 8, 12, 2_000_000, 300_000
@@ -114,6 +115,14 @@ def _switch(modes, data, rest=""):
 
 def _preamble(modes):
     return "".join("\x1b[?%s%s" % (number, "h" if on else "l") for number, on in modes.items())
+
+
+def _brackets(term):
+    """Whether the program takes pasted text in brackets now, by what it last printed about it."""
+    modes, rest = dict(term.get("modes") or {}), term.get("modes_rest", "")
+    for chunk in term.get("output", []):
+        rest = _switch(modes, chunk["data"], rest)
+    return modes.get("2004") is True
 
 
 def _resume(term, chunks):
@@ -262,7 +271,9 @@ def _public_session(session, terminal=""):
 
 FILE_ACTIONS = ("file_list", "file_read")
 FILE_SECONDS = 25
-ANSWERED = FILE_ACTIONS + ("session_read",)     # operations whose acknowledgment carries an answer
+# What the program on the computer is asked about itself: a few of its settings, and the line it is reached by.
+COMPUTER_ACTIONS = ("settings_read", "settings_change", "line_switch", "line_take", "line_keep")
+ANSWERED = FILE_ACTIONS + ("session_read",) + COMPUTER_ACTIONS     # operations whose acknowledgment carries an answer
 
 
 class Relay:
@@ -565,13 +576,13 @@ class Relay:
             self._expire(now)
             old = self._pending.get(op_id)
             if old:
-                if old["payload"] != payload:
+                if old.get("asked", old["payload"]) != payload:
                     raise RemoteError("操作编号已被其它操作使用")
                 return {k: old[k] for k in ("id", "terminal", "state", "error")}
             state = self._state()
             if not self._view(now)["online"] or not self._device["enabled"]:
                 raise RemoteError("电脑未连接或远控已关闭，请等待电脑上线后重试")
-            terminal = payload.get("terminal", "")
+            terminal, asked = payload.get("terminal", ""), None
             if action == UPDATE_ACTION:
                 terminal = ""
                 if "update" not in self._device.get("features", []):
@@ -635,6 +646,19 @@ class Relay:
                     return {"id": op_id, "terminal": terminal, "state": "done", "error": ""}
                 if term["state"] != "running":
                     raise RemoteError("终端已结束或尚未启动")
+                if action == "say":
+                    # A message, as typed into the box of the terminal's page and sent: the text, then Enter. It comes
+                    # from where the terminal is not on the screen, so the relay puts it the way the program takes
+                    # pasted text, which it knows from what the program printed; the computer is given plain input.
+                    text = payload.get("text")
+                    text = text.replace("\r\n", "\n").replace("\r", "\n").strip() if isinstance(text, str) else ""
+                    if not text or len(text) > 8000 or any(ord(c) < 32 and c not in "\n\t" for c in text):
+                        raise RemoteError("内容为空、超过 8000 字或含有控制字符")
+                    # Enter answers "yes" to a question the program waits on: that is answered where the question is read.
+                    if term.get("phase") == "confirm":
+                        raise RemoteError("这个终端正在等待确认，请先回答它的问题")
+                    data = ("\x1b[200~%s\x1b[201~" % text if _brackets(term) else " ".join(text.split("\n"))) + "\r"
+                    asked, payload, action = payload, {"id": op_id, "action": "input", "terminal": terminal, "data": data}, "input"
                 if action == "input":
                     data = payload.get("data")
                     if not isinstance(data, str) or not data or len(data) > 16000:
@@ -649,6 +673,8 @@ class Relay:
                 elif action != "close":
                     raise RemoteError("不支持此操作")
             op = {"id": op_id, "terminal": terminal, "state": "queued", "error": "", "at": now, "payload": copy.deepcopy(payload)}
+            if asked is not None:
+                op["asked"] = asked         # what the viewer sent, to know the same request again
             self._pending[op_id] = self._pending.queued[op_id] = op
             self._wake()
             if action == "start":
@@ -728,6 +754,42 @@ class Relay:
                 raise RemoteError("电脑上没有找到这个对话，请刷新后重试")
             return self._held({"id": op_id, "action": "session_read", "session": session, "tool": saved["tool"], "dir": saved["dir"]}, now, wait)
 
+    def computer(self, payload, now=None, wait=FILE_SECONDS):
+        """A question to the program on the computer about itself: its settings, and the line the phone reaches it
+        by. The program answers and decides; the relay checks the shape of the question, passes it on, holds the
+        request until the answer is there and keeps nothing of it."""
+        now = time.time() if now is None else now
+        if not isinstance(payload, dict):
+            raise RemoteError("请求格式无效")
+        op_id, action = payload.get("id"), payload.get("action")
+        if not isinstance(op_id, str) or not _id.fullmatch(op_id):
+            raise RemoteError("操作编号无效")
+        if action not in COMPUTER_ACTIONS:
+            raise RemoteError("不支持此操作")
+        question = {"id": op_id, "action": action}
+        if action == "settings_change":
+            name, value = payload.get("name"), payload.get("value")
+            if not isinstance(name, str) or not _word.fullmatch(name) or not (type(value) is bool or isinstance(value, str) and _word.fullmatch(value)):
+                raise RemoteError("设置无效")
+            question.update(name=name, value=value)
+        elif action == "line_switch":
+            if not isinstance(payload.get("to"), str) or not _word.fullmatch(payload["to"]):
+                raise RemoteError("线路无效")
+            question["to"] = payload["to"]
+        elif action == "line_keep":
+            if not isinstance(payload.get("key"), str) or not _id.fullmatch(payload["key"]):
+                raise RemoteError("线路无效")
+            question["key"] = payload["key"]
+        with self._changed:
+            self._expire(now)
+            if op_id in self._pending:
+                raise RemoteError("操作编号已被其它操作使用")
+            if not self._view(now)["online"] or not self._device["enabled"]:
+                raise RemoteError("电脑未连接或远控已关闭，请等待电脑上线后重试")
+            if "settings" not in self._device.get("features", []):
+                raise RemoteError("电脑端版本不支持在手机上设置，请更新电脑端")
+            return self._held(question, now, wait)
+
     def pull(self, payload, now=None):
         """Held open by the computer: answers with the operations it has not been given yet, as soon as there is one.
         They stay queued until the computer reports them done, so a lost answer is made up by its next report."""
@@ -772,7 +834,7 @@ class Relay:
                     and isinstance(s.get("dir"), str) and isinstance(s.get("title"), str) and s["title"].strip() and type(s.get("updated")) is int]
             self._device.update(seen=now, instance=instance, enabled=info.get("enabled") is True,
                            version=str(info.get("version") or "")[:20], newer=str(info.get("newer") or "")[:20], shell=_shell(info.get("shell")),
-                           features=[x for x in info.get("features", []) if x in ("codex-fork", "codex-takeover", "terminal-exit", "files", "update", "peek")],
+                           features=[x for x in info.get("features", []) if x in ("codex-fork", "codex-takeover", "terminal-exit", "files", "update", "peek", "settings")],
                            tools=[x for x in info.get("tools", []) if x in ("claude", "codex", "shell")],
                            workspaces=[x for x in info.get("workspaces", []) if isinstance(x, str) and 0 < len(x) <= 60],
                            projects=_folders(info.get("projects"), 60), candidates=_folders(info.get("candidates"), 12))

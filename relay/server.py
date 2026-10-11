@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # an embedded P
 import relay  # noqa: E402
 import websocket  # noqa: E402
 
-VERSION = "1.1.4"
+VERSION = "1.2.0"
 SESSION_DAYS = 90
 LOGIN_TRIES, LOGIN_LOCK, LOGIN_TRIES_ALL = 6, 900, 40
 BODY_LIMIT = 4 * 1024 * 1024
@@ -604,7 +604,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/ticket":
             return self._json(200, {"ticket": space.tickets.make()})
         call = {"/api/terminal": terminals.command, "/api/terminal/agent": terminals.agent, "/api/terminal/agent/pull": terminals.pull, "/api/files": terminals.files,
-                "/api/conversation": terminals.conversation}.get(path)
+                "/api/conversation": terminals.conversation, "/api/computer": terminals.computer}.get(path)
         if call is None:
             return self._json(404, {"error": "not found"})
         try:

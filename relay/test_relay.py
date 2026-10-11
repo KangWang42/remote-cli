@@ -426,6 +426,73 @@ class TerminalRelayTests(unittest.TestCase):
         self.assertEqual(answers["got"]["messages"], said)
         self.assertNotIn(ask["id"], self.relay._pending)        # nothing of it is kept
 
+    def test_a_message_is_said_to_a_terminal_from_outside_its_page(self):
+        self.start()
+        pulled = lambda: self.relay.pull({"instance": self.info["instance"], "wait": 0})["operations"]
+        pulled()
+        say = {"action": "say", "id": "1" * 32, "terminal": self.terminal, "text": "  跑一下测试\r\n然后提交  "}
+        # a program that has not said how it takes pasted text is given one line, and Enter
+        self.assertEqual(self.relay.command(say, now=1004)["state"], "queued")
+        self.assertEqual(self.relay.command(say, now=1005)["state"], "queued")       # the same request again is the same one
+        self.assertEqual([(o["action"], o["data"]) for o in pulled()], [("input", "跑一下测试 然后提交\r")])
+        # one that takes pasted text in brackets is given the text as it is, in brackets
+        self.relay.agent({"info": self.info, "acks": [{"id": say["id"]}], "terminals": [{"id": self.terminal, "state": "running"}],
+                          "output": [{"terminal": self.terminal, "seq": 1, "data": "\x1b[?2004h> "}]}, now=1006)
+        self.relay.command(dict(say, id="2" * 32), now=1007)
+        self.assertEqual([o["data"] for o in pulled()], ["\x1b[200~跑一下测试\n然后提交\x1b[201~\r"])
+        for text in ("", "   ", "a\x1bb", "x" * 8001, 7):
+            with self.assertRaisesRegex(RemoteError, "内容为空"):
+                self.relay.command(dict(say, id="3" * 32, text=text), now=1008)
+        with self.assertRaisesRegex(RemoteError, "其它操作"):
+            self.relay.command(dict(say, text="别的话"), now=1008)
+        # Enter would answer the question a program waits on: the message is not passed on
+        self.relay._state()["threads"][self.terminal]["phase"] = "confirm"
+        with self.assertRaisesRegex(RemoteError, "等待确认"):
+            self.relay.command(dict(say, id="4" * 32), now=1009)
+        self.assertEqual(pulled(), [])
+
+    def test_the_program_on_the_computer_is_asked_about_itself(self):
+        import threading
+        ask = {"id": "f" * 32, "action": "settings_read"}
+        with self.assertRaisesRegex(RemoteError, "更新电脑端"):
+            self.relay.computer(ask, now=1001, wait=0)
+        info = dict(self.info, features=["settings"])
+        self.relay.agent({"info": info}, now=1001)
+        self.assertIn("settings", self.relay.overview(now=1001)["device"]["features"])
+        for bad in (dict(ask, action="settings_wipe"), dict(ask, id="x"), {"id": "e" * 32, "action": "settings_change", "name": "Rights", "value": "full"},
+                    {"id": "e" * 32, "action": "settings_change", "name": "rights", "value": 3}, {"id": "e" * 32, "action": "line_switch", "to": "https://relay.example"},
+                    {"id": "e" * 32, "action": "line_keep", "key": "no"}):
+            with self.assertRaises(RemoteError):
+                self.relay.computer(bad, now=1001, wait=0)
+        # only what belongs to the question is passed on, whatever else the viewer sent with it
+        for n, (sent, passed) in enumerate((({"action": "settings_change", "name": "autostart", "value": True, "to": "lan"}, {"action": "settings_change", "name": "autostart", "value": True}),
+                                            ({"action": "line_switch", "to": "r0123456789ab", "key": "c" * 32}, {"action": "line_switch", "to": "r0123456789ab"}),
+                                            ({"action": "line_take"}, {"action": "line_take"}), ({"action": "line_keep", "key": "c" * 32}, {"action": "line_keep", "key": "c" * 32}))):
+            sent["id"] = "%032x" % (n + 1)
+            answers = {}
+            waiting = threading.Thread(target=lambda: answers.update(got=self.relay.computer(sent, now=1002, wait=5)))
+            waiting.start()
+            asked = self.relay.pull({"instance": self.info["instance"], "wait": 3})["operations"]
+            self.assertEqual([{k: v for k, v in o.items() if k not in ("id", "terminal", "at")} for o in asked], [passed])
+            self.relay.agent({"info": info, "acks": [{"id": sent["id"], "error": "", "result": {"lines": [{"id": "lan"}]}}]}, now=1003)
+            waiting.join(5)
+            self.assertEqual(answers["got"], {"lines": [{"id": "lan"}]})
+            self.assertNotIn(sent["id"], self.relay._pending)        # nothing of it is kept
+        # what the program refuses is said to the viewer in the program's words
+        refused, said = {"id": "d" * 32, "action": "line_take"}, {}
+
+        def take():
+            try:
+                self.relay.computer(refused, now=1004, wait=5)
+            except RemoteError as error:
+                said["error"] = str(error)
+        failing = threading.Thread(target=take)
+        failing.start()
+        self.relay.pull({"instance": self.info["instance"], "wait": 3})
+        self.relay.agent({"info": info, "acks": [{"id": refused["id"], "error": "新线路还没有准备好"}]}, now=1005)
+        failing.join(5)
+        self.assertEqual(said, {"error": "新线路还没有准备好"})
+
     def test_files_are_asked_of_the_computer_and_answered_once(self):
         import threading
         ask = {"id": "f" * 32, "action": "file_list", "dir": "demo", "path": "src"}

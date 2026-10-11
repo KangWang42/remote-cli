@@ -139,6 +139,14 @@ public sealed class TerminalAgent {
     /// What the window around this agent offers: its version, a newer one it knows of, and a way to be told to update.
     public string Version = "", Newer = "";
     public Action UpdateRequested;
+    /// What the window answers about itself: a few of its settings and the line it is reached by (docs/PROTOCOL.md,
+    /// "The program itself"). It is given the operation and returns the answer; an ArgumentException or an
+    /// InvalidOperationException refuses, with words for the person. It is called while the agent is at work on its
+    /// terminals, so it answers at once and does what takes time elsewhere.
+    public Func<Dictionary<string, object>, Dictionary<string, object>> Computer;
+    static readonly string[] ComputerActions = { "settings_read", "settings_change", "line_switch", "line_take", "line_keep" };
+    /// Whether the relay has been given the answer to this operation.
+    public bool Reported(string id) { lock (work) return reported.Contains(id); }
     /// Whether nothing has been typed or printed for a while and no tool says it is working: a moment to restart in.
     public bool Quiet(int seconds) {
         lock (work) {
@@ -858,11 +866,13 @@ public sealed class TerminalAgent {
         string error = ""; Dictionary<string, object> result = null;
         try {
             bool project = action == "project_add" || action == "project_remove" || action == "project_rename", file = action == "file_list" || action == "file_read", update = action == "update", peek = action == "session_read";
-            if (!Regex.IsMatch(id, @"\A[a-f0-9]{16,32}\z") || (!project && !file && !update && !peek && !Regex.IsMatch(terminal, @"\A[a-f0-9]{32}\z"))) throw new ArgumentException("操作编号无效");
+            bool computer = Array.IndexOf(ComputerActions, action) >= 0;
+            if (!Regex.IsMatch(id, @"\A[a-f0-9]{16,32}\z") || (!project && !file && !update && !peek && !computer && !Regex.IsMatch(terminal, @"\A[a-f0-9]{32}\z"))) throw new ArgumentException("操作编号无效");
             double at; if (!Double.TryParse(Get(op, "at"), out at) || Math.Abs((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds - at) > 150) throw new ArgumentException("操作已过期");
             if (Get(prefs, "RemoteEnabled") != "True") throw new InvalidOperationException("电脑远控已关闭");
             if (project) ChangeProjects(op, prefs, action);
             else if (update) { if (UpdateRequested == null) throw new InvalidOperationException("这台电脑运行的是不带自动更新的后台程序"); UpdateRequested(); }
+            else if (computer) { if (Computer == null) throw new InvalidOperationException("这台电脑运行的后台程序没有可在手机上更改的设置"); result = Computer(op); }
             else if (peek) result = ReadConversation(op, prefs);
             else if (file) {
                 string root;
@@ -953,7 +963,7 @@ public sealed class TerminalAgent {
             }).ToArray();
             var payload = new Dictionary<string, object> {
                 { "info", new { instance = instance, enabled = enabled, workspaces = allowed.Keys.ToArray(), tools = tools, version = Version, newer = Newer, shell = "PowerShell",
-                    features = new[] { "codex-fork", "codex-takeover", "terminal-exit", "files", "peek" }.Concat(UpdateRequested != null ? new[] { "update" } : new string[0]).ToArray(),
+                    features = new[] { "codex-fork", "codex-takeover", "terminal-exit", "files", "peek" }.Concat(UpdateRequested != null ? new[] { "update" } : new string[0]).Concat(Computer != null ? new[] { "settings" } : new string[0]).ToArray(),
                     projects = settings.Select(d => new { name = d.Key, path = d.Value, @fixed = true, exists = true })
                         .Concat(OwnProjects().Where(p => !settings.ContainsKey(p.Key)).Select(p => new { name = p.Key, path = p.Value, @fixed = false, exists = allowed.ContainsKey(p.Key) })).ToArray(),
                     candidates = candidates.ToArray() } },
@@ -977,7 +987,9 @@ public sealed class TerminalAgent {
             string answer = await response.Content.ReadAsStringAsync();
             lock (work) {
                 var result = json.Deserialize<Dictionary<string, object>>(answer);
-                foreach (var a in acknowledgments) { reported.Add(Convert.ToString(a["id"])); a.Remove("result"); }
+                // An answer is handed over once and not kept. When the relay asks for it again, it never had it (the
+                // computer had turned to another relay): it is told so, not given an empty answer.
+                foreach (var a in acknowledgments) { reported.Add(Convert.ToString(a["id"])); if (a.Remove("result") && Convert.ToString(a["error"]).Length == 0) a["error"] = "电脑的回答没有送到，请重试"; }
                 if (listing) { sentSessions = listedText; sessionsSent = DateTime.UtcNow; }
                 var ack = result.ContainsKey("output_ack") ? result["output_ack"] as Dictionary<string, object> : null;
                 if (ack != null) lock (gate) foreach (var t in terminals.Values.Concat(ended)) { object seq; if (ack.TryGetValue(t.Id, out seq) && Settle(t, Convert.ToInt64(seq), t.Pty.Closed ? KeepEnded : KeepRunning)) soon = true; }

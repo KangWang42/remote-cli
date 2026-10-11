@@ -91,6 +91,7 @@ public final class MainActivity extends Activity {
     private final Runnable watch = this::checkConnection;
     private boolean fromHome, foreground, checkingConnection;
     private String currentOrigin = "";
+    private String movedFrom = "", movedTo = "";       // a computer that is turning to another line: where it was, and where its page was sent
     private ConnectionHealth connectionHealth = new ConnectionHealth();
     boolean showing(String name) { return foreground && name.equals(screen); }
 
@@ -443,6 +444,9 @@ public final class MainActivity extends Activity {
             // A late error from a destroyed page must not close a newly scanned connection.
             if (web != failed || !"web".equals(screen)) return;
             failed.stopLoading();
+            // The line the computer was asked to turn to cannot be reached from here: the computer finds that out by
+            // the phone's absence and goes back, and it is still listed under the address it had.
+            if (origin.equals(movedTo)) { movedFrom = movedTo = ""; home("新线路没有连上。电脑会在 2 分钟内回到原来的线路，之后可以从这里重新打开它。"); return; }
             home("电脑连接已断开。请确认电脑上的 Remote CLI 已打开，然后重新扫码连接；局域网直连时请检查是否在同一个 Wi-Fi。");
         });
     }
@@ -505,6 +509,36 @@ public final class MainActivity extends Activity {
         @JavascriptInterface public void saveCancel() { saver.cancel(); }
         /** Opens the file saved last with an app of the phone. */
         @JavascriptInterface public void openSaved() { runOnUiThread(() -> { if (!saver.open()) say("手机上没有能打开这种文件的应用，文件在“下载 / RemoteCLI”里"); }); }
+        /**
+         * The computer made another line ready and handed its page the address there, with a sign-in that works once
+         * and the word to say on arrival (docs/PROTOCOL.md, "The program itself"). The app follows: it opens the page
+         * for that at the new address. The computer stays listed under its old address until the page there says the
+         * line was kept, so that a line the phone cannot reach changes nothing here.
+         */
+        @JavascriptInterface public void moved(String address, String ticket, String key) {
+            final String to = clean(address), from = currentOrigin;
+            if (to.isEmpty() || ticket == null || !ticket.matches("[A-Za-z0-9_-]{16,80}") || key == null || !key.matches("[a-f0-9]{32}")) return;
+            runOnUiThread(() -> { movedFrom = from; movedTo = to; openPage(to, "", "/computer/#t=" + ticket + "&keep=" + key); });
+        }
+        /** The page at the new address: the computer has kept the line. From now on the computer is known by it. */
+        @JavascriptInterface public void kept() {
+            final String at = currentOrigin;
+            runOnUiThread(() -> {
+                if (movedTo.isEmpty() || !movedTo.equals(at)) return;
+                try {
+                    JSONArray list = computers(), now = new JSONArray();
+                    boolean known = false;
+                    for (int i = 0; i < list.length(); i++) known |= movedTo.equals(list.getJSONObject(i).optString("url"));
+                    for (int i = 0; i < list.length(); i++) {
+                        JSONObject item = list.getJSONObject(i);
+                        if (!movedFrom.equals(item.optString("url"))) now.put(item);
+                        else if (!known) now.put(item.put("url", movedTo));        // a computer listed under both keeps the entry it has there
+                    }
+                    store(now); bench.forget(movedFrom);
+                } catch (Exception ignored) { }
+                movedFrom = movedTo = "";
+            });
+        }
         /** Back to the workbench. disconnect is the name older pages call. */
         @JavascriptInterface public void home() { runOnUiThread(() -> MainActivity.this.home("")); }
         @JavascriptInterface public void disconnect() { home(); }

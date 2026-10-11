@@ -21,8 +21,8 @@ using Microsoft.Win32;
 namespace RemoteCli {
 /// The program on the computer: a small window and a tray icon around the relay, the optional tunnel and the
 /// terminal agent. Everything it starts ends when it exits.
-public sealed class App : Form {
-    const string Version = "1.1.4";
+public sealed partial class App : Form {
+    const string Version = "1.2.0";
     const string TunnelDownload = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
     readonly string appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     readonly string dataDir = TerminalAgent.DefaultData;
@@ -43,6 +43,7 @@ public sealed class App : Form {
     readonly PictureBox qr = new PictureBox();
     readonly RowList folders = new RowList(), activity = new RowList();
     readonly Switch enabledSwitch = new Switch(), autostartSwitch = new Switch(), autoUpdateSwitch = new Switch();
+    readonly Segmented rights = new Segmented { Items = new[] { "默认", "自动改文件", "只读" } }, protocol = new Segmented { Items = new[] { "自动", "HTTP/2" } };
     readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer { Interval = 10 * 60 * 1000 }, quietTimer = new System.Windows.Forms.Timer { Interval = 5000 };
     ReleaseUpdate waitingUpdate;
     readonly List<Panel> pages = new List<Panel>();
@@ -107,16 +108,21 @@ public sealed class App : Form {
         return String.Join("-", Enumerable.Range(0, 4).Select(i => hex.Substring(i * 5, 5)));
     }
     void SetPassword(string value) {
-        password = value;
-        File.WriteAllBytes(PasswordFile, ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser));
+        WritePassword(value);
         // Phones that signed in with the old password must sign in again.
         try { File.Delete(Path.Combine(dataDir, "relay", "sessions.json")); } catch { }
+    }
+    // The password the agent signs in with where it reports. Who is signed in at the program's own relay is left alone.
+    void WritePassword(string value) {
+        password = value;
+        File.WriteAllBytes(PasswordFile, ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser));
     }
     List<string> Dirs() { return ((System.Collections.IEnumerable)config["RemoteDirs"]).Cast<object>().Select(Convert.ToString).ToList(); }
 
     // ---------- the programs this one starts
     void Remember() {
-        var ids = new[] { relay, tunnel }.Where(p => p != null).Select(p => { try { return p.HasExited ? 0 : p.Id; } catch { return 0; } }).Where(id => id != 0).ToArray();
+        var beside = change;
+        var ids = new[] { relay, tunnel, beside == null ? null : beside.Relay, beside == null ? null : beside.Tunnel }.Where(p => p != null).Select(p => { try { return p.HasExited ? 0 : p.Id; } catch { return 0; } }).Where(id => id != 0).ToArray();
         try { File.WriteAllText(ChildrenFile, json.Serialize(ids)); } catch { }
     }
     static void Kill(Process process) { try { if (process != null && !process.HasExited) { process.Kill(); process.WaitForExit(3000); } } catch { } }
@@ -158,7 +164,11 @@ public sealed class App : Form {
     static bool Listening(int port) {
         try { using (var client = new TcpClient()) { var attempt = client.BeginConnect("127.0.0.1", port, null, null); bool ok = attempt.AsyncWaitHandle.WaitOne(400) && client.Connected; return ok; } } catch { return false; }
     }
+    // REMOTECLI_LAN names the address the program's relay listens on for the local network, which is then also the
+    // one the phone is given: a test names 127.0.0.1, so that nothing is opened to the network it runs in.
+    static readonly string LanOnly = (Environment.GetEnvironmentVariable("REMOTECLI_LAN") ?? "").Trim();
     static string LanAddress() {
+        if (LanOnly.Length > 0) return LanOnly;
         foreach (var nic in NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
                  .OrderByDescending(n => n.GetIPProperties().GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any))))
             foreach (var ip in nic.GetIPProperties().UnicastAddresses)
@@ -195,6 +205,38 @@ public sealed class App : Form {
             for (int y = 0; y < size; y++) for (int x = 0; x < size; x++) if (dark[y, x]) g.FillRectangle(Brushes.Black, (x + quiet) * scale, (y + quiet) * scale, scale, scale);
         }
         return picture;
+    }
+
+    string Python { get { return Path.Combine(appDir, "python", "python.exe"); } }
+    // The program's own relay: for this computer alone (behind the tunnel), or for the local network as well.
+    Process StartRelay(bool network, int port, string secret) {
+        var start = new ProcessStartInfo(Python, "\"" + Path.Combine(appDir, "relay", "server.py") + "\" --host " + (!network ? "127.0.0.1" : LanOnly.Length > 0 ? LanOnly : "0.0.0.0") + " --port " + port
+            + " --data \"" + Path.Combine(dataDir, "relay") + "\" --web \"" + Path.Combine(appDir, "web") + "\"") { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = appDir };
+        start.EnvironmentVariables["RCLI_PASSWORD"] = secret;
+        start.EnvironmentVariables["PYTHONUTF8"] = "1";
+        return Process.Start(start);
+    }
+    async Task<bool> Up(Process process, int port) {
+        for (int n = 0; n < 40 && !Listening(port); n++) { await Task.Delay(250); if (process.HasExited) break; }
+        return Listening(port);
+    }
+    // A tunnel to the program's own relay. `address` comes to the address it was given, or to nothing when it ended
+    // or gave none in forty seconds.
+    Process StartTunnel(int port, out Task<string> address) {
+        var found = new TaskCompletionSource<string>();
+        var run = new ProcessStartInfo(TunnelFile, "tunnel --no-autoupdate" + (Convert.ToString(config["TunnelProtocol"]) == "http2" ? " --protocol http2" : "") + " --url http://127.0.0.1:" + port) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true, WorkingDirectory = dataDir };
+        var process = new Process { StartInfo = run, EnableRaisingEvents = true };
+        DataReceivedEventHandler look = (s, e) => { if (e.Data == null) return; var m = Regex.Match(e.Data, @"https://[a-z0-9-]+\.trycloudflare\.com"); if (m.Success) found.TrySetResult(m.Value); };
+        process.ErrorDataReceived += look; process.OutputDataReceived += look;
+        process.Exited += (s, e) => found.TrySetResult("");
+        process.Start(); process.BeginErrorReadLine(); process.BeginOutputReadLine();
+        address = Task.WhenAny(found.Task, Task.Delay(40000)).ContinueWith(first => found.Task.IsCompleted ? found.Task.Result : "");
+        return process;
+    }
+    // What is said when the tunnel in use ends by itself. `mine` is the generation it belongs to: one that was
+    // stopped on purpose belongs to an earlier one.
+    EventHandler Lost(int mine) {
+        return (s, e) => { if (mine == generation && !quitting) { ShowAddress(""); Say("公网隧道断开了，点“重新连接”。经常断开时到“设置”把隧道协议改为 HTTP/2", true); } };
     }
 
     // Starts what the chosen way of connecting needs. Runs off the window's thread.
@@ -234,19 +276,14 @@ public sealed class App : Form {
                 Say(wrong.Length > 0 ? wrong : mode == "public" ? "已连上公共中转“" + name + "”，地址固定不变。手机 App 扫码连接" : "已连上中转“" + name + "”，地址固定不变。手机 App 扫码或输入地址连接", wrong.Length > 0);
                 return;
             }
-            string python = Path.Combine(appDir, "python", "python.exe");
-            if (!File.Exists(python)) { Say("安装不完整：缺少 " + python, true); return; }
+            if (!File.Exists(Python)) { Say("安装不完整：缺少 " + Python, true); return; }
             int port = Port;
             if (Listening(port)) { Say("端口 " + port + " 已被别的程序占用，请到“设置”里换一个端口", true); return; }
-            var start = new ProcessStartInfo(python, "\"" + Path.Combine(appDir, "relay", "server.py") + "\" --host " + (mode == "lan" ? "0.0.0.0" : "127.0.0.1") + " --port " + port
-                + " --data \"" + Path.Combine(dataDir, "relay") + "\" --web \"" + Path.Combine(appDir, "web") + "\"") { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = appDir };
-            start.EnvironmentVariables["RCLI_PASSWORD"] = password;
-            start.EnvironmentVariables["PYTHONUTF8"] = "1";
-            relay = Process.Start(start);
+            relay = StartRelay(mode == "lan", port, password);
             Remember();
-            for (int n = 0; n < 40 && !Listening(port); n++) { await Task.Delay(250); if (relay.HasExited) break; }
+            bool up = await Up(relay, port);
             if (mine != generation) return;
-            if (!Listening(port)) { Say("本机服务没有启动成功", true); return; }
+            if (!up) { Say("本机服务没有启动成功", true); return; }
             Keep("Server", "http://127.0.0.1:" + port);
             if (agent != null) agent.Reset();
             if (mode == "lan") {
@@ -257,7 +294,7 @@ public sealed class App : Form {
                 return;
             }
             if (!File.Exists(TunnelFile)) { Say("尚未下载隧道程序，请点下方的“下载隧道程序”", true); return; }
-            EventHandler lost = (s, e) => { if (mine == generation && !quitting) { ShowAddress(""); Say("公网隧道断开了，点“重新连接”。经常断开时到“设置”把隧道协议改为 HTTP/2", true); } };
+            EventHandler lost = Lost(mine);
             if (held != null && !held.HasExited && !Gone(keptUrl)) {
                 if (mine != generation) return;
                 tunnel = held; tunnel.Exited += lost; tunnel.EnableRaisingEvents = true;
@@ -267,15 +304,11 @@ public sealed class App : Form {
                 return;
             }
             Say("正在建立公网隧道…");
-            var found = new TaskCompletionSource<string>();
-            var run = new ProcessStartInfo(TunnelFile, "tunnel --no-autoupdate" + (Convert.ToString(config["TunnelProtocol"]) == "http2" ? " --protocol http2" : "") + " --url http://127.0.0.1:" + port) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true, WorkingDirectory = dataDir };
-            tunnel = new Process { StartInfo = run, EnableRaisingEvents = true };
-            DataReceivedEventHandler look = (s, e) => { if (e.Data == null) return; var m = Regex.Match(e.Data, @"https://[a-z0-9-]+\.trycloudflare\.com"); if (m.Success) found.TrySetResult(m.Value); };
-            tunnel.ErrorDataReceived += look; tunnel.OutputDataReceived += look;
-            tunnel.Exited += (s, e) => { found.TrySetResult(""); lost(s, e); };
-            tunnel.Start(); tunnel.BeginErrorReadLine(); tunnel.BeginOutputReadLine();
+            Task<string> given;
+            tunnel = StartTunnel(port, out given);
+            tunnel.Exited += lost;
             Remember();
-            string url = await Task.WhenAny(found.Task, Task.Delay(40000)) == found.Task ? found.Task.Result : "";
+            string url = await given;
             if (mine != generation) return;
             if (url.Length == 0) { Kill(tunnel); Say("公网隧道没有建立成功，请检查网络后重试", true); return; }
             Keep(url, port);
@@ -288,29 +321,39 @@ public sealed class App : Form {
     // "重新连接" does what the tab shown says: with the relay tab open while another way is in use, it connects to
     // the relay the field shows, as "连接" beside the field does.
     void Again() {
+        if (Held()) return;
         if (!relayTab || RelayMode) { Reconnect(); return; }
         Relay relay = Showing();
         if (relay != null) Use(relay); else relayPick.Open();
     }
 
     async void DownloadTunnel(object sender, EventArgs e) {
+        if (Held()) return;
         if (File.Exists(TunnelFile)) { Reconnect(); return; }
         if (!Confirm("下载隧道程序？", "从 Cloudflare 的 GitHub 发布页下载 cloudflared（约 60 MB），用来建立临时公网地址，不需要账号。", "下载", false)) return;
         var button = (Button)sender;
         button.Enabled = false;
         try {
+            await FetchTunnel(percent => Say("正在下载隧道程序 " + percent + "%"));
+            Reconnect();
+        } catch (Exception error) {
+            Say("下载失败：" + error.Message + "。也可以自己下载 cloudflared-windows-amd64.exe，改名为 cloudflared.exe 放到 " + dataDir, true);
+        } finally { button.Enabled = true; }
+    }
+    // cloudflared, from Cloudflare's release page, into the data folder. Throws when it could not be had whole.
+    async Task FetchTunnel(Action<int> progress) {
+        try {
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             using (var client = new WebClient()) {
-                client.DownloadProgressChanged += (s, p) => Say("正在下载隧道程序 " + p.ProgressPercentage + "%");
+                client.DownloadProgressChanged += (s, p) => progress(p.ProgressPercentage);
                 await client.DownloadFileTaskAsync(new Uri(TunnelDownload), TunnelFile + ".part");
             }
             if (new FileInfo(TunnelFile + ".part").Length < 10 * 1024 * 1024) throw new IOException("下载的文件不完整");
             File.Move(TunnelFile + ".part", TunnelFile);
-            Reconnect();
-        } catch (Exception error) {
+        } catch (Exception) {
             try { File.Delete(TunnelFile + ".part"); } catch { }
-            Say("下载失败：" + error.Message + "。也可以自己下载 cloudflared-windows-amd64.exe，改名为 cloudflared.exe 放到 " + dataDir, true);
-        } finally { button.Enabled = true; }
+            throw;
+        }
     }
 
     // ---------- window
@@ -361,7 +404,7 @@ public sealed class App : Form {
     void Put(string where, string secret) { addressBox.Text = where; passwordBox.Text = secret; }
     List<Relay> Known() {
         var all = relays.Published(); all.AddRange(relays.Own());
-        foreach (Relay relay in all) { int ms; if (answers.TryGetValue(relay.Id, out ms)) relay.Ms = ms; }
+        lock (answers) foreach (Relay relay in all) { int ms; if (answers.TryGetValue(relay.Id, out ms)) relay.Ms = ms; }
         return all;
     }
     Relay Remembered() { string id = Convert.ToString(config["Relay"]); return id.Length == 0 ? null : Known().FirstOrDefault(r => r.Id == id); }
@@ -378,7 +421,7 @@ public sealed class App : Form {
         asked = DateTime.UtcNow;
         foreach (Relay each in Known()) {
             Relay relay = each;
-            Task.Run(() => { int ms = Relays.Ask(relay.Url); try { BeginInvoke(new Action(() => { answers[relay.Id] = ms; if (modePick.Chosen == 2) ShowMode(); })); } catch (InvalidOperationException) { } });
+            Task.Run(() => { int ms = Relays.Ask(relay.Url); try { BeginInvoke(new Action(() => { lock (answers) answers[relay.Id] = ms; if (modePick.Chosen == 2) ShowMode(); })); } catch (InvalidOperationException) { } });
         }
     }
     void ReadList() {
@@ -439,7 +482,7 @@ public sealed class App : Form {
         ShowMode();
     }
     void Use(Relay relay) {
-        if (relayBusy) return;
+        if (relayBusy || Held()) return;
         relayBusy = true; relayTab = !RelayMode; shown = relay;
         RelaySays("正在检查“" + relay.Name + "”…", false);
         Task.Run(() => {
@@ -669,6 +712,7 @@ public sealed class App : Form {
             relayTab = false; shown = null;
             string wanted = modePick.Chosen == 0 ? "lan" : "cloud";
             if (wanted == Mode) { ShowMode(); return; }       // back from only looking at that tab: what is running stays
+            if (Held()) return;
             // The password of a place at a relay for everyone is known to that relay: this computer's own relay gets another.
             if (Mode == "public") SetPassword(NewPassword());
             Keep("Mode", wanted); ShowMode(); Reconnect();
@@ -682,6 +726,7 @@ public sealed class App : Form {
         Action(connect, "重新连接", Theme.IconRefresh, ButtonKind.Normal, 28, 456, 116, 34, (s, e) => Again());
         // A relay decides its password itself: this button is for the program's own relay, on the local network and through the tunnel.
         changePassword = Action(connect, "换一个密码", Theme.IconLock, ButtonKind.Ghost, 152, 456, 124, 34, (s, e) => {
+            if (Held()) return;
             if (!Confirm("换一个密码？", "换密码后，已连接的手机需要重新扫码。", "换密码", false)) return;
             SetPassword(NewPassword()); Reconnect(); Toast("密码已更新");
         });
@@ -737,28 +782,20 @@ public sealed class App : Form {
         // ---- page: settings
         var settings = Page("设置", "这些设置只影响这台电脑。");
         var rows = Place(settings, new Card(), 28, 92, 652, 8 * 53 + 12);
-        autoUpdateSwitch.On = Convert.ToString(config["AutoUpdate"]) == "True";
-        autoUpdateSwitch.Changed += (s, e) => { Keep("AutoUpdate", autoUpdateSwitch.On); if (autoUpdateSwitch.On) CheckForUpdate(false); };
+        autoUpdateSwitch.Changed += (s, e) => Set("update", autoUpdateSwitch.On);
         enabledSwitch.On = Convert.ToString(config["RemoteEnabled"]) == "True";
         enabledSwitch.Changed += (s, e) => { Keep("RemoteEnabled", enabledSwitch.On); RefreshActivity(); Toast(enabledSwitch.On ? "已允许手机访问" : "已暂停手机访问，立即生效"); };
-        using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) autostartSwitch.On = key != null && key.GetValue("RemoteCli") != null;
-        autostartSwitch.Changed += (s, e) => {
-            using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) {
-                if (autostartSwitch.On) key.SetValue("RemoteCli", "\"" + Application.ExecutablePath + "\" --hidden"); else key.DeleteValue("RemoteCli", false);
-            }
-        };
-        var rights = new Segmented { Items = new[] { "默认", "自动改文件", "只读" } };
-        string max = Convert.ToString(config["RemoteMaxMode"]);
-        rights.Chosen = max == "edit" ? 1 : max == "read" ? 2 : 0;
-        rights.Changed += (s, e) => { Keep("RemoteMaxMode", rights.Chosen == 1 ? "edit" : rights.Chosen == 2 ? "read" : "full"); Toast("对之后新开的终端生效"); };
-        var protocol = new Segmented { Items = new[] { "自动", "HTTP/2" } };
-        protocol.Chosen = Convert.ToString(config["TunnelProtocol"]) == "http2" ? 1 : 0;
-        protocol.Changed += (s, e) => { Keep("TunnelProtocol", protocol.Chosen == 1 ? "http2" : "auto"); if (Mode == "cloud") Reconnect(); };
+        autostartSwitch.Changed += (s, e) => Set("autostart", autostartSwitch.On);
+        rights.Changed += (s, e) => { Set("rights", Rights[rights.Chosen]); Toast("对之后新开的终端生效"); };
+        // With the tunnel in use, another protocol means another tunnel.
+        protocol.Changed += (s, e) => { if (Mode == "cloud" && Held()) { ShowSettings(); return; } Set("tunnel", Protocols[protocol.Chosen]); if (Mode == "cloud") Reconnect(); };
+        ShowSettings();
         var portBox = new Field(); portBox.Box.Text = Port.ToString(); portBox.Box.MaxLength = 5;
         EventHandler port = (s, e) => {
             int wanted;
             if (!Int32.TryParse(portBox.Box.Text.Trim(), out wanted) || wanted < 1024 || wanted > 65535) { portBox.Box.Text = Port.ToString(); Toast("端口要在 1024 到 65535 之间"); return; }
             if (wanted == Port) return;
+            if (Held()) { portBox.Box.Text = Port.ToString(); return; }
             Keep("Port", wanted); Toast("端口已改为 " + wanted); if (!RelayMode) Reconnect();
         };
         portBox.Box.Leave += port; portBox.Box.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; port(s, e); } };
@@ -823,6 +860,7 @@ public sealed class App : Form {
             agent = new TerminalAgent(dataDir) { Version = Version };
             // The phone may ask for the update: it is looked for and installed at once, whatever the terminals are doing.
             agent.UpdateRequested = () => BeginInvoke(new Action(() => CheckForUpdate(false, true)));
+            agent.Computer = Itself;
             updateTimer.Tick += (t, a) => { CheckForUpdate(false); if (DateTime.UtcNow - listRead > TimeSpan.FromHours(6)) ReadList(); };
             ReadList();
             quietTimer.Tick += async (t, a) => {
@@ -860,6 +898,7 @@ public sealed class App : Form {
         finally { updateButton.Enabled = true; }
     }
     async Task InstallUpdate(ReleaseUpdate found) {
+        if (Changing) { waitingUpdate = found; return; }      // the program does not restart under a phone that is changing the line
         updateButton.Enabled = false; updateButton.Text = "下载中…"; Say("正在从 GitHub 下载 v" + found.Version + "…");
         try {
             string file = await AutoUpdater.DownloadAsync(found, Path.Combine(dataDir, "updates"));
@@ -870,7 +909,7 @@ public sealed class App : Form {
         } catch (Exception error) { updateButton.Enabled = true; updateButton.Text = "更新失败"; Say("更新失败：" + error.Message, true); }
     }
     void Reveal() { Show(); WindowState = FormWindowState.Normal; Activate(); }
-    void Shutdown() { generation++; tray.Visible = false; StopChildren(); }
+    void Shutdown() { generation++; tray.Visible = false; StopChildren(); Abandon(); }
     void Quit() {
         if (!Confirm("退出 Remote CLI？", "退出后手机不能再连接，正在运行的终端会结束。", "退出", true)) return;
         quitting = true; Shutdown();
@@ -963,6 +1002,8 @@ public sealed class App : Form {
                 window.quitting = true; window.Shutdown();
                 Environment.Exit(0);
             }
+            // --offstage: the program runs as usual where nobody sees it or can press it, for a test that plays the phone.
+            if (args.Contains("--offstage")) { offstage = true; window.StartPosition = FormStartPosition.Manual; window.Location = new Point(-30000, -30000); window.ShowInTaskbar = false; window.tray.Visible = false; }
             if (args.Contains("--hidden")) { window.WindowState = FormWindowState.Minimized; window.ShowInTaskbar = false; window.Shown += (s, e) => { window.Hide(); window.ShowInTaskbar = true; }; }
             Application.Run(window);
         }

@@ -12,7 +12,7 @@
 
 | 目录 | 内容 |
 | --- | --- |
-| `agent-windows/` | 电脑端：`RemoteCliApp.cs`（窗口、托盘、连接方式）、`RemoteCliAgent.cs`（终端与对话扫描）、`Relays.cs`（公共中转清单和保存的中转）、`Controls.cs`（外观和控件）、`QrCode.cs`、`Setup.cs`（安装程序）。C#，用 Windows 自带的编译器构建 |
+| `agent-windows/` | 电脑端：`RemoteCliApp.cs`（窗口、托盘、连接方式）、`RemoteCliAgent.cs`（终端与对话扫描）、`Relays.cs`（公共中转清单和保存的中转）、`Remote.cs`（手机可以向电脑端程序本身提出的要求：读取和更改几项设置、切换连接线路）、`Controls.cs`（外观和控件）、`QrCode.cs`、`Setup.cs`（安装程序）。C#，用 Windows 自带的编译器构建 |
 | `agent-linux/` | Linux 电脑端：`agent.py`（终端、对话扫描、查看文件），一个文件，只用 Python 标准库；`install.sh` 一条命令装好中转和电脑端；`remote-cli-agent.service` 是 systemd 用户服务 |
 | `relay/` | 中转：`server.py`（登录、HTTP，以及公共中转里每台电脑各自的空间）、`relay.py`（终端状态与输出的转发：一台电脑一个 `Relay` 对象）。只用 Python 标准库；`install.sh` 把它装成服务器上的系统服务 |
 | `android/` | 安卓 App：`MainActivity`（各界面之间的跳转、扫码回调、语音识别）、`Workbench`（工作台）、`Kit`（配色和界面部件）、`AggregateSessions`（任务分组与排序，不依赖 Android，可单独检查） |
@@ -44,7 +44,8 @@ python3 -m unittest discover -s agent-linux -p "test_*.py"   # Linux 电脑端�
 python tests\e2e_windows.py
 node tests\bridge_check.js                                # 传输选择、连接状态、延迟测量、连续输入和断线重试
 node tests\terminal_scroll_check.js                       # 拖动、惯性、网络停顿时画面的跟随、Codex 普通/全屏模式、Claude Code 的滚轮配速、鼠标编码和回到最新
-python tests\fullscreen_check.py <chrome.exe>             # 占满屏幕的程序：触摸拖动逐行滚动；长时间运行后重新打开只读最近的输出且画面完整。真实的中转和电脑端，Codex 用替身程序
+python tests\fullscreen_check.py <chrome.exe>             # 占满屏幕的程序：触摸拖动逐行滚动，手指点“回到最新”回到末尾；长时间运行后重新打开只读最近的输出且画面完整。真实的中转和电脑端，Codex 用替身程序
+python tests\phone_line_check.py [chrome.exe [输出文件夹]]  # 手机上切换线路和更改设置：新线路在原线路旁准备好，交接后手机到达才保留，没到则回到原线路；隧道、局域网、中转互相切换；带浏览器时在页面上实际点按，并从列表给终端发一条指令。先运行 tools\package_windows.py
 node tests\session_state_check.js                         # 运行中的会话与保留的写入锁分开显示
 python tests\android_aggregate_check.py --jdk <JDK 目录>  # 工作台的分组、排序、已完成标记和刷新判定
 python tests\android_update_check.py                      # App 更新器关闭安装流的顺序

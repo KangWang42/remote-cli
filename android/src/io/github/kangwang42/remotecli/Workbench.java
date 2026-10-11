@@ -434,6 +434,8 @@ final class Workbench {
             // the disc ends as far from the card's edge as the tool's tile begins from the other
             card.setPadding(kit.dp(14), kit.dp(11), kit.dp(10), kit.dp(11));
             texts.setPadding(kit.dp(12), 0, kit.dp(6), 0);
+            // A terminal that waits on a question is answered where the question can be read: Enter would say yes to it.
+            if (!"confirm".equals(task.kind)) card.addView(sayButton(task));
             card.addView(stopButton(task));
         }
         kit.press(card, () -> {
@@ -449,6 +451,57 @@ final class Workbench {
         View button = kit.discButton(R.drawable.ic_stop, busy ? "正在结束“" + task.entry.shownTitle() + "”" : "结束“" + task.entry.shownTitle() + "”", () -> stopTask(task));
         button.setEnabled(!busy); button.setAlpha(busy ? .4f : 1f);
         return button;
+    }
+
+    // ---- a message for a running terminal, typed here and sent without going into it
+    private View sayButton(Task task) {
+        return kit.discButton(R.drawable.ic_say, "给“" + task.entry.shownTitle() + "”发一条指令", () -> sayTask(task));
+    }
+    private void sayTask(Task task) {
+        final android.widget.EditText box = new android.widget.EditText(activity);
+        box.setHint("输入指令，发送后等同于在终端中输入并回车");
+        box.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        box.setMinLines(2); box.setMaxLines(6); box.setGravity(android.view.Gravity.TOP);
+        android.widget.FrameLayout room = new android.widget.FrameLayout(activity);
+        room.setPadding(kit.dp(20), kit.dp(6), kit.dp(20), 0);
+        room.addView(box, new android.widget.FrameLayout.LayoutParams(-1, -2));
+        // what the program said last is shown, to tell which terminal this is and where it stands
+        android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(activity).setTitle(task.entry.shownTitle())
+            .setMessage(task.entry.said.isEmpty() ? task.entry.project + " · " + AggregateSessions.label(task.kind) : task.entry.said).setView(room)
+            .setNegativeButton("取消", null).setPositiveButton("发送", (d, w) -> {
+                String text = box.getText().toString().trim();
+                if (!text.isEmpty()) sayRemote(task, text);
+            }).create();
+        if (dialog.getWindow() != null) dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+        dialog.show();
+        box.requestFocus();
+    }
+    /** The relay puts the message the way the program takes pasted text and adds Enter (the operation "say"). */
+    private void sayRemote(Task task, String text) {
+        final String cookie = CookieManager.getInstance().getCookie(task.url);
+        activity.net.execute(() -> {
+            String problem = "";
+            try {
+                JSONObject op = new JSONObject().put("action", "say").put("id", UUID.randomUUID().toString().replace("-", "")).put("terminal", task.entry.id).put("text", text);
+                JSONObject result = null;
+                // the same operation asked again is the same one: a request that did not get through is made once more
+                for (int attempt = 0; result == null && attempt < 3; attempt++) {
+                    try { result = post(task.url + "/api/terminal", cookie, op); }
+                    catch (IOException unreachable) { Thread.sleep(500); }
+                }
+                if (result == null) throw new Exception("连不上这台电脑，指令没有发出");
+                if ("error".equals(result.optString("state"))) throw new Exception(result.optString("error", "指令没有发出"));
+            } catch (Exception error) {
+                String said = error.getMessage();
+                // a relay of an earlier version answers so to anything it does not know
+                problem = "不支持此操作".equals(said) ? "这台电脑的电脑端或中转版本较早，暂不支持在此发送指令，请更新后再试" : said == null ? "指令没有发出，请稍后重试" : said;
+            }
+            final String message = problem;
+            activity.runOnUiThread(() -> {
+                android.widget.Toast.makeText(activity, message.isEmpty() ? "已发送给“" + task.entry.shownTitle() + "”" : message, android.widget.Toast.LENGTH_SHORT).show();
+                refresh();
+            });
+        });
     }
 
     private void redraw() {

@@ -162,6 +162,17 @@ def main():
             ask("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
             time.sleep(0.8)
 
+        def tap(name):
+            """One finger touches the middle of that element and lifts. Returns what the tap pressed and what took
+            the focus by it: a tap that lands on the terminal under a button opens the phone's keyboard instead."""
+            page_value("(() => { window.__tapped = []; if (!window.__taps) { window.__taps = true; for (const kind of ['click', 'focusin']) document.addEventListener(kind, e => window.__tapped.push(kind + ' ' + (e.target.id || e.target.className || e.target.tagName)), true); } return 1; })()")
+            x, y = page_value("(() => { const r = document.getElementById('%s').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()" % name)
+            ask("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": x, "y": y}])
+            time.sleep(0.06)
+            ask("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+            time.sleep(0.3)
+            return page_value("window.__tapped")
+
         open_terminal()
         if real:
             # Codex's own list: something to scroll through first, made without asking the model anything.
@@ -186,7 +197,7 @@ def main():
             report["codex_rows_moved_by_a_6_row_drag"] = moved
             assert 4 <= moved <= 9, (moved, before, after)
             assert page_value("document.getElementById('latest').hidden") is False
-            ask("Runtime.evaluate", expression="document.getElementById('latest').click()")
+            assert tap("latest") == ["click latest"]
             time.sleep(1.2)
             assert "mark12" in page_value(SCREEN), page_value(SCREEN)
             # a long run of drawing, then the page is opened again: it reads the last output only and shows the same picture
@@ -274,7 +285,8 @@ def main():
         report["rows_of_a_flick_stopped_by_a_touch"] = held - still
         assert page_value(TOP) == held and 0 < held - still < report["rows_moved_by_a_flick"], (still, held, page_value(TOP))
         picture("dragged.png")
-        ask("Runtime.evaluate", expression="document.getElementById('latest').click()")
+        # the finger has only just lifted from the picture it held: the tap must reach the button all the same
+        assert tap("latest") == ["click latest"]
         until(TOP + " === %d" % top, 10, "back at the end")
         assert page_value("document.getElementById('latest').hidden") is True
 

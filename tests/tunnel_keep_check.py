@@ -52,7 +52,7 @@ def main():
     env = dict(os.environ, REMOTECLI_DATA=str(data))
     subprocess.run([str(STAGE / "RemoteCliAgent.exe"), "--set-password", str(data)], input=("test-" + secrets.token_hex(8)).encode(), check=True)
     kept = lambda: json.loads((data / "tunnel.json").read_text(encoding="utf-8")) if (data / "tunnel.json").is_file() else None
-    start = lambda: subprocess.Popen([str(STAGE / "RemoteCli.exe"), "--hidden"], env=env, cwd=str(STAGE))
+    start = lambda: subprocess.Popen([str(STAGE / "RemoteCli.exe"), "--offstage"], env=env, cwd=str(STAGE))      # runs as usual, where nobody sees or presses it
     app, tunnel = start(), 0
     try:
         first = wait("no quick tunnel address", kept, 90)
